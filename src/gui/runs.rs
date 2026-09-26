@@ -18,6 +18,10 @@ pub struct Run {
     pub pty: EmbeddedPty,
     pub last_output: Instant,
     pub attention: bool,
+    /// Pager offset in lines up from the live bottom (issue #25): 0 is
+    /// the live screen, positive shows retained history. Fresh output
+    /// snaps it back to 0 (see the pump); paging never touches the PTY.
+    pub scroll_offset: usize,
 }
 
 impl Run {
@@ -26,6 +30,7 @@ impl Run {
             pty,
             last_output: Instant::now(),
             attention: false,
+            scroll_offset: 0,
         }
     }
 

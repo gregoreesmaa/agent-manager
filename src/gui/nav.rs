@@ -40,6 +40,10 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
         ("j / k", "move selection between sessions"),
         ("↑ / ↓", "move selection between sessions"),
         ("PgUp / PgDn", "page the session list"),
+        (
+            "Shift+PgUp / Shift+PgDn",
+            "scroll the run's retained output (pager)",
+        ),
         ("o", "cycle link focus across the selected run's links"),
         ("Enter", "copy the focused link, or type in muse when none"),
         ("i", "type in muse"),
@@ -167,7 +171,9 @@ impl ShellView {
     /// Copy the mouse selection when one exists, else the whole active
     /// screen, to the system clipboard.
     pub(crate) fn copy_screen(&mut self, cx: &mut GpuiApp) {
-        if let Some(text) = self.selected_text() {
+        // A paged run copies from the visible pager slice, not the live
+        // grid underneath (issue #25).
+        if let Some(text) = self.selected_pager_text().or_else(|| self.selected_text()) {
             let chars = text.chars().count();
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             self.app

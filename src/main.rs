@@ -17,6 +17,7 @@ mod embedded;
 mod gui;
 mod parsers;
 mod providers;
+mod scrollback;
 mod transcript;
 
 use gpui::{AppContext, Application, Entity};
