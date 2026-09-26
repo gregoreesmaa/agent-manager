@@ -22,7 +22,9 @@ cargo build
 ./target/debug/agent-manager
 ```
 
-`cargo test` runs the suite; `cargo fmt --check` must stay clean.
+`cargo test --all-targets` runs the suite; `cargo fmt --check` and
+`cargo clippy --all-targets -- -D warnings` must stay clean (all three
+run in CI on every push and pull request).
 
 ## Free and open source
 
