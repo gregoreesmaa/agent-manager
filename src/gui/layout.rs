@@ -19,10 +19,10 @@ pub const MIN_COLS: u16 = 20;
 pub const MIN_ROWS: u16 = 10;
 /// Fallback monospace metrics (same fallbacks as `mono_metrics`); used to
 /// derive the static window minimum below.
-const FALLBACK_CHAR_W: f32 = 8.0;
-const FALLBACK_LINE_H: f32 = 18.0;
+pub(crate) const FALLBACK_CHAR_W: f32 = 8.0;
+pub(crate) const FALLBACK_LINE_H: f32 = 18.0;
 /// Estimated terminal-header height (title row, possibly + Restart button).
-const HEADER_HEIGHT: f32 = 32.0;
+pub(crate) const HEADER_HEIGHT: f32 = 32.0;
 /// Minimum window size, derived from the PTY floors: wide enough for
 /// MIN_COLS beside the sidebar at fallback metrics, tall enough for
 /// MIN_ROWS plus the header and status bar (424 x 240).
