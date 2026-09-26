@@ -353,6 +353,21 @@ mod tests {
     }
 
     #[test]
+    fn resume_command_passes_provider_session_id() {
+        // Issue #22: historic re-attach relaunches `muse --resume <id>`.
+        let kind = SpawnKind::Resume {
+            session_id: "sess-abc".to_string(),
+        };
+        assert_eq!(
+            kind.command(),
+            (
+                "muse".to_string(),
+                vec!["--resume".to_string(), "sess-abc".to_string()]
+            )
+        );
+    }
+
+    #[test]
     fn echo_output_reaches_emulated_screen_without_muse() {
         let mut pty = EmbeddedPty::spawn("echo", &["hello-pty".to_string()], 80, 24)
             .expect("echo must spawn");
