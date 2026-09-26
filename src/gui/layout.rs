@@ -48,9 +48,12 @@ pub fn sidebar_visible_for_width(viewport_w: f32) -> bool {
 
 /// Sidebar width actually consumed at this viewport width: zero when
 /// collapsed so the terminal pane (and `fit_pty`) use the full width.
-pub fn effective_sidebar_width(viewport_w: f32) -> f32 {
+/// Takes the user-resized panel width (issue #29; the comfort keys
+/// persist it): narrow viewports still collapse it to zero, and
+/// out-of-range widths clamp to the comfort bounds.
+pub fn effective_sidebar_width_for(viewport_w: f32, sidebar_w: f32) -> f32 {
     if sidebar_visible_for_width(viewport_w) {
-        LEFT_WIDTH
+        sidebar_w.clamp(160.0, 480.0)
     } else {
         0.0
     }
@@ -75,8 +78,13 @@ mod tests {
         assert!(!sidebar_visible_for_width(699.0));
         assert!(sidebar_visible_for_width(700.0));
         assert!(sidebar_visible_for_width(1280.0));
-        assert_eq!(effective_sidebar_width(699.0), 0.0);
-        assert_eq!(effective_sidebar_width(800.0), LEFT_WIDTH);
+        assert_eq!(effective_sidebar_width_for(699.0, LEFT_WIDTH), 0.0);
+        assert_eq!(effective_sidebar_width_for(800.0, LEFT_WIDTH), LEFT_WIDTH);
+        // A user-widened panel consumes its width (clamped to the comfort
+        // bounds); narrowing still collapses it to zero.
+        assert_eq!(effective_sidebar_width_for(800.0, 300.0), 300.0);
+        assert_eq!(effective_sidebar_width_for(699.0, 300.0), 0.0);
+        assert_eq!(effective_sidebar_width_for(800.0, 9000.0), 480.0);
         // A 600px narrow window gives the PTY the full 600px (75 cols at
         // 8px) instead of 600-264=336px (42 cols) beside the sidebar.
         let (collapsed_cols, _) = pty_grid_for(600.0, 400.0, 8.0, 18.0);

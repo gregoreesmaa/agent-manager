@@ -16,7 +16,7 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::Sizable as _;
 
 use super::layout::{
-    effective_sidebar_width, sidebar_visible_for_width, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+    effective_sidebar_width_for, sidebar_visible_for_width, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
     STATUS_HEIGHT,
 };
 use super::shell::ShellView;
@@ -145,7 +145,8 @@ impl ShellView {
     pub(crate) fn fit_pty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = window.viewport_size();
         let viewport_w = f32::from(viewport.width);
-        let avail_w = viewport_w - effective_sidebar_width(viewport_w);
+        let avail_w =
+            viewport_w - effective_sidebar_width_for(viewport_w, self.sidebar_width);
         // Issue #32: wide mode has no header and no status bar, so the
         // terminal owns the full height; narrow mode keeps the slim bar.
         let avail_h = f32::from(viewport.height) - super::layout::chrome_height_for(viewport_w);

@@ -53,6 +53,9 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
         ("r", "restart ended run / retry failed spawn"),
         ("x", "close (kill) the selected run"),
         ("d", "dismiss the sticky error"),
+        ("/", "filter sessions by title substring"),
+        ("+ / -", "terminal font size (saved locally)"),
+        ("[ / ]", "sessions panel width (saved locally)"),
         ("?", "toggle this help"),
         ("Esc", "back to sessions · quit from sessions"),
         ("q", "quit (confirms first with live runs)"),
@@ -152,9 +155,10 @@ impl ShellView {
             ("r", false) if self.can_resume() => NavAction::Restart,
             ("x", false) => NavAction::Close,
             ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
-            // `?` toggles the in-app help panel. `/` is an alias for
-            // keyboards where `?` needs shift or is hard to discover.
-            ("?", _) | ("/", false) => {
+            // `?` toggles the in-app help panel. (`/` used to be an alias;
+            // since issue #29 it opens title-filter capture instead — the
+            // shell routes it before `nav_action`, so it never reaches here.)
+            ("?", _) => {
                 self.show_help = !self.show_help;
                 NavAction::None
             }
@@ -239,17 +243,17 @@ mod tests {
 
     #[test]
     fn help_toggle_and_keymap_coverage() {
-        // Issue #7: `?` (and `/` alias) toggles help in nav focus; the
-        // panel documents every nav key plus terminal/mouse bindings, and
-        // every status hint advertises `?`.
+        // Issue #7: `?` toggles help in nav focus; the panel documents
+        // every nav key plus terminal/mouse bindings, and every status
+        // hint advertises `?`. (`/` was the discoverability alias; since
+        // issue #29 it opens title-filter capture, routed in the shell
+        // before `nav_action`, so it must not toggle help here.)
         let mut view = test_shell();
         assert!(!view.show_help);
         assert_eq!(view.nav_action("?", false), NavAction::None);
         assert!(view.show_help);
         assert_eq!(view.nav_action("?", false), NavAction::None);
         assert!(!view.show_help);
-        assert_eq!(view.nav_action("/", false), NavAction::None);
-        assert!(view.show_help);
         assert_eq!(view.nav_action("/", false), NavAction::None);
         assert!(!view.show_help);
         let entries = super::help_entries();
