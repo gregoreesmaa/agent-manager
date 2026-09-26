@@ -92,15 +92,12 @@ fn cpr_replies(data: &[u8], carry: &[u8], cursor: (u16, u16)) -> (Vec<u8>, Vec<u
     (replies, new_carry)
 }
 
-/// Render snapshot of the live pane, borrowed from the [`EmbeddedPty`] (or
-/// from a spawn-error string) each frame.
+/// Render snapshot of the live pane, borrowed from the [`EmbeddedPty`]
+/// each frame. Issue #32 removed the title row, so the view carries no
+/// header text: the screen (with its last frame) is the whole story.
 pub struct LiveView<'a> {
-    /// One-line header, e.g. the spawn command (`muse`).
-    pub header: &'a str,
     /// Emulated terminal screen (already processed output).
     pub screen: &'a vt100::Screen,
-    /// Exit note appended once the child has exited.
-    pub exit_note: Option<&'a str>,
     /// True once the child has exited (last frame stays visible).
     pub exited: bool,
 }
@@ -119,9 +116,6 @@ pub struct EmbeddedPty {
     parser: vt100::Parser,
     query_carry: Vec<u8>,
     exited: bool,
-    exited_ok: bool,
-    exit_note: Option<String>,
-    spawn_desc: String,
 }
 
 impl EmbeddedPty {
@@ -182,9 +176,6 @@ impl EmbeddedPty {
             parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
             query_carry: Vec::new(),
             exited: false,
-            exited_ok: false,
-            exit_note: None,
-            spawn_desc,
         })
     }
 
@@ -200,25 +191,19 @@ impl EmbeddedPty {
         }
         if !self.exited {
             match self.child.try_wait() {
-                Ok(Some(status)) => {
+                Ok(Some(_)) => {
                     fresh = true;
                     self.exited = true;
-                    self.exited_ok = status.success();
                     // Feed any last bytes the reader thread already queued.
                     while let Ok(chunk) = self.rx.try_recv() {
                         fresh = true;
                         self.ingest(&chunk);
                     }
-                    self.exit_note = Some(format!(
-                        "[process exited{}]",
-                        if self.exited_ok { "" } else { " (non-zero)" }
-                    ));
                 }
                 Ok(None) => {}
                 Err(_) => {
                     fresh = true;
                     self.exited = true;
-                    self.exit_note = Some("[process wait failed]".to_string());
                 }
             }
         }
@@ -260,9 +245,7 @@ impl EmbeddedPty {
     /// Borrowed snapshot for the UI.
     pub fn view(&self) -> LiveView<'_> {
         LiveView {
-            header: &self.spawn_desc,
             screen: self.parser.screen(),
-            exit_note: self.exit_note.as_deref(),
             exited: self.exited,
         }
     }
@@ -384,12 +367,12 @@ mod tests {
     }
 
     #[test]
-    fn exit_is_detected_and_view_shows_note() {
+    fn exit_is_detected_and_view_marks_exited() {
+        // Issue #32 removed the header/exit-note text: the exited flag
+        // (last frame stays visible) is the whole signal now.
         let mut pty = EmbeddedPty::spawn("true", &[], 80, 24).expect("true must spawn");
         assert!(wait_exit(&mut pty, Duration::from_secs(5)));
-        let view = pty.view();
-        assert!(view.exited);
-        assert_eq!(view.exit_note, Some("[process exited]"));
+        assert!(pty.view().exited);
     }
 
     #[test]

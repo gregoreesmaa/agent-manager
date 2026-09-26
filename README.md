@@ -74,9 +74,12 @@ reading source. `Tab` toggles which pane owns the keyboard.
   `PgUp`/`PgDn` page the list, `o` moves link focus across the selected
   run's links, and `Enter` copies the focused link (`Enter`/`i` with no
   link focused types into `muse`).
-- Click the terminal (or `Tab`/`i`) to type into `muse`. The terminal title
-  is bright while it owns the keyboard; `muse` captures keys **only** in
-  this focus. `Tab`/`Esc` returns to the list, `q` quits.
+- Click the terminal (or `Tab`/`i`) to type into `muse`; the status line
+  reads `typing in muse …` while it owns the keyboard. `muse` captures
+  keys **only** in this focus. `Tab`/`Esc` returns to the list, `q` quits.
+  There is no title bar: the terminal owns the full height, and status
+  hints live in the sessions-panel footer (a slim bar under the terminal
+  on narrow windows).
 - Drag across the terminal to highlight text (copy-on-select). `y` or
   `Cmd+C` copies the selection (or the whole screen when nothing is
   selected); `p` or `Cmd`/`Ctrl+V` pastes the clipboard into `muse`.
@@ -140,8 +143,9 @@ override just the head of the chain; `terminal.font_size` and
 - `src/gui/terminal.rs` — vt100 screen → styled text rows (framework-free).
 - `src/gui/keys.rs` — keystroke → PTY bytes (framework-free).
 - `src/gui/shell.rs` — thin gpui view: component-library sessions panel
-  (`Sidebar`/`Button`, via `Root` + dark theme in `main.rs`), hand-rolled
-  terminal pane, status bar, pump loop, clipboard.
+  (`Sidebar`/`Button`, via `Root` + theme in `main.rs`), hand-rolled
+  terminal pane, status line (panel footer; slim bar on narrow windows),
+  pump loop, clipboard.
 - `src/app.rs` — run list state, titles, activity sort.
 - `src/parsers/` — modular link parsers (GitHub PR URLs today).
 - `src/providers/` — session-provider abstraction (parked for a future

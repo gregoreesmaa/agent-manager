@@ -27,8 +27,32 @@ impl ShellView {
     /// accumulated parsed link as a child item that copies its URL on
     /// click. The sidebar scrolls internally, so long link lists never
     /// push sessions off-panel. The terminal pane stays hand-rolled gpui.
-    pub(crate) fn render_runs(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// Sidebar footer (issue #32): the status line lives here instead
+    /// of a dedicated bar, giving the terminal maximum vertical space.
+    /// The empty-state line rides above it while there are no sessions.
+    pub(crate) fn sidebar_footer(&self, viewport_w: f32) -> gpui::Div {
+        let mut footer = div().flex().flex_col();
+        if self.app.sessions.is_empty() {
+            footer = footer.child(
+                div()
+                    .text_color(rgb(super::theme::SECONDARY_FG))
+                    .text_xs()
+                    .child("No sessions yet.".to_string()),
+            );
+        }
+        footer.child(
+            div()
+                .text_color(rgb(super::theme::SECONDARY_FG))
+                .text_xs()
+                .truncate()
+                .child(self.status_text_for_width(viewport_w)),
+        )
+    }
+
+    pub(crate) fn render_runs(&self, cx: &mut Context<Self>, viewport_w: f32) -> AnyElement {
         // Header with a real button: sessions start here, not at a key hint.
+        // The footer carries the status line (issue #32), so the app name
+        // and hints live in the panel, not in their own bar.
         let mut sidebar = Sidebar::left().w(px(LEFT_WIDTH)).header(
             SidebarHeader::new().child("Sessions".to_string()).child(
                 Button::new(ElementId::Name("new-run-btn".into()))
@@ -44,12 +68,7 @@ impl ShellView {
         );
         if self.app.sessions.is_empty() {
             return sidebar
-                .footer(
-                    div()
-                        .text_color(rgb(super::theme::SECONDARY_FG))
-                        .text_xs()
-                        .child("No sessions yet. Press ? for keys.".to_string()),
-                )
+                .footer(self.sidebar_footer(viewport_w))
                 .into_any_element();
         }
         for (status, indices) in status_sections(&self.app.sessions) {
@@ -130,7 +149,9 @@ impl ShellView {
             .child(SidebarMenu::new().children(items));
             sidebar = sidebar.child(group);
         }
-        sidebar.into_any_element()
+        sidebar
+            .footer(self.sidebar_footer(viewport_w))
+            .into_any_element()
     }
 }
 

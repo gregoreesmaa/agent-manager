@@ -41,39 +41,31 @@ impl Render for ShellView {
         let viewport_w = f32::from(window.viewport_size().width);
         let show_sidebar = sidebar_visible_for_width(viewport_w);
 
-        let state = if let Some(v) = self.active_view() {
-            if v.exited {
-                "ended"
-            } else if self.app.is_terminal_focused() {
-                "typing"
-            } else {
-                "live"
-            }
-        } else {
-            "idle"
-        };
-        let (cmd, note) = self
-            .active_view()
-            .map(|v| {
-                (
-                    v.header.to_string(),
-                    v.exit_note.map(|n| format!(" {n}")).unwrap_or_default(),
-                )
-            })
-            .unwrap_or_else(|| ("muse".to_string(), String::new()));
-        let title = format!("Muse [{state}] — {cmd}{note}");
-        // Focus indicator: the pane that owns the keyboard gets the bright
-        // title; the other dims. `muse` captures keys iff focus is Terminal.
-        let typing = self.app.is_terminal_focused() && state != "idle" && state != "ended";
-        let term_title_color = if typing {
-            rgb(0xffd866)
-        } else {
-            rgb(super::theme::SECONDARY_FG)
-        };
-
+        // Issue #32: no terminal header row and no dedicated status
+        // bar in wide mode — the status text lives in the sidebar
+        // footer, so the terminal owns every vertical pixel. Ended-run
+        // recovery stays on keyboard `r` (hinted in the status text).
         let mut mid_row = div().flex().flex_row().flex_1();
         if show_sidebar {
-            mid_row = mid_row.child(self.render_runs(cx));
+            mid_row = mid_row.child(self.render_runs(cx, viewport_w));
+        }
+
+        // Narrow mode has no sidebar to host the footer, so the status
+        // line stays a slim bar under the terminal there.
+        let mut term_col = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .child(self.render_error_banner(cx))
+            // In-app help (`?` toggle) replaces the terminal pane while
+            // open; `?` again (or Close) returns.
+            .child(if self.show_help {
+                self.render_help(cx)
+            } else {
+                self.render_terminal(cx)
+            });
+        if !show_sidebar {
+            term_col = term_col.child(self.render_status_bar(viewport_w));
         }
 
         div()
@@ -92,38 +84,7 @@ impl Render for ShellView {
                         .flex()
                         .flex_col()
                         .flex_1()
-                        .child({
-                            // Ended-run recovery lives in the header:
-                            // the title names the state, Restart reruns
-                            // the same run id (keyboard `r`).
-                            let mut header = div()
-                                .px_2()
-                                .py_1()
-                                .text_color(term_title_color)
-                                .text_sm()
-                                .child(title);
-                            if self.can_restart() {
-                                header = header.child(
-                                    Button::new(ElementId::Name("restart-run-btn".into()))
-                                        .label("Restart (r)")
-                                        .primary()
-                                        .small()
-                                        .on_click(cx.listener(|this, _ev, window, _cx| {
-                                            this.restart_run();
-                                            this.focus_term(window);
-                                        })),
-                                );
-                            }
-                            header
-                        })
-                        .child(self.render_error_banner(cx))
-                        // In-app help (`?` toggle) replaces the terminal
-                        // pane while open; `?` again (or Close) returns.
-                        .child(if self.show_help {
-                            self.render_help(cx)
-                        } else {
-                            self.render_terminal(cx)
-                        })
+                        .child(term_col)
                         // Tracked: clicking here must move real keyboard
                         // focus, or typed keys never reach `muse`. Drag
                         // highlights terminal text (copy-on-select);
@@ -157,20 +118,23 @@ impl Render for ShellView {
                         })),
                 ),
             )
-            .child(
-                div()
-                    .h(px(STATUS_HEIGHT))
-                    .px_2()
-                    .bg(rgb(0x1e1e2e))
-                    .text_color(rgb(super::theme::SECONDARY_FG))
-                    .text_sm()
-                    .truncate()
-                    .child(self.status_text_for_width(viewport_w))
-                    .id(ElementId::Name("status-bar".into()))
-                    .on_click(cx.listener(|this, _ev, window, _cx| {
-                        this.focus_list(window);
-                    })),
-            )
+    }
+}
+
+impl ShellView {
+    /// Status line element: the same text the sidebar footer shows in
+    /// wide mode, kept as a slim bar under the terminal only where no
+    /// sidebar exists to host it (narrow mode, issue #32).
+    pub(crate) fn render_status_bar(&self, viewport_w: f32) -> impl IntoElement {
+        div()
+            .h(px(STATUS_HEIGHT))
+            .px_2()
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(super::theme::SECONDARY_FG))
+            .text_sm()
+            .truncate()
+            .child(self.status_text_for_width(viewport_w))
+            .id(ElementId::Name("status-bar".into()))
     }
 }
 
@@ -180,9 +144,11 @@ impl ShellView {
     /// PTY) use the full window width instead of squeezing beside 264px.
     pub(crate) fn fit_pty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = window.viewport_size();
-        let avail_w =
-            f32::from(viewport.width) - effective_sidebar_width(f32::from(viewport.width));
-        let avail_h = f32::from(viewport.height) - STATUS_HEIGHT;
+        let viewport_w = f32::from(viewport.width);
+        let avail_w = viewport_w - effective_sidebar_width(viewport_w);
+        // Issue #32: wide mode has no header and no status bar, so the
+        // terminal owns the full height; narrow mode keeps the slim bar.
+        let avail_h = f32::from(viewport.height) - super::layout::chrome_height_for(viewport_w);
         // Metrics come from the font cache: only the grid math below
         // re-runs per frame, never the font-system measure.
         let (char_w, line_h) = self.cached_mono_metrics(cx);
@@ -341,8 +307,7 @@ pub fn window_options() -> WindowOptions {
 #[cfg(test)]
 mod tests {
     use super::super::layout::{
-        FALLBACK_CHAR_W, FALLBACK_LINE_H, HEADER_HEIGHT, LEFT_WIDTH, MIN_COLS, MIN_ROWS,
-        STATUS_HEIGHT,
+        FALLBACK_CHAR_W, FALLBACK_LINE_H, LEFT_WIDTH, MIN_COLS, MIN_ROWS, STATUS_HEIGHT,
     };
     use super::super::runs::test_shell;
     use super::*;
@@ -350,6 +315,8 @@ mod tests {
     #[test]
     fn window_min_size_matches_pty_floors() {
         // Issue #6: the OS minimum must fit the PTY floors, not clip them.
+        // Issue #32: no header anymore — only the narrow-mode status bar
+        // sits below the grid at the minimum size.
         let min = super::window_options()
             .window_min_size
             .expect("main window sets a minimum size");
@@ -359,7 +326,7 @@ mod tests {
         // MIN_COLS x MIN_ROWS grid at fallback metrics.
         let (cols, rows) = super::super::layout::pty_grid_for(
             f32::from(min.width) - LEFT_WIDTH,
-            f32::from(min.height) - STATUS_HEIGHT - HEADER_HEIGHT,
+            f32::from(min.height) - STATUS_HEIGHT,
             FALLBACK_CHAR_W,
             FALLBACK_LINE_H,
         );
