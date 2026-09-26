@@ -68,6 +68,11 @@ pub struct ShellView {
     ptys: HashMap<String, EmbeddedPty>,
     last_output: HashMap<String, Instant>,
     pending_inputs: HashMap<String, String>,
+    /// Per-run `(screen hash, attention verdict)`: when the visible grid is
+    /// unchanged between ticks, `refresh` reuses the cached verdict and
+    /// skips the attention scan + PR extraction, re-applying only
+    /// recency/exit status. Same key space as `ptys`.
+    screen_cache: HashMap<String, (u64, bool)>,
     list_focus: Option<FocusHandle>,
     term_focus: Option<FocusHandle>,
     cols: u16,
@@ -87,6 +92,16 @@ pub struct ShellView {
     selecting: bool,
 }
 
+/// Hash of the visible screen text, gating per-tick text work in
+/// [`ShellView::refresh`]: an unchanged grid reuses the cached attention
+/// verdict and skips the scan + PR extraction.
+fn screen_hash(text: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
 impl ShellView {
     pub fn new() -> Self {
         Self {
@@ -94,6 +109,7 @@ impl ShellView {
             ptys: HashMap::new(),
             last_output: HashMap::new(),
             pending_inputs: HashMap::new(),
+            screen_cache: HashMap::new(),
             list_focus: None,
             term_focus: None,
             cols: 100,
@@ -171,11 +187,12 @@ impl ShellView {
     }
 
     /// Restart the selected ended run: drop the dead PTY (reaping the
-    /// child), forget its output recency and pending input, and queue a
-    /// fresh spawn on the same run id. Title and accumulated links are
-    /// kept — restart resumes the run's story, it does not archive it.
-    /// No-op unless the active child exited (live runs are never killed
-    /// by accident; per-run close is a separate explicit action).
+    /// child), forget its output recency, pending input, and cached screen
+    /// verdict, and queue a fresh spawn on the same run id. Title and
+    /// accumulated links are kept — restart resumes the run's story, it
+    /// does not archive it. No-op unless the active child exited (live
+    /// runs are never killed by accident; per-run close is a separate
+    /// explicit action).
     fn restart_run(&mut self) {
         if !self.can_restart() {
             return;
@@ -184,6 +201,7 @@ impl ShellView {
             self.ptys.remove(&id);
             self.last_output.remove(&id);
             self.pending_inputs.remove(&id);
+            self.screen_cache.remove(&id);
             self.clear_selection();
             self.app.retry_spawn();
         }
@@ -212,15 +230,32 @@ impl ShellView {
             let pty = &self.ptys[&id];
             let view = pty.view();
             let text = view.screen.contents();
+            // Dirty-gated text work: an unchanged grid reuses the cached
+            // attention verdict and skips the scan + extraction. Recency
+            // and exit still re-apply every tick below, so Working→Idle
+            // transitions never go stale on a frozen screen.
+            let hash = screen_hash(&text);
+            let cached = self.screen_cache.get(&id).copied();
+            let (attention, fresh): (bool, Vec<String>) = match cached {
+                Some((h, a)) if h == hash => (a, Vec::new()),
+                _ => {
+                    let a = crate::app::needs_attention(&text);
+                    // Accumulate PR links in first-seen order: the visible
+                    // screen is only a viewport (vt100 `contents()` shows
+                    // the live grid, not full scrollback), so replacing
+                    // would drop links that scrolled off. Merging keeps
+                    // every PR URL ever seen per run.
+                    let links = extract_pr_links(&text);
+                    (a, links)
+                }
+            };
+            if cached != Some((hash, attention)) {
+                self.screen_cache.insert(id.clone(), (hash, attention));
+            }
             // One classifier for live and historic runs alike (owned by
             // `app`): attention markers win, then exit, then recency.
             let age = self.last_output.get(&id).map(|at| now.duration_since(*at));
-            let status = crate::app::classify(&text, age, view.exited);
-            // Accumulate PR links in first-seen order: the visible screen
-            // is only a viewport (vt100 `contents()` shows the live grid,
-            // not full scrollback), so replacing would drop links that
-            // scrolled off. Merging keeps every PR URL ever seen per run.
-            let fresh = extract_pr_links(&text);
+            let status = crate::app::classify_with_attention(attention, age, view.exited);
             if let Some(s) = self.app.sessions.iter_mut().find(|s| s.id == id) {
                 s.status = status;
                 for link in fresh {
@@ -1316,6 +1351,122 @@ mod headless_tests {
                 "https://github.com/acme/app/pull/43".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn screen_hash_is_stable_and_sensitive() {
+        assert_eq!(super::screen_hash("abc"), super::screen_hash("abc"));
+        assert_eq!(super::screen_hash(""), super::screen_hash(""));
+        assert_ne!(
+            super::screen_hash("see https://github.com/acme/app/pull/42"),
+            super::screen_hash("see https://github.com/acme/app/pull/43")
+        );
+    }
+
+    #[test]
+    fn refresh_caches_verdict_while_screen_frozen() {
+        // Pins the issue-#12 hash gate: once the grid stops changing,
+        // repeated ticks keep one cache entry, keep status stable, and
+        // keep every accumulated link — without re-scanning text.
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        let pty = EmbeddedPty::spawn(
+            "printf",
+            &["see https://github.com/acme/app/pull/42\\n".to_string()],
+            80,
+            24,
+        )
+        .unwrap();
+        view.ptys.insert(id.clone(), pty);
+        view.last_output.insert(id.clone(), Instant::now());
+        for _ in 0..100 {
+            view.refresh();
+            let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+            if !s.pr_links.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let cached = view.screen_cache.get(&id).copied();
+        assert!(cached.is_some(), "first sight must populate the cache");
+        let status_before = view
+            .app
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .status;
+        for _ in 0..5 {
+            view.refresh();
+        }
+        // Frozen screen: same single entry, same status, same links.
+        assert_eq!(view.screen_cache.get(&id).copied(), cached);
+        assert_eq!(view.screen_cache.len(), 1);
+        let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(s.status, status_before);
+        assert_eq!(s.pr_links, vec!["https://github.com/acme/app/pull/42"]);
+    }
+
+    #[test]
+    fn refresh_rescans_when_screen_changes() {
+        // A changed grid invalidates the cache: a fresh attention marker
+        // flips status and a fresh PR link merges with the old one.
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        let pty = EmbeddedPty::spawn("printf", &["plain output\\n".to_string()], 80, 24).unwrap();
+        view.ptys.insert(id.clone(), pty);
+        view.last_output.insert(id.clone(), Instant::now());
+        for _ in 0..50 {
+            view.refresh();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(view.screen_cache.contains_key(&id));
+        let pty2 = EmbeddedPty::spawn(
+            "printf",
+            &["Waiting for your approval https://github.com/acme/app/pull/7\\n".to_string()],
+            80,
+            24,
+        )
+        .unwrap();
+        view.ptys.insert(id.clone(), pty2);
+        let mut attention = false;
+        for _ in 0..100 {
+            view.refresh();
+            let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+            if s.status == crate::app::Status::Attention
+                && s.pr_links == vec!["https://github.com/acme/app/pull/7"]
+            {
+                attention = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(attention, "changed screen must rescan to Attention + link");
+    }
+
+    #[test]
+    fn restart_run_drops_cached_screen_verdict() {
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        let dead = EmbeddedPty::spawn("true", &[], 80, 24).unwrap();
+        view.ptys.insert(id.clone(), dead);
+        for _ in 0..100 {
+            view.refresh();
+            if view.can_restart() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(view.can_restart());
+        assert!(view.screen_cache.contains_key(&id));
+        view.restart_run();
+        assert!(!view.screen_cache.contains_key(&id));
     }
 
     #[test]

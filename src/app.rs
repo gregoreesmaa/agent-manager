@@ -1,5 +1,8 @@
 //! Agent models, conversation status, and sort order.
 
+use std::sync::LazyLock;
+
+use regex::RegexSet;
 use serde::{Deserialize, Serialize};
 
 use crate::embedded::SpawnKind;
@@ -74,9 +77,23 @@ pub const ATTENTION_MARKERS: &[&str] = &[
     "press enter to confirm",
 ];
 
+/// Precompiled case-insensitive marker set: `needs_attention` runs per run
+/// per tick over up to 400x200 screens, so the old `text.to_lowercase()`
+/// turned every idle tick into a full-screen allocation. The set matches
+/// substrings, like the `contains` it replaces.
+static ATTENTION_SET: LazyLock<RegexSet> = LazyLock::new(|| {
+    RegexSet::new(
+        ATTENTION_MARKERS
+            .iter()
+            .map(|m| format!("(?i){}", regex::escape(m))),
+    )
+    .expect("static attention patterns")
+});
+
+/// True when the screen text contains an attention marker
+/// (case-insensitive). Allocation-free per call: the set is precompiled.
 pub fn needs_attention(text: &str) -> bool {
-    let lowered = text.to_lowercase();
-    ATTENTION_MARKERS.iter().any(|m| lowered.contains(m))
+    ATTENTION_SET.is_match(text)
 }
 
 /// A run counts as actively working while it produced output recently.
@@ -93,7 +110,20 @@ pub fn classify(
     output_age: Option<std::time::Duration>,
     exited: bool,
 ) -> Status {
-    if needs_attention(screen_text) {
+    classify_with_attention(needs_attention(screen_text), output_age, exited)
+}
+
+/// [`classify`] with a precomputed attention verdict, so callers that cache
+/// per-screen results (the shell skips rescans while the screen hash is
+/// unchanged) can re-apply recency/exit status without re-scanning text.
+/// Attention still wins over everything; an exited run without markers is
+/// idle; otherwise recency inside the working window decides.
+pub fn classify_with_attention(
+    attention: bool,
+    output_age: Option<std::time::Duration>,
+    exited: bool,
+) -> Status {
+    if attention {
         return Status::Attention;
     }
     if exited {
@@ -489,6 +519,67 @@ mod tests {
         assert!(needs_attention("Tool failed with \"error\""));
         assert!(!needs_attention("Muse Code 1.4.0"));
         assert!(!needs_attention(""));
+    }
+
+    #[test]
+    fn attention_scan_is_case_insensitive_without_lowercasing() {
+        // Pins the precompiled marker set (issue #12): every marker must
+        // hit in upper/mixed case, exactly as the old `to_lowercase`
+        // scan did, and non-markers must stay quiet.
+        for marker in ATTENTION_MARKERS {
+            assert!(
+                needs_attention(&marker.to_uppercase()),
+                "uppercased marker missed: {marker}"
+            );
+        }
+        assert!(needs_attention("APPROVAL REQUIRED TO CONTINUE"));
+        assert!(needs_attention("Allow Always? (Y/N)"));
+        assert!(needs_attention("WOULD YOU LIKE me to proceed?"));
+        assert!(needs_attention("Press Enter To Confirm deletion"));
+        assert!(needs_attention("exit code NEEDS_INPUT flag set"));
+        assert!(!needs_attention("all systems nominal"));
+        // "approved" DOES match (it contains the "approve" marker);
+        // an unquoted error word must not (the marker is `"error"`).
+        assert!(needs_attention("approved"));
+        assert!(!needs_attention("error-free run"));
+    }
+
+    #[test]
+    fn precomputed_attention_verdict_matches_text_scan() {
+        use std::time::Duration;
+        // `classify_with_attention` must agree with `classify` for both
+        // verdicts, so the shell's hash-gated cache cannot skew status.
+        for text in [
+            "Waiting for your approval",
+            "allow once? (y/n)",
+            "done",
+            "working…",
+            "",
+        ] {
+            for age in [
+                None,
+                Some(Duration::from_secs(0)),
+                Some(Duration::from_secs(3600)),
+            ] {
+                for exited in [false, true] {
+                    assert_eq!(
+                        classify_with_attention(needs_attention(text), age, exited),
+                        classify(text, age, exited),
+                        "verdict/text mismatch for {text:?} {age:?} {exited}"
+                    );
+                }
+            }
+        }
+        // Spot-check the precedence the cache relies on.
+        assert_eq!(classify_with_attention(true, None, true), Status::Attention);
+        assert_eq!(
+            classify_with_attention(false, Some(Duration::from_secs(0)), true),
+            Status::Idle
+        );
+        assert_eq!(
+            classify_with_attention(false, Some(Duration::from_secs(5)), false),
+            Status::Working
+        );
     }
 
     #[test]
