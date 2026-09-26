@@ -22,7 +22,7 @@ cargo build
 ./target/debug/agent-manager
 ```
 
-`cargo test` runs the suite (65 tests); `cargo fmt --check` must stay clean.
+`cargo test` runs the suite (73 tests); `cargo fmt --check` must stay clean.
 
 ## Using it
 
@@ -36,7 +36,10 @@ cargo build
   switch. Runs group by **Needs input**, **Idle**, **Active** with
   per-group counts. Every GitHub PR URL ever seen in a run appears under
   its title (accumulated first-seen order, so links that scrolled off stay
-  visible); the panel scrolls, and clicking a link copies it.
+  visible); the panel scrolls, and clicking a link copies it. Keyboard:
+  `PgUp`/`PgDn` page the list, `o` moves link focus across the selected
+  run's links, and `Enter` copies the focused link (`Enter`/`i` with no
+  link focused types into `muse`).
 - Click the terminal (or `Tab`/`i`) to type into `muse`. The terminal title
   is bright while it owns the keyboard; `muse` captures keys **only** in
   this focus. `Tab`/`Esc` returns to the list, `q` quits.

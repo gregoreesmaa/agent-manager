@@ -134,7 +134,8 @@ fn now_secs() -> i64 {
 /// is forwarded to `muse`; app navigation is suspended until focus returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
-    /// List navigation: j/k select, PgUp/PgDn scroll, n new session.
+    /// List navigation: j/k move, PgUp/PgDn page, o focuses a parsed
+    /// link, Enter copies the focused link, n starts a new session.
     #[default]
     Nav,
     /// Typing: keys go to the embedded `muse` PTY.
@@ -157,6 +158,10 @@ pub struct App {
 
 /// How long a transient status-bar message stays visible.
 const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Rows moved by one PgUp/PgDn step. List state carries no viewport
+/// height, so paging is a fixed step, clamped at the ends.
+pub const PAGE_STEP: usize = 5;
 
 impl App {
     pub fn new(mut sessions: Vec<ChatSession>) -> Self {
@@ -264,6 +269,22 @@ impl App {
             .unwrap_or(self.sessions.len() - 1);
     }
 
+    /// Page down: move selection toward the tail, clamped at the last run.
+    pub fn select_page_next(&mut self) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + PAGE_STEP).min(self.sessions.len() - 1);
+    }
+
+    /// Page up: move selection toward the head, clamped at the first run.
+    pub fn select_page_prev(&mut self) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        self.selected = self.selected.saturating_sub(PAGE_STEP);
+    }
+
     /// Create a new live-run entry, queue a brand-new `muse` session for it,
     /// and hand it the keyboard. Switching runs never kills the others: the
     /// main loop keeps one live PTY per entry. The entry starts with a
@@ -367,6 +388,40 @@ mod tests {
         assert_eq!(app.selected, 1);
         app.select_next();
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn page_selection_moves_by_page_step_and_clamps_at_the_ends() {
+        let sessions: Vec<ChatSession> = (0..8)
+            .map(|n| sess(&format!("r{n}"), Status::Idle, n))
+            .collect();
+        let mut app = App::new(sessions);
+        // Sorted newest-first; pin to the head for deterministic steps.
+        app.selected = 0;
+        app.select_page_next();
+        assert_eq!(app.selected, PAGE_STEP);
+        app.select_page_next();
+        assert_eq!(app.selected, 7);
+        app.select_page_next();
+        assert_eq!(app.selected, 7);
+        app.select_page_prev();
+        assert_eq!(app.selected, 7 - PAGE_STEP);
+        app.selected = 1;
+        app.select_page_prev();
+        assert_eq!(app.selected, 0);
+        // Shorter than one step: a single page lands on the last run.
+        let short: Vec<ChatSession> = (0..3)
+            .map(|n| sess(&format!("s{n}"), Status::Idle, n))
+            .collect();
+        let mut short_app = App::new(short);
+        short_app.selected = 0;
+        short_app.select_page_next();
+        assert_eq!(short_app.selected, 2);
+        // Empty list: paging is inert.
+        let mut empty = App::new(vec![]);
+        empty.select_page_next();
+        empty.select_page_prev();
+        assert_eq!(empty.selected, 0);
     }
 
     #[test]
