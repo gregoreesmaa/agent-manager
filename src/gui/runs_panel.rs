@@ -15,7 +15,7 @@ use gpui_component::{
     Sizable as _,
 };
 
-use crate::app::{section_title, status_sections, Status};
+use crate::app::{section_title, status_sections};
 
 use super::layout::LEFT_WIDTH;
 use super::shell::ShellView;
@@ -46,27 +46,21 @@ impl ShellView {
             return sidebar
                 .footer(
                     div()
-                        .text_color(rgb(0x888888))
+                        .text_color(rgb(super::theme::SECONDARY_FG))
                         .text_xs()
                         .child("No sessions yet. Press ? for keys.".to_string()),
                 )
                 .into_any_element();
         }
         for (status, indices) in status_sections(&self.app.sessions) {
-            let marker = match status {
-                Status::Attention => "!",
-                Status::Idle => "·",
-                Status::Working => ">",
-            };
+            let marker = super::theme::group_marker(status);
             let items: Vec<SidebarMenuItem> = indices
                 .into_iter()
                 .map(|i| {
                     let s = &self.app.sessions[i];
-                    let row_marker = match s.status {
-                        Status::Attention => "!",
-                        Status::Idle => " ",
-                        Status::Working => ">",
-                    };
+                    // Non-blank idle marker: rows stay distinguishable
+                    // with color removed (see theme::row_marker).
+                    let row_marker = super::theme::row_marker(s.status);
                     let row_id = s.id.clone();
                     // Parsed links as child items: click copies the full
                     // URL. Display-capped: the first MAX_VISIBLE_LINKS

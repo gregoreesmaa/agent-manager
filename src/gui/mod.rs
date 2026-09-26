@@ -18,4 +18,5 @@ pub mod shell;
 pub mod spawn;
 pub mod terminal;
 pub mod terminal_pane;
+pub mod theme;
 pub mod view;

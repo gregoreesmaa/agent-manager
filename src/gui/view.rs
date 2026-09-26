@@ -65,7 +65,11 @@ impl Render for ShellView {
         // Focus indicator: the pane that owns the keyboard gets the bright
         // title; the other dims. `muse` captures keys iff focus is Terminal.
         let typing = self.app.is_terminal_focused() && state != "idle" && state != "ended";
-        let term_title_color = if typing { rgb(0xffd866) } else { rgb(0x888888) };
+        let term_title_color = if typing {
+            rgb(0xffd866)
+        } else {
+            rgb(super::theme::SECONDARY_FG)
+        };
 
         let mut mid_row = div().flex().flex_row().flex_1();
         if show_sidebar {
@@ -158,7 +162,7 @@ impl Render for ShellView {
                     .h(px(STATUS_HEIGHT))
                     .px_2()
                     .bg(rgb(0x1e1e2e))
-                    .text_color(rgb(0x888888))
+                    .text_color(rgb(super::theme::SECONDARY_FG))
                     .text_sm()
                     .truncate()
                     .child(self.status_text_for_width(viewport_w))
@@ -224,7 +228,7 @@ impl ShellView {
             .text_sm()
             .child(
                 div()
-                    .text_color(rgb(0x888888))
+                    .text_color(rgb(super::theme::SECONDARY_FG))
                     .child("Keys — press ? to close".to_string()),
             );
         for (key, what) in super::nav::help_entries() {
@@ -262,7 +266,7 @@ impl ShellView {
         let color = if is_error {
             rgb(0xff9999)
         } else {
-            rgb(0x888888)
+            rgb(super::theme::SECONDARY_FG)
         };
         div().flex_1().h_full().p_4().child(
             div()
