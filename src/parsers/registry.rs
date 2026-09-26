@@ -10,14 +10,11 @@ pub struct RegistryParser {
 
 impl Default for RegistryParser {
     fn default() -> Self {
-        Self {
-            strategies: vec![Box::new(FirstLineTitle)],
-        }
+        Self::with_strategies(vec![Box::new(FirstLineTitle)])
     }
 }
 
 impl RegistryParser {
-    #[allow(dead_code)]
     pub fn with_strategies(strategies: Vec<Box<dyn Parser>>) -> Self {
         Self { strategies }
     }
@@ -80,6 +77,26 @@ mod tests {
             RegistryParser::default().parse("Fix login\nsee https://github.com/acme/app/pull/9");
         assert_eq!(p.title.as_deref(), Some("Fix login"));
         assert_eq!(p.pr_links, vec!["https://github.com/acme/app/pull/9"]);
+    }
+
+    #[test]
+    fn with_strategies_fans_out_across_strategies() {
+        // The documented contributor seam: extra strategies merge their
+        // title/project/links with the shared extraction.
+        struct ProjectOnly;
+        impl Parser for ProjectOnly {
+            fn parse(&self, _text: &str) -> Parsed {
+                Parsed {
+                    project: Some("myproj".to_string()),
+                    ..Default::default()
+                }
+            }
+        }
+        let p =
+            RegistryParser::with_strategies(vec![Box::new(FirstLineTitle), Box::new(ProjectOnly)])
+                .parse("Fix login");
+        assert_eq!(p.title.as_deref(), Some("Fix login"));
+        assert_eq!(p.project.as_deref(), Some("myproj"));
     }
 
     #[test]

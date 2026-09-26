@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::{ChatSession, Status};
 use crate::parsers::Parser;
-use crate::providers::traits::{Provider, ProviderError};
+use crate::providers::traits::Provider;
 use crate::transcript::{
     derive_title, extract_project, extract_session_name, parse_transcript, MAX_TAIL_BYTES,
 };
@@ -86,14 +86,10 @@ impl MuseCliProvider {
 }
 
 impl Provider for MuseCliProvider {
-    fn name(&self) -> &'static str {
-        "muse-cli"
-    }
-
-    fn discover_sessions(&self) -> Result<Vec<ChatSession>, ProviderError> {
+    fn discover_sessions(&self) -> Vec<ChatSession> {
         let Ok(date_dirs) = collect_date_dirs(&self.store_root) else {
             // Unreachable store: degraded empty list (see module docs).
-            return Ok(Vec::new());
+            return Vec::new();
         };
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -152,7 +148,7 @@ impl Provider for MuseCliProvider {
                 });
             }
         }
-        Ok(out)
+        out
     }
 }
 
@@ -218,7 +214,7 @@ mod tests {
         )
         .unwrap();
         let p = MuseCliProvider::new(root.clone(), Box::new(RegistryParser::default()));
-        let sessions = p.discover_sessions().unwrap();
+        let sessions = p.discover_sessions();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].status, crate::app::Status::Attention);
         std::fs::remove_dir_all(&root).ok();
@@ -230,7 +226,7 @@ mod tests {
             PathBuf::from("/nonexistent-store-xyz"),
             Box::new(RegistryParser::default()),
         );
-        let sessions = p.discover_sessions().expect("must degrade to empty");
+        let sessions = p.discover_sessions();
         assert!(sessions.is_empty());
     }
 
@@ -254,7 +250,7 @@ mod tests {
         // now => Working or Attention; accept either non-Idle... instead just
         // assert discovery finds it.
         let p = MuseCliProvider::new(root.clone(), Box::new(RegistryParser::default()));
-        let sessions = p.discover_sessions().unwrap();
+        let sessions = p.discover_sessions();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "test-session-1");
         assert_eq!(
@@ -301,7 +297,7 @@ mod tests {
         ];
         std::fs::write(&log, lines.join("\n")).unwrap();
         let p = MuseCliProvider::new(root.clone(), Box::new(RegistryParser::default()));
-        let sessions = p.discover_sessions().unwrap();
+        let sessions = p.discover_sessions();
         assert_eq!(sessions.len(), 1);
         let s = &sessions[0];
         assert_eq!(s.project, "myproj");

@@ -82,19 +82,15 @@ Session sources implement one trait (`src/providers/traits.rs`):
 
 ```rust
 use crate::app::ChatSession;
-use crate::providers::traits::{Provider, ProviderError};
+use crate::providers::traits::Provider;
 
 pub struct MyProvider;
 
 impl Provider for MyProvider {
-    fn name(&self) -> &'static str {
-        "my-source"
-    }
-
-    fn discover_sessions(&self) -> Result<Vec<ChatSession>, ProviderError> {
-        // Unreachable store => Ok(vec![]) (degraded empty list), never Err
-        // for a missing directory: the app must still start.
-        Ok(Vec::new())
+    fn discover_sessions(&self) -> Vec<ChatSession> {
+        // Unreachable store => vec![] (degraded empty list): discovery
+        // never fails for a missing directory so the app still starts.
+        Vec::new()
     }
 }
 ```

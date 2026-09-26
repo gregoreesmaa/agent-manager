@@ -33,8 +33,7 @@ fn main() {
         MuseCliProvider::default_store_root(),
         Box::new(parsers::registry::RegistryParser::default()),
     )
-    .discover_sessions()
-    .unwrap_or_default();
+    .discover_sessions();
     // Issues #33/#34: user config (per-agent flags, theme choice); a
     // missing file means plain `muse` + follow-system theme.
     let config = config::Config::load();

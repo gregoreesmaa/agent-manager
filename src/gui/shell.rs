@@ -92,7 +92,9 @@ pub struct ShellView {
 }
 
 impl ShellView {
-    #[allow(dead_code)]
+    /// Test-only shorthand: production starts from provider-seeded sessions
+    /// via [`Self::new_with_sessions`].
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::new_with_sessions(vec![])
     }
