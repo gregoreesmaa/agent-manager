@@ -8,6 +8,7 @@
 //! panel), [`terminal_pane`] (terminal render, selection, clipboard).
 
 pub mod keys;
+pub mod layout;
 pub mod lifecycle;
 pub mod nav;
 pub mod pump;
@@ -17,3 +18,4 @@ pub mod shell;
 pub mod spawn;
 pub mod terminal;
 pub mod terminal_pane;
+pub mod view;

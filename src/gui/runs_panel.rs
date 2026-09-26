@@ -17,7 +17,8 @@ use gpui_component::{
 
 use crate::app::{section_title, status_sections, Status};
 
-use super::shell::{ShellView, LEFT_WIDTH};
+use super::layout::LEFT_WIDTH;
+use super::shell::ShellView;
 
 impl ShellView {
     /// Sessions panel as library chrome: a [`Sidebar`] with one

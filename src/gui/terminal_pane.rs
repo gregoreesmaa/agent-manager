@@ -7,16 +7,13 @@
 
 use gpui::{
     div, font, px, rgb, App as GpuiApp, ClipboardItem, Context, ElementId, ParentElement, Pixels,
-    Point, Styled, StyledText, TextRun, UnderlineStyle, Window,
+    Point, Styled, StyledText, TextRun, UnderlineStyle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 
 use crate::embedded::LiveView;
 
-use super::shell::{
-    effective_sidebar_width, pty_grid_for, ShellView, CURSOR_BG, DEFAULT_FG, SELECTION_BG,
-    STATUS_HEIGHT, TERM_FONT_SIZE,
-};
+use super::shell::{ShellView, CURSOR_BG, DEFAULT_FG, SELECTION_BG, TERM_FONT_SIZE};
 use super::terminal::{
     point_to_cell, screen_rows, selection_rows, selection_text, to_hsla, CellPos,
 };
@@ -106,97 +103,6 @@ impl ShellView {
         } else {
             self.clear_selection();
         }
-    }
-
-    /// Copy the mouse selection when one exists, else the whole active
-    /// screen, to the system clipboard.
-    pub(crate) fn copy_screen(&mut self, cx: &mut GpuiApp) {
-        if let Some(text) = self.selected_text() {
-            let chars = text.chars().count();
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-            self.app
-                .set_status(format!("copied selection ({chars} chars)"));
-            return;
-        }
-        if let Some(view) = self.active_view() {
-            let text = view.screen.contents();
-            let lines = text.lines().count();
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-            self.app
-                .set_status(format!("yanked {lines} lines to clipboard"));
-        }
-    }
-
-    /// Paste the system clipboard into the active PTY as typed bytes.
-    pub(crate) fn paste_clipboard(&mut self, cx: &mut GpuiApp) {
-        let Some(item) = cx.read_from_clipboard() else {
-            self.app.set_status("clipboard is empty");
-            return;
-        };
-        let Some(text) = item.text() else {
-            self.app.set_status("clipboard has no text");
-            return;
-        };
-        if text.is_empty() {
-            self.app.set_status("clipboard is empty");
-            return;
-        }
-        let Some(id) = self.active_id() else {
-            return;
-        };
-        if let Some(run) = self.runs.get_mut(&id) {
-            if let Err(e) = run.pty.write_input(text.as_bytes()) {
-                self.app.set_error(e.to_string());
-            } else {
-                let chars = text.chars().count();
-                self.app.set_status(format!("pasted {chars} chars"));
-            }
-        }
-    }
-
-    /// First-run orientation copy: icon + message + error flag so the
-    /// empty state (`No session yet`) and the failure state (`spawn
-    /// failed`) differ by shape and color, not text alone.
-    pub(crate) fn empty_pane_copy(&self) -> (&'static str, String, bool) {
-        match self.app.error_text() {
-            Some(e) => ("✕", format!("spawn failed: {e}"), true),
-            None => (
-                "○",
-                "No session yet. Press n to start a new muse.".to_string(),
-                false,
-            ),
-        }
-    }
-
-    /// Empty terminal pane: icon-split status line plus a clickable
-    /// `+ New` CTA (keyboard parity: `n` still works) so first run does
-    /// not depend on discovering the key hint.
-    pub(crate) fn render_empty_pane(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let (icon, msg, is_error) = self.empty_pane_copy();
-        let color = if is_error {
-            rgb(0xff9999)
-        } else {
-            rgb(0x888888)
-        };
-        div().flex_1().h_full().p_4().child(
-            div()
-                .flex()
-                .flex_col()
-                .child(div().text_color(color).child(format!("{icon} {msg}")))
-                .child(
-                    div().pt_2().child(
-                        Button::new(ElementId::Name("empty-new-run-btn".into()))
-                            .label("+ New (n)")
-                            .primary()
-                            .small()
-                            .on_click(cx.listener(|this, _ev, window, _cx| {
-                                this.app.start_new_session();
-                                this.clear_selection();
-                                this.focus_term(window);
-                            })),
-                    ),
-                ),
-        )
     }
 
     pub(crate) fn render_terminal(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -300,29 +206,6 @@ impl ShellView {
                 })),
         )
     }
-
-    /// Resize the active PTY to the central pane, measured in monospace cells.
-    /// Narrow viewports (<700px) collapse the sidebar, so the pane (and the
-    /// PTY) use the full window width instead of squeezing beside 264px.
-    pub(crate) fn fit_pty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let viewport = window.viewport_size();
-        let avail_w =
-            f32::from(viewport.width) - effective_sidebar_width(f32::from(viewport.width));
-        let avail_h = f32::from(viewport.height) - STATUS_HEIGHT;
-        let (char_w, line_h) = mono_metrics(cx);
-        self.char_w = char_w;
-        self.line_h = line_h;
-        let (cols, rows) = pty_grid_for(avail_w, avail_h, char_w, line_h);
-        if (cols, rows) != (self.cols, self.rows) {
-            self.cols = cols;
-            self.rows = rows;
-            if let Some(id) = self.active_id() {
-                if let Some(run) = self.runs.get_mut(&id) {
-                    run.pty.resize(cols, rows);
-                }
-            }
-        }
-    }
 }
 
 /// Flatten screen rows into one string plus gpui text runs. Every byte of
@@ -385,23 +268,62 @@ pub(crate) fn layout_text(rows: &[Vec<super::terminal::TermSpan>]) -> (String, V
     (full, runs)
 }
 
-/// Monospace cell metrics for PTY sizing, with sane fallbacks.
-pub(crate) fn mono_metrics(cx: &mut Context<ShellView>) -> (f32, f32) {
-    let size = px(TERM_FONT_SIZE);
-    let system = cx.text_system();
-    let fid = system.resolve_font(&font("Menlo"));
-    let char_w = system
-        .advance(fid, size, ' ')
-        .map(|s| f32::from(s.width))
-        .unwrap_or(8.0);
-    let line_h = f32::from(system.ascent(fid, size)) + f32::from(system.descent(fid, size));
-    let line_h = if line_h > 0.0 { line_h } else { 18.0 };
-    (char_w.max(4.0), line_h.max(8.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::runs::{insert_test_pty, test_shell};
+    use super::super::shell::ShellView;
+    use super::super::terminal::{screen_rows, Rgb8};
+    use super::*;
+
+    #[test]
+    fn layout_text_partition_satisfies_with_runs() {
+        // Regression test for the "new session" crash: gpui validates that
+        // run lengths partition the text byte-exactly and panics otherwise.
+        // This calls the real constructor, so it panics here first.
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"\x1b[2J\x1b[1;1Htop \x1b[31mred\x1b[0m \xc3\xa9\xe2\x9d\xaf");
+        let rows = screen_rows(parser.screen(), Some((0, 0)), Rgb8(200, 200, 200));
+        let (full, runs) = layout_text(&rows);
+        let total: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, full.len(), "runs must cover every byte");
+        assert!(runs.iter().all(|r| r.len > 0), "no empty runs");
+        let _ = gpui::StyledText::new(full).with_runs(runs);
+        // Empty screen still partitions (single covered space per row).
+        let mut empty = vt100::Parser::new(24, 80, 0);
+        empty.process(b"");
+        let rows = screen_rows(empty.screen(), None, Rgb8(0, 0, 0));
+        let (full, runs) = layout_text(&rows);
+        let total: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, full.len());
+        let _ = gpui::StyledText::new(full).with_runs(runs);
+    }
+
+    #[test]
+    fn render_terminal_with_live_pty_does_not_panic() {
+        // End-to-end of the "new session" crash path: a real child writes
+        // colored output, and render_terminal builds the gpui element.
+        // Pre-fix this panicked inside StyledText::with_runs.
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        let pty = crate::embedded::EmbeddedPty::spawn(
+            "printf",
+            &["\\x1b[2J\\x1b[1;1Hhi \\x1b[31mred\\n\"".to_string()],
+            80,
+            24,
+        )
+        .unwrap();
+        view.runs
+            .insert(id.clone(), super::super::runs::Run::new(pty));
+        view.runs.get_mut(&id).unwrap().last_output = std::time::Instant::now();
+        for _ in 0..50 {
+            view.refresh();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let live = view.active_view().expect("live pty has a view");
+        let _ = view.render_live_terminal(live);
+    }
 
     #[test]
     fn selection_pair_normalizes_and_rejects_empty() {
@@ -435,30 +357,5 @@ mod tests {
         assert_eq!(view.selected_text().as_deref(), Some("hello"));
         view.clear_selection();
         assert!(view.selected_text().is_none());
-    }
-
-    #[test]
-    fn empty_pane_splits_empty_vs_failed_by_icon() {
-        let mut view = test_shell();
-        // No sessions, no error: the calm empty state.
-        let (icon, msg, is_error) = view.empty_pane_copy();
-        assert_eq!(icon, "○");
-        assert!(msg.starts_with("No session yet"));
-        assert!(!is_error);
-        // A recorded spawn failure flips icon, copy, and error flag so the
-        // states differ by shape, not text alone.
-        view.app.start_new_session();
-        let _ = view.app.take_pending_spawn();
-        view.app.set_error("missing binary");
-        let (icon, msg, is_error) = view.empty_pane_copy();
-        assert_eq!(icon, "✕");
-        assert!(msg.starts_with("spawn failed:"));
-        assert!(is_error);
-        // Dismissal restores the empty state.
-        view.app.clear_error();
-        let (icon, msg, is_error) = view.empty_pane_copy();
-        assert_eq!(icon, "○");
-        assert!(msg.starts_with("No session yet"));
-        assert!(!is_error);
     }
 }

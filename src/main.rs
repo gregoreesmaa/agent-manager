@@ -57,7 +57,7 @@ fn main() {
         .detach();
         // Root must be the window's first view: it provides the theme
         // context the sidebar/buttons read, plus dialog/notification layers.
-        cx.open_window(gui::shell::window_options(), |window, cx| {
+        cx.open_window(gui::view::window_options(), |window, cx| {
             cx.new(|cx| Root::new(view.clone(), window, cx))
         })
         .unwrap();
