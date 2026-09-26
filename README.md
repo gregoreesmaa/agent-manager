@@ -52,6 +52,7 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | `i` | type into `muse` | types into `muse` |
 | `Tab` | type into `muse` | back to the list |
 | `y`, `Cmd+C` | copy selection (or whole screen) | copy selection (or whole screen) |
+| `e` | export selected run to markdown (local file) | — (types `e`) |
 | `p`, `Cmd`/`Ctrl+V` | paste clipboard into `muse` | paste clipboard into `muse` |
 | `r` | restart ended run / retry failed spawn | same, on a dead pane |
 | `x` | close (kill) the selected run | — (types `x`) |

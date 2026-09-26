@@ -16,6 +16,7 @@ mod config;
 mod embedded;
 mod gui;
 mod parsers;
+mod persist;
 mod prefs;
 mod providers;
 mod scrollback;
@@ -31,7 +32,7 @@ fn main() {
     // Historic attach: provider-discovered sessions seed the list before
     // any PTY exists (unreachable store degrades to an empty list, never
     // a startup failure). `r` on a seeded entry re-attaches it.
-    let seeded = MuseCliProvider::new(
+    let discovered = MuseCliProvider::new(
         MuseCliProvider::default_store_root(),
         Box::new(parsers::registry::RegistryParser::default()),
     )
@@ -40,6 +41,9 @@ fn main() {
     // missing file means plain `muse` + follow-system theme.
     let config = config::Config::load();
     let startup_theme = config.theme;
+    // Persisted links/transcripts merge under discovery (issue #26):
+    // a missing or corrupt file degrades to discovery alone.
+    let seeded = persist::merge_sessions(discovered, persist::load_sessions());
     Application::new().run(move |cx| {
         // Native chrome components (sidebar, buttons): init once. The
         // theme applies per window below so `system` can follow the OS.
