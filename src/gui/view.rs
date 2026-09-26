@@ -113,7 +113,13 @@ impl Render for ShellView {
                             header
                         })
                         .child(self.render_error_banner(cx))
-                        .child(self.render_terminal(cx))
+                        // In-app help (`?` toggle) replaces the terminal
+                        // pane while open; `?` again (or Close) returns.
+                        .child(if self.show_help {
+                            self.render_help(cx)
+                        } else {
+                            self.render_terminal(cx)
+                        })
                         // Tracked: clicking here must move real keyboard
                         // focus, or typed keys never reach `muse`. Drag
                         // highlights terminal text (copy-on-select);
@@ -204,6 +210,36 @@ pub(crate) fn mono_metrics(cx: &mut Context<ShellView>) -> (f32, f32) {
 }
 
 impl ShellView {
+    /// In-app help panel: the full keymap as text rows plus a Close button,
+    /// dismissed by `?` — the keymap no longer lives only in the README.
+    pub(crate) fn render_help(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .bg(rgb(0x1e1e2e))
+            .text_color(super::terminal::to_hsla(super::shell::DEFAULT_FG))
+            .text_sm()
+            .child(
+                div()
+                    .text_color(rgb(0x888888))
+                    .child("Keys — press ? to close".to_string()),
+            );
+        for (key, what) in super::nav::help_entries() {
+            col = col.child(format!("{key}   {what}"));
+        }
+        col.child(
+            Button::new(ElementId::Name("help-close-btn".into()))
+                .label("Close (?)")
+                .small()
+                .on_click(cx.listener(|this, _ev, _window, _cx| {
+                    this.show_help = false;
+                })),
+        )
+    }
+
     /// First-run orientation copy: icon + message + error flag so the
     /// empty state (`No session yet`) and the failure state (`spawn
     /// failed`) differ by shape and color, not text alone.
@@ -212,7 +248,7 @@ impl ShellView {
             Some(e) => ("✕", format!("spawn failed: {e}"), true),
             None => (
                 "○",
-                "No session yet. Press n to start a new muse.".to_string(),
+                "No session yet. Press n to start a new muse. Press ? for keys.".to_string(),
                 false,
             ),
         }

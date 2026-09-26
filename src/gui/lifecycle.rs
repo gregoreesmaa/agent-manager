@@ -113,7 +113,7 @@ mod tests {
         assert_eq!(view.nav_action("r", false), NavAction::Restart);
         assert_eq!(
             view.status_text(),
-            "run ended · r: restart · n: new · q: quit"
+            "run ended · r: restart · n: new · ?: help · q: quit"
         );
 
         // Restart drops the dead PTY and re-queues on the same id,

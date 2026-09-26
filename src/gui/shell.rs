@@ -51,6 +51,8 @@ pub struct ShellView {
     /// `pr_links`. `None` means no link is focused (Enter focuses the
     /// terminal). Cleared whenever the run selection moves.
     pub(crate) link_cursor: Option<usize>,
+    /// In-app help panel visibility, toggled by `?` in nav focus.
+    pub(crate) show_help: bool,
     pub(crate) list_focus: Option<FocusHandle>,
     pub(crate) term_focus: Option<FocusHandle>,
     pub(crate) cols: u16,
@@ -77,6 +79,7 @@ impl ShellView {
             runs: HashMap::new(),
             quit_armed: false,
             link_cursor: None,
+            show_help: false,
             list_focus: None,
             term_focus: None,
             cols: 100,
@@ -255,23 +258,23 @@ impl ShellView {
             return msg.to_string();
         }
         if self.can_restart() {
-            return "run ended · r: restart · n: new · q: quit".to_string();
+            return "run ended · r: restart · n: new · ?: help · q: quit".to_string();
         }
         let narrow = viewport_w < NARROW_BREAKPOINT;
         if self.app.is_terminal_focused() {
             if narrow {
-                "typing · Tab/Esc: sessions · Cmd+C: copy · Cmd+V: paste".to_string()
+                "typing · Tab/Esc: sessions · Cmd+C: copy · Cmd+V: paste · ?: help".to_string()
             } else {
-                "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
+                "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help"
                     .to_string()
             }
         } else if self.app.sessions.is_empty() {
-            "n: new muse · q: quit".to_string()
+            "n: new muse · ?: help · q: quit".to_string()
         } else if narrow {
-            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · q: quit"
+            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · ?: help · q: quit"
                 .to_string()
         } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · q: quit"
+            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · ?: help · q: quit"
                 .to_string()
         }
     }

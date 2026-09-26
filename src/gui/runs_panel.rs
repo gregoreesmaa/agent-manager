@@ -48,7 +48,7 @@ impl ShellView {
                     div()
                         .text_color(rgb(0x888888))
                         .text_xs()
-                        .child("No sessions yet.".to_string()),
+                        .child("No sessions yet. Press ? for keys.".to_string()),
                 )
                 .into_any_element();
         }

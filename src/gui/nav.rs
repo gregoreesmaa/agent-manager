@@ -29,6 +29,32 @@ pub(crate) enum NavAction {
     None,
 }
 
+/// In-app help entries: every nav key plus terminal-focus and mouse
+/// bindings, so the full keymap no longer lives only in the README.
+pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("n", "new muse session"),
+        ("j / k", "move selection between sessions"),
+        ("↑ / ↓", "move selection between sessions"),
+        ("PgUp / PgDn", "page the session list"),
+        ("o", "cycle link focus across the selected run's links"),
+        ("Enter", "copy the focused link, or type in muse when none"),
+        ("i", "type in muse"),
+        ("Tab", "switch sessions ↔ terminal focus"),
+        ("y", "copy selection (or whole screen)"),
+        ("p", "paste clipboard into muse"),
+        ("r", "restart ended run / retry failed spawn"),
+        ("x", "close (kill) the selected run"),
+        ("d", "dismiss the sticky error"),
+        ("?", "toggle this help"),
+        ("Esc", "back to sessions · quit from sessions"),
+        ("q", "quit (confirms first with live runs)"),
+        ("drag", "select terminal text (copy-on-select)"),
+        ("Cmd+C", "copy selection (or screen)"),
+        ("Cmd/Ctrl+V", "paste clipboard"),
+    ]
+}
+
 impl ShellView {
     /// URL of the keyboard-focused parsed link, if the selected run has
     /// one at [`Self::link_cursor`].
@@ -118,6 +144,12 @@ impl ShellView {
             ("r", false) if self.can_retry() => NavAction::Retry,
             ("x", false) => NavAction::Close,
             ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
+            // `?` toggles the in-app help panel. `/` is an alias for
+            // keyboards where `?` needs shift or is hard to discover.
+            ("?", _) | ("/", false) => {
+                self.show_help = !self.show_help;
+                NavAction::None
+            }
             _ => NavAction::None,
         };
         // Any key other than a quit intent cancels an armed quit.
@@ -192,6 +224,73 @@ mod tests {
         assert_eq!(view.nav_action("p", false), NavAction::Paste);
         assert_eq!(view.nav_action("z", false), NavAction::None);
         assert_eq!(view.nav_action("j", true), NavAction::None);
+    }
+
+    #[test]
+    fn help_toggle_and_keymap_coverage() {
+        // Issue #7: `?` (and `/` alias) toggles help in nav focus; the
+        // panel documents every nav key plus terminal/mouse bindings, and
+        // every status hint advertises `?`.
+        let mut view = test_shell();
+        assert!(!view.show_help);
+        assert_eq!(view.nav_action("?", false), NavAction::None);
+        assert!(view.show_help);
+        assert_eq!(view.nav_action("?", false), NavAction::None);
+        assert!(!view.show_help);
+        assert_eq!(view.nav_action("/", false), NavAction::None);
+        assert!(view.show_help);
+        assert_eq!(view.nav_action("/", false), NavAction::None);
+        assert!(!view.show_help);
+        let entries = super::help_entries();
+        assert!(entries.len() >= 10);
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| *k).collect();
+        for needed in [
+            "n",
+            "j / k",
+            "PgUp / PgDn",
+            "o",
+            "Enter",
+            "i",
+            "Tab",
+            "y",
+            "p",
+            "r",
+            "x",
+            "d",
+            "?",
+            "q",
+            "Esc",
+            "drag",
+            "Cmd+C",
+            "Cmd/Ctrl+V",
+        ] {
+            assert!(keys.contains(&needed), "help documents {needed}");
+        }
+        for (k, what) in &entries {
+            assert!(!k.is_empty() && !what.is_empty());
+        }
+        // Every status hint advertises `?`: empty, nav, and terminal.
+        let mut view = test_shell();
+        view.app.focus_nav();
+        assert!(
+            view.status_text().contains('?'),
+            "empty hint advertises help: {}",
+            view.status_text()
+        );
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        view.app.focus_nav();
+        assert!(
+            view.status_text().contains('?'),
+            "nav hint advertises help: {}",
+            view.status_text()
+        );
+        view.app.focus_terminal();
+        assert!(
+            view.status_text().contains('?'),
+            "terminal hint advertises help: {}",
+            view.status_text()
+        );
     }
 
     #[test]
