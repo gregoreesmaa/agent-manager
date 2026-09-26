@@ -8,7 +8,7 @@
 //! terminal, rendered from the vt100 emulator grid; drag to highlight text
 //! (copy-on-select), Cmd+C copies, Cmd/Ctrl+V pastes.
 //! Keys (nav focus): j/k move, n new, y copy selection-or-screen, p paste,
-//! Tab/i type, q quit. Typing focus: keys go to `muse`; Tab/Esc back to
+//! Tab/i type, ? help, q quit. Typing focus: keys go to `muse`; Tab/Esc back to
 //! the list.
 
 mod app;

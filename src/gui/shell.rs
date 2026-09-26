@@ -49,6 +49,33 @@ const DEFAULT_FG: Rgb8 = Rgb8(212, 212, 212);
 /// Caret color for the emulated cursor cell.
 const CURSOR_BG: Rgb8 = Rgb8(180, 180, 180);
 
+/// In-app help entries: every nav key plus terminal-focus and mouse
+/// bindings, so the full keymap no longer lives only in the README.
+/// Keep in sync with `nav_action` and `on_key`.
+pub fn help_entries() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("n", "new muse session"),
+        ("j / k", "move selection between sessions"),
+        ("↑ / ↓", "move selection between sessions"),
+        ("PgUp / PgDn", "page the session list"),
+        ("o", "cycle link focus across the selected run's links"),
+        ("Enter", "copy the focused link, or type in muse when none"),
+        ("i", "type in muse"),
+        ("Tab", "switch sessions ↔ terminal focus"),
+        ("y", "copy selection (or whole screen)"),
+        ("p", "paste clipboard into muse"),
+        ("r", "restart ended run / retry failed spawn"),
+        ("x", "close (kill) the selected run"),
+        ("d", "dismiss the sticky error"),
+        ("?", "toggle this help"),
+        ("Esc", "back to sessions · quit from sessions"),
+        ("q", "quit (confirms first with live runs)"),
+        ("drag", "select terminal text (copy-on-select)"),
+        ("Cmd+C", "copy selection (or screen)"),
+        ("Cmd/Ctrl+V", "paste clipboard"),
+    ]
+}
+
 /// Outcome of a nav-focus keypress: state changes apply immediately,
 /// window/clipboard effects are applied by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +125,8 @@ pub struct ShellView {
     /// `pr_links`. `None` means no link is focused (Enter focuses the
     /// terminal). Cleared whenever the run selection moves.
     link_cursor: Option<usize>,
+    /// In-app help panel visibility, toggled by `?` in nav focus.
+    show_help: bool,
 }
 
 impl ShellView {
@@ -121,6 +150,7 @@ impl ShellView {
             sel_active: None,
             selecting: false,
             link_cursor: None,
+            show_help: false,
         }
     }
 
@@ -603,6 +633,12 @@ impl ShellView {
             ("p", false) => NavAction::Paste,
             ("r", false) if self.can_restart() => NavAction::Restart,
             ("r", false) if self.can_retry() => NavAction::Retry,
+            // `?` toggles the in-app help panel. `/` is an alias for
+            // keyboards/layouts where `?` arrives as shifted `/`.
+            ("?", _) | ("/", false) => {
+                self.show_help = !self.show_help;
+                NavAction::None
+            }
             ("x", false) => NavAction::Close,
             ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
             _ => NavAction::None,
@@ -789,7 +825,7 @@ impl ShellView {
                     div()
                         .text_color(rgb(0x888888))
                         .text_xs()
-                        .child("No sessions yet.".to_string()),
+                        .child("No sessions yet. Press ? for keys.".to_string()),
                 )
                 .into_any_element();
         }
@@ -1040,17 +1076,47 @@ impl ShellView {
             return msg.to_string();
         }
         if self.can_restart() {
-            return "run ended · r: restart · n: new · q: quit".to_string();
+            return "run ended · r: restart · n: new · ?: help · q: quit".to_string();
         }
         if self.app.is_terminal_focused() {
-            "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
+            "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help"
                 .to_string()
         } else if self.app.sessions.is_empty() {
-            "n: new muse · q: quit".to_string()
+            "n: new muse · ?: help · q: quit".to_string()
         } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · q: quit"
+            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · ?: help · q: quit"
                 .to_string()
         }
+    }
+
+    /// In-app help panel: the full keymap as text rows plus a Close button,
+    /// dismissed by `?` — the keymap no longer lives only in the README.
+    fn render_help(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .bg(rgb(0x1e1e2e))
+            .text_color(to_hsla(DEFAULT_FG))
+            .text_sm()
+            .child(
+                div()
+                    .text_color(rgb(0x888888))
+                    .child("Keys — press ? to close".to_string()),
+            );
+        for (key, what) in help_entries() {
+            col = col.child(format!("{key}   {what}"));
+        }
+        col.child(
+            Button::new(ElementId::Name("help-close-btn".into()))
+                .label("Close (?)")
+                .small()
+                .on_click(cx.listener(|this, _ev, _window, _cx| {
+                    this.show_help = false;
+                })),
+        )
     }
 }
 
@@ -1095,7 +1161,7 @@ impl Render for ShellView {
         let typing = self.app.is_terminal_focused() && state != "idle" && state != "ended";
         let term_title_color = if typing { rgb(0xffd866) } else { rgb(0x888888) };
 
-        div()
+        let mut root = div()
             .flex()
             .flex_col()
             .size_full()
@@ -1189,7 +1255,11 @@ impl Render for ShellView {
                     .on_click(cx.listener(|this, _ev, window, _cx| {
                         this.focus_list(window);
                     })),
-            )
+            );
+        if self.show_help {
+            root = root.child(self.render_help(cx));
+        }
+        root
     }
 }
 
@@ -1640,7 +1710,7 @@ mod headless_tests {
         assert_eq!(view.nav_action("r", false), NavAction::Restart);
         assert_eq!(
             view.status_text(),
-            "run ended · r: restart · n: new · q: quit"
+            "run ended · r: restart · n: new · ?: help · q: quit"
         );
 
         // Restart drops the dead PTY and re-queues on the same id,
@@ -1655,6 +1725,73 @@ mod headless_tests {
         assert_eq!(view.active_id().as_deref(), Some(id.as_str()));
         assert_eq!(view.app.selected_session().unwrap().title, title_before);
         assert!(!view.can_restart());
+    }
+
+    #[test]
+    fn help_toggle_and_keymap_coverage() {
+        // Issue #7: `?` (and `/` alias) toggles help in nav focus; the
+        // panel documents every nav key plus terminal/mouse bindings, and
+        // every status hint advertises `?`.
+        let mut view = ShellView::new();
+        assert!(!view.show_help);
+        assert_eq!(view.nav_action("?", false), NavAction::None);
+        assert!(view.show_help);
+        assert_eq!(view.nav_action("?", false), NavAction::None);
+        assert!(!view.show_help);
+        assert_eq!(view.nav_action("/", false), NavAction::None);
+        assert!(view.show_help);
+        assert_eq!(view.nav_action("/", false), NavAction::None);
+        assert!(!view.show_help);
+        let entries = super::help_entries();
+        assert!(entries.len() >= 10);
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| *k).collect();
+        for needed in [
+            "n",
+            "j / k",
+            "PgUp / PgDn",
+            "o",
+            "Enter",
+            "i",
+            "Tab",
+            "y",
+            "p",
+            "r",
+            "x",
+            "d",
+            "?",
+            "q",
+            "Esc",
+            "drag",
+            "Cmd+C",
+            "Cmd/Ctrl+V",
+        ] {
+            assert!(keys.contains(&needed), "help documents {needed}");
+        }
+        for (k, what) in &entries {
+            assert!(!k.is_empty() && !what.is_empty());
+        }
+        // Every status hint advertises `?`: empty, nav, and terminal.
+        let mut view = ShellView::new();
+        view.app.focus_nav();
+        assert!(
+            view.status_text().contains('?'),
+            "empty hint advertises help: {}",
+            view.status_text()
+        );
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        view.app.focus_nav();
+        assert!(
+            view.status_text().contains('?'),
+            "nav hint advertises help: {}",
+            view.status_text()
+        );
+        view.app.focus_terminal();
+        assert!(
+            view.status_text().contains('?'),
+            "terminal hint advertises help: {}",
+            view.status_text()
+        );
     }
 
     #[test]

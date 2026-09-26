@@ -224,7 +224,8 @@ fn now_secs() -> i64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     /// List navigation: j/k move, PgUp/PgDn page, o focuses a parsed
-    /// link, Enter copies the focused link, n starts a new session.
+    /// link, Enter copies the focused link, n starts a new session,
+    /// ? toggles the in-app help panel.
     #[default]
     Nav,
     /// Typing: keys go to the embedded `muse` PTY.
