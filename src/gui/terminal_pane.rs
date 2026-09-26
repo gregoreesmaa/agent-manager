@@ -107,6 +107,52 @@ impl ShellView {
         }
     }
 
+    /// Copy the mouse selection when one exists, else the whole active
+    /// screen, to the system clipboard.
+    pub(crate) fn copy_screen(&mut self, cx: &mut GpuiApp) {
+        if let Some(text) = self.selected_text() {
+            let chars = text.chars().count();
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.app
+                .set_status(format!("copied selection ({chars} chars)"));
+            return;
+        }
+        if let Some(view) = self.active_view() {
+            let text = view.screen.contents();
+            let lines = text.lines().count();
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.app
+                .set_status(format!("yanked {lines} lines to clipboard"));
+        }
+    }
+
+    /// Paste the system clipboard into the active PTY as typed bytes.
+    pub(crate) fn paste_clipboard(&mut self, cx: &mut GpuiApp) {
+        let Some(item) = cx.read_from_clipboard() else {
+            self.app.set_status("clipboard is empty");
+            return;
+        };
+        let Some(text) = item.text() else {
+            self.app.set_status("clipboard has no text");
+            return;
+        };
+        if text.is_empty() {
+            self.app.set_status("clipboard is empty");
+            return;
+        }
+        let Some(id) = self.active_id() else {
+            return;
+        };
+        if let Some(run) = self.runs.get_mut(&id) {
+            if let Err(e) = run.pty.write_input(text.as_bytes()) {
+                self.app.set_error(e.to_string());
+            } else {
+                let chars = text.chars().count();
+                self.app.set_status(format!("pasted {chars} chars"));
+            }
+        }
+    }
+
     /// First-run orientation copy: icon + message + error flag so the
     /// empty state (`No session yet`) and the failure state (`spawn
     /// failed`) differ by shape and color, not text alone.
