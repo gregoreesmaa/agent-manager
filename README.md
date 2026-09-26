@@ -56,6 +56,7 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | `x` | close (kill) the selected run | — (types `x`) |
 | `d` | dismiss the sticky error | — (types `d`) |
 | `?` (or `/`) | toggle the in-app help panel | types into `muse` |
+| `t` | cycle theme (dark → light → system, saved) | — (types `t`) |
 | `q`, `Esc` | quit (confirms first with live runs) | back to the list |
 | drag | highlight terminal text (copy-on-select) | highlight terminal text |
 
@@ -96,6 +97,17 @@ the effective spawn command, so you can see your flags before launch.
 launches as `muse --yolo`, `claude` could carry
 `--dangerously-skip-permissions`. Keys are program names, so any
 supported agent gets its own flags.
+
+### Theme: dark / light / follow system
+
+```json
+{ "theme": "system" }
+```
+
+`"dark"` or `"light"` pins the component chrome; `"system"` (default)
+follows the OS appearance at startup. Press `t` in the sessions list to
+cycle dark → light → system — the choice applies immediately and is
+saved back to the config file.
 
 ## How it works
 

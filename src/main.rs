@@ -20,7 +20,7 @@ mod providers;
 mod transcript;
 
 use gpui::{AppContext, Application, Entity};
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::{Root, Theme};
 
 use gui::shell::ShellView;
 use providers::{MuseCliProvider, Provider};
@@ -35,16 +35,17 @@ fn main() {
     )
     .discover_sessions()
     .unwrap_or_default();
+    // Issues #33/#34: user config (per-agent flags, theme choice); a
+    // missing file means plain `muse` + follow-system theme.
+    let config = config::Config::load();
+    let startup_theme = config.theme;
     Application::new().run(move |cx| {
-        // Native chrome components (sidebar, buttons): init once, dark to
-        // match the terminal pane.
+        // Native chrome components (sidebar, buttons): init once. The
+        // theme applies per window below so `system` can follow the OS.
         gpui_component::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
         let view: Entity<ShellView> = cx.new(|_cx| {
-            // Issue #33: per-agent extra CLI flags come from the user
-            // config; a missing file simply means plain `muse`.
             let mut shell = ShellView::new_with_sessions(seeded.clone());
-            shell.app.set_config(config::Config::load());
+            shell.app.set_config(config.clone());
             shell
         });
         let pump_view = view.clone();
@@ -69,7 +70,14 @@ fn main() {
         .detach();
         // Root must be the window's first view: it provides the theme
         // context the sidebar/buttons read, plus dialog/notification layers.
+        // Issue #34: apply the configured theme first (explicit dark/light
+        // or the live OS appearance) so chrome renders in it immediately.
         cx.open_window(gui::view::window_options(), |window, cx| {
+            Theme::change(
+                startup_theme.theme_mode(Some(window.appearance())),
+                Some(window),
+                cx,
+            );
             cx.new(|cx| Root::new(view.clone(), window, cx))
         })
         .unwrap();

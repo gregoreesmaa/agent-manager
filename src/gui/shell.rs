@@ -246,6 +246,18 @@ impl ShellView {
                     self.app.set_status("copied PR link");
                 }
             }
+            NavAction::CycleTheme => {
+                // Issue #34: apply now, persist the choice, flash it.
+                let pref = self.app.cycle_theme();
+                let mode = pref.theme_mode(Some(window.appearance()));
+                gpui_component::Theme::change(mode, None, cx);
+                match self.app.save_config() {
+                    Ok(()) => self.app.set_status(format!("theme: {}", pref.label())),
+                    Err(e) => self
+                        .app
+                        .set_status(format!("theme: {} (not saved: {e})", pref.label())),
+                }
+            }
             NavAction::None => {}
         }
         window.refresh();
@@ -309,10 +321,10 @@ impl ShellView {
         } else if self.app.sessions.is_empty() {
             "n: new muse · ?: help · q: quit".to_string()
         } else if narrow {
-            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · ?: help · q: quit"
+            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit"
                 .to_string()
         } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · ?: help · q: quit"
+            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit"
                 .to_string()
         }
     }
@@ -362,7 +374,7 @@ mod tests {
             narrow.len() < full.len(),
             "narrow hints compact: {narrow:?} vs {full:?}"
         );
-        for key in ["n:", "j/k", "o/Enter", "Tab", "x:", "q:"] {
+        for key in ["n:", "j/k", "o/Enter", "Tab", "x:", "t:", "q:"] {
             assert!(narrow.contains(key), "narrow hints keep {key}: {narrow:?}");
         }
         // Terminal-focus hints compact too.

@@ -17,6 +17,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use gpui::WindowAppearance;
+use gpui_component::ThemeMode;
 use serde::{Deserialize, Serialize};
 
 /// Startup flags for one agent binary (keyed by program name, e.g.
@@ -34,6 +36,56 @@ pub struct Config {
     /// Per-agent startup flags, keyed by program name.
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
+    /// App theme choice (issue #34).
+    #[serde(default)]
+    pub theme: ThemePreference,
+}
+
+/// App theme choice (issue #34): explicit dark/light, or follow the OS.
+/// Serialized lowercase (`"dark"`, `"light"`, `"system"`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    /// Follow the OS appearance (dark when unknown).
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+impl ThemePreference {
+    /// Next choice in the `t`-key cycle: dark → light → system → dark.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Dark => Self::Light,
+            Self::Light => Self::System,
+            Self::System => Self::Dark,
+        }
+    }
+
+    /// Config-file label (`t`-key status flash, README).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::System => "system",
+        }
+    }
+
+    /// Resolve to a concrete component theme. `appearance` is the live
+    /// window appearance; `None` (headless/tests) resolves system to dark,
+    /// preserving the pre-#34 default.
+    pub fn theme_mode(self, appearance: Option<WindowAppearance>) -> ThemeMode {
+        match self {
+            Self::Dark => ThemeMode::Dark,
+            Self::Light => ThemeMode::Light,
+            Self::System => match appearance {
+                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => ThemeMode::Dark,
+                Some(_) => ThemeMode::Light,
+                None => ThemeMode::Dark,
+            },
+        }
+    }
 }
 
 impl Config {
@@ -66,8 +118,6 @@ impl Config {
 
     /// Persist to [`Self::config_path`], creating parent directories.
     /// Returns the IO/serialization error so callers can surface it.
-    /// First real caller is theme persistence (issue #34).
-    #[allow(dead_code)]
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
@@ -105,6 +155,39 @@ mod tests {
         let cfg = Config::default();
         assert!(cfg.extra_args_for("muse").is_empty());
         assert!(cfg.extra_args_for("claude").is_empty());
+        assert_eq!(cfg.theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn theme_choice_cycles_parses_and_resolves() {
+        // Issue #34: dark → light → system → dark.
+        use gpui::WindowAppearance;
+        use gpui_component::ThemeMode;
+        assert_eq!(ThemePreference::Dark.cycle(), ThemePreference::Light);
+        assert_eq!(ThemePreference::Light.cycle(), ThemePreference::System);
+        assert_eq!(ThemePreference::System.cycle(), ThemePreference::Dark);
+        assert_eq!(ThemePreference::Dark.label(), "dark",);
+        // Lowercase config labels parse; explicit choices ignore the OS.
+        let parsed: Config = serde_json::from_str(r#"{"theme": "light"}"#).unwrap();
+        assert_eq!(parsed.theme, ThemePreference::Light);
+        assert_eq!(
+            ThemePreference::Dark.theme_mode(Some(WindowAppearance::Light)),
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            ThemePreference::Light.theme_mode(Some(WindowAppearance::Dark)),
+            ThemeMode::Light
+        );
+        // System follows the OS; unknown stays on the historic dark.
+        assert_eq!(
+            ThemePreference::System.theme_mode(Some(WindowAppearance::VibrantDark)),
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            ThemePreference::System.theme_mode(Some(WindowAppearance::Light)),
+            ThemeMode::Light
+        );
+        assert_eq!(ThemePreference::System.theme_mode(None), ThemeMode::Dark);
     }
 
     #[test]

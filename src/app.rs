@@ -286,6 +286,18 @@ impl App {
         self.config = config;
     }
 
+    /// Advance the theme choice one step (the `t`-key cycle) and return
+    /// the new choice. The caller applies and persists it.
+    pub fn cycle_theme(&mut self) -> crate::config::ThemePreference {
+        self.config.theme = self.config.theme.cycle();
+        self.config.theme
+    }
+
+    /// Persist the current configuration (theme choice) to disk.
+    pub fn save_config(&self) -> anyhow::Result<()> {
+        self.config.save()
+    }
+
     /// Spawn command for `kind` with the configured per-agent extra flags
     /// appended (issue #33). The key is the program name, so every
     /// supported agent (`muse`, `claude`, …) can carry its own flags.

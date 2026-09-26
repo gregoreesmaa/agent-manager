@@ -26,6 +26,9 @@ pub(crate) enum NavAction {
     Dismiss,
     /// Copy the keyboard-focused parsed link (see `link_cursor`).
     CopyLink,
+    /// Advance the theme choice (dark → light → system); the caller
+    /// applies, persists, and flashes it.
+    CycleTheme,
     None,
 }
 
@@ -151,6 +154,7 @@ impl ShellView {
                 self.show_help = !self.show_help;
                 NavAction::None
             }
+            ("t", false) => NavAction::CycleTheme,
             _ => NavAction::None,
         };
         // Any key other than a quit intent cancels an armed quit.
@@ -292,6 +296,19 @@ mod tests {
             "terminal hint advertises help: {}",
             view.status_text()
         );
+    }
+
+    #[test]
+    fn t_cycles_the_theme_choice() {
+        // Issue #34: `t` dispatches CycleTheme without mutating (the
+        // caller cycles, applies, and persists); the cycle itself starts
+        // at the default system choice.
+        use crate::config::ThemePreference;
+        let mut view = test_shell();
+        assert_eq!(view.nav_action("t", false), NavAction::CycleTheme);
+        assert_eq!(view.app.cycle_theme(), ThemePreference::Dark);
+        assert_eq!(view.app.cycle_theme(), ThemePreference::Light);
+        assert_eq!(view.app.cycle_theme(), ThemePreference::System);
     }
 
     #[test]
