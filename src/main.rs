@@ -16,6 +16,7 @@ mod config;
 mod embedded;
 mod gui;
 mod parsers;
+mod prefs;
 mod providers;
 mod scrollback;
 mod transcript;

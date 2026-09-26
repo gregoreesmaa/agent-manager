@@ -9,6 +9,7 @@
 //! [`pager`] (scrollback pager over the retained output buffer).
 
 pub mod attention;
+pub mod comfort;
 pub mod keys;
 pub mod layout;
 pub mod lifecycle;

@@ -95,6 +95,15 @@ pub struct ShellView {
     /// Audible bell on attention flips. True in production; tests mute it
     /// and assert on [`Self::bells_rung`] instead.
     pub(crate) bell_enabled: bool,
+    /// Terminal font size in points (issue #29): `+`/`-` in nav focus,
+    /// persisted to local JSON prefs so it survives restarts.
+    pub(crate) font_size: f32,
+    /// Sessions panel width in pixels (issue #29): `[`/`]` in nav focus,
+    /// persisted alongside the font size.
+    pub(crate) sidebar_width: f32,
+    /// Title-filter capture (issue #29): while true, printable keys extend
+    /// [`App::filter`] instead of dispatching nav actions.
+    pub(crate) filtering: bool,
 }
 
 impl ShellView {
@@ -109,8 +118,15 @@ impl ShellView {
     /// appear in the list with their titles, links, and transcripts before
     /// any PTY exists; `r` re-attaches the selected one (`Resume`).
     pub fn new_with_sessions(sessions: Vec<ChatSession>) -> Self {
+        // Comfort settings restore from local prefs (issue #29): a missing
+        // or corrupt file degrades to the compiled defaults, never a
+        // startup failure.
+        let prefs = crate::prefs::Prefs::load();
         Self {
             app: App::new(sessions),
+            font_size: prefs.font_size,
+            sidebar_width: prefs.sidebar_width,
+            filtering: false,
             runs: HashMap::new(),
             quit_armed: false,
             link_cursor: None,
@@ -170,6 +186,15 @@ impl ShellView {
             // Scrollback pager (issue #25) in either focus: Shift+PgUp /
             // Shift+PgDn never types into `muse`. Repeats keep paging.
             self.page_scrollback(key == "pageup");
+            window.refresh();
+            return;
+        }
+        if self.filtering {
+            // Title-filter capture (issue #29) outranks every other
+            // binding, including Tab-focus and Esc-quit: printable keys
+            // extend the filter, Enter accepts, Esc clears. Repeats type.
+            self.quit_armed = false;
+            self.filter_key(key, key_char, ctrl);
             window.refresh();
             return;
         }
@@ -240,6 +265,21 @@ impl ShellView {
         }
         if (ctrl || platform) && key.eq_ignore_ascii_case("v") {
             self.paste_clipboard(cx);
+            window.refresh();
+            return;
+        }
+        // `/` opens title-filter capture (issue #29); `?` still toggles
+        // help via `nav_action` below.
+        if !ctrl && (key == "/" || key_char == Some("/")) {
+            self.quit_armed = false;
+            self.begin_filter();
+            window.refresh();
+            return;
+        }
+        // Comfort keys (issue #29): nav focus only — in terminal focus
+        // these must type into `muse`, and filter capture owns them.
+        if self.comfort_key(key_char) {
+            self.quit_armed = false;
             window.refresh();
             return;
         }

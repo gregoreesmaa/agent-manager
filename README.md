@@ -56,7 +56,9 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | `r` | restart ended run / retry failed spawn | same, on a dead pane |
 | `x` | close (kill) the selected run | — (types `x`) |
 | `d` | dismiss the sticky error | — (types `d`) |
-| `?` (or `/`) | toggle the in-app help panel | types into `muse` |
+| `/` | filter sessions by title substring (`Enter` keeps, `Esc` clears) | types into `muse` |
+| `+`/`-`, `[`/`]` | terminal font size / panel width (saved locally) | types into `muse` |
+| `?` | toggle the in-app help panel | types into `muse` |
 | `t` | cycle theme (dark → light → system, saved) | — (types `t`) |
 | `q`, `Esc` | quit (confirms first with live runs) | back to the list |
 | drag | highlight terminal text (copy-on-select) | highlight terminal text |
