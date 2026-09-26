@@ -67,7 +67,7 @@ impl ShellView {
         // The footer carries the status line (issue #32), so the app name
         // and hints live in the panel, not in their own bar.
         // Width follows the persisted comfort setting (issue #29).
-        let mut sidebar = Sidebar::left().w(px(self.sidebar_width)).header(
+        let mut sidebar = Sidebar::left().w(px(self.app.sidebar_width())).header(
             SidebarHeader::new().child("Sessions".to_string()).child(
                 Button::new(ElementId::Name("new-run-btn".into()))
                     .label("+ New")

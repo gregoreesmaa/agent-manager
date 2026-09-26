@@ -316,6 +316,31 @@ impl App {
         &self.config.terminal
     }
 
+    /// Sessions-panel width in pixels (issue #29): the comfort-adjusted
+    /// value clamped to the sane range, so a hand-edited config can
+    /// never collapse or explode the panel.
+    pub fn sidebar_width(&self) -> f32 {
+        self.config.sidebar_width.clamp(160.0, 480.0)
+    }
+
+    /// Comfort-key mutation half (issue #29, same split as the `t`-key
+    /// theme cycle): clamp the terminal font size into range and return
+    /// it for the status flash. The caller persists via
+    /// [`App::save_config`].
+    pub fn set_terminal_font_size(&mut self, size: f32) -> f32 {
+        let size = size.clamp(8.0, 32.0);
+        self.config.terminal.font_size = size;
+        size
+    }
+
+    /// Comfort-key mutation half for the panel width: same
+    /// mutate/flash/persist split as [`App::set_terminal_font_size`].
+    pub fn set_sidebar_width(&mut self, width: f32) -> f32 {
+        let width = width.clamp(160.0, 480.0);
+        self.config.sidebar_width = width;
+        width
+    }
+
     /// Spawn command for `kind` with the configured per-agent extra flags
     /// appended (issue #33). The key is the program name, so every
     /// supported agent (`muse`, `claude`, …) can carry its own flags.

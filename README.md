@@ -58,7 +58,7 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | `x` | close (kill) the selected run | — (types `x`) |
 | `d` | dismiss the sticky error | — (types `d`) |
 | `/` | filter sessions by title substring (`Enter` keeps, `Esc` clears) | types into `muse` |
-| `+`/`-`, `[`/`]` | terminal font size / panel width (saved locally) | types into `muse` |
+| `+`/`-`, `[`/`]` | terminal font size / panel width (saved to the config file) | types into `muse` |
 | `?` | toggle the in-app help panel | types into `muse` |
 | `t` | cycle theme (dark → light → system, saved) | — (types `t`) |
 | `q`, `Esc` | quit (confirms first with live runs) | back to the list |
@@ -137,6 +137,14 @@ system monospace — so emoji/CJK render at correct double width instead
 of tofu. Set `terminal.font_family` to any installed patched font to
 override just the head of the chain; `terminal.font_size` and
 `terminal.fallback_fonts` are overridable too.
+
+### Comfort keys
+
+In the sessions list, `+`/`-` resize the terminal font and `[`/`]`
+resize the sessions panel — both write back to the config file
+(`terminal.font_size`, top-level `sidebar_width`), so they survive
+restarts. `/` filters the panel by title substring (`Enter` keeps the
+filter, `Esc` clears it) without changing sort order.
 
 ## How it works
 

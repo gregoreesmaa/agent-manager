@@ -10,19 +10,30 @@ use std::path::{Path, PathBuf};
 
 use crate::app::{ChatSession, Status};
 
-/// Filename of the persisted run list inside [`crate::prefs::data_dir`].
+/// Filename of the persisted run list inside [`data_dir`].
 pub const RUNS_FILENAME: &str = "runs.json";
-/// Subdir of [`crate::prefs::data_dir`] holding exported markdown.
+/// Subdir of [`data_dir`] holding exported markdown.
 pub const EXPORTS_DIRNAME: &str = "exports";
+
+/// Platform data dir for local-only state (`agent-manager` subdir).
+pub fn data_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        PathBuf::from(xdg).join("agent-manager")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".local/share/agent-manager")
+    } else {
+        PathBuf::from(".local/share/agent-manager")
+    }
+}
 
 /// Default persist path (`runs.json` in the local data dir).
 pub fn runs_path() -> PathBuf {
-    crate::prefs::data_dir().join(RUNS_FILENAME)
+    data_dir().join(RUNS_FILENAME)
 }
 
 /// Default export dir (created on first export).
 pub fn exports_dir() -> PathBuf {
-    crate::prefs::data_dir().join(EXPORTS_DIRNAME)
+    data_dir().join(EXPORTS_DIRNAME)
 }
 
 /// Save `sessions` to the default path (creating parent dirs). Best

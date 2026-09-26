@@ -95,12 +95,6 @@ pub struct ShellView {
     /// Audible bell on attention flips. True in production; tests mute it
     /// and assert on [`Self::bells_rung`] instead.
     pub(crate) bell_enabled: bool,
-    /// Terminal font size in points (issue #29): `+`/`-` in nav focus,
-    /// persisted to local JSON prefs so it survives restarts.
-    pub(crate) font_size: f32,
-    /// Sessions panel width in pixels (issue #29): `[`/`]` in nav focus,
-    /// persisted alongside the font size.
-    pub(crate) sidebar_width: f32,
     /// Title-filter capture (issue #29): while true, printable keys extend
     /// [`App::filter`] instead of dispatching nav actions.
     pub(crate) filtering: bool,
@@ -122,14 +116,8 @@ impl ShellView {
     /// appear in the list with their titles, links, and transcripts before
     /// any PTY exists; `r` re-attaches the selected one (`Resume`).
     pub fn new_with_sessions(sessions: Vec<ChatSession>) -> Self {
-        // Comfort settings restore from local prefs (issue #29): a missing
-        // or corrupt file degrades to the compiled defaults, never a
-        // startup failure.
-        let prefs = crate::prefs::Prefs::load();
         Self {
             app: App::new(sessions),
-            font_size: prefs.font_size,
-            sidebar_width: prefs.sidebar_width,
             filtering: false,
             last_persist: None,
             runs: HashMap::new(),

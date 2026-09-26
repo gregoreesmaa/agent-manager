@@ -146,7 +146,7 @@ impl ShellView {
         let viewport = window.viewport_size();
         let viewport_w = f32::from(viewport.width);
         let avail_w =
-            viewport_w - effective_sidebar_width_for(viewport_w, self.sidebar_width);
+            viewport_w - effective_sidebar_width_for(viewport_w, self.app.sidebar_width());
         // Issue #32: wide mode has no header and no status bar, so the
         // terminal owns the full height; narrow mode keeps the slim bar.
         let avail_h = f32::from(viewport.height) - super::layout::chrome_height_for(viewport_w);
