@@ -407,17 +407,27 @@ impl App {
     }
 
     /// Record a prompt line the user submitted to `run_id`: the first one
-    /// becomes the run's summary title so the list stays distinguishable.
+    /// becomes the run's summary title so the list stays distinguishable,
+    /// flashing a `renamed to '<title>'` confirmation so the silent rename
+    /// is noticed. Later prompts and blank lines never rename nor flash.
     pub fn note_submitted_prompt(&mut self, run_id: &str, line: &str) {
         let line = line.trim();
         if line.is_empty() {
             return;
         }
-        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == run_id) {
+        let renamed = if let Some(s) = self.sessions.iter_mut().find(|s| s.id == run_id) {
             if !s.title_locked {
                 s.title = crate::transcript::single_line(line);
                 s.title_locked = true;
+                Some(s.title.clone())
+            } else {
+                None
             }
+        } else {
+            None
+        };
+        if let Some(title) = renamed {
+            self.set_status(format!("renamed to '{title}'"));
         }
     }
 
@@ -614,6 +624,33 @@ mod tests {
             classify_with_attention(false, Some(Duration::from_secs(5)), false),
             classify("plain output", Some(Duration::from_secs(5)), false)
         );
+    }
+
+    #[test]
+    fn first_prompt_rename_flashes_confirmation() {
+        let mut app = App::new(vec![]);
+        app.start_new_session();
+        assert_eq!(app.status_text(), None);
+        app.note_submitted_prompt("run-1", "  fix the login redirect  ");
+        assert_eq!(app.sessions[0].title, "fix the login redirect");
+        assert_eq!(
+            app.status_text(),
+            Some("renamed to 'fix the login redirect'")
+        );
+        // Second prompt keeps the first title and leaves the flash alone.
+        app.note_submitted_prompt("run-1", "something else entirely");
+        assert_eq!(app.sessions[0].title, "fix the login redirect");
+        assert_eq!(
+            app.status_text(),
+            Some("renamed to 'fix the login redirect'")
+        );
+        // Blank lines and unknown ids flash nothing.
+        let mut app2 = App::new(vec![]);
+        app2.start_new_session();
+        app2.note_submitted_prompt("run-1", "   ");
+        assert_eq!(app2.status_text(), None);
+        app2.note_submitted_prompt("run-9", "hello");
+        assert_eq!(app2.status_text(), None);
     }
 
     #[test]
