@@ -61,6 +61,8 @@ enum NavAction {
     Restart,
     Close,
     Dismiss,
+    /// Copy the keyboard-focused parsed link (see `link_cursor`).
+    CopyLink,
     None,
 }
 
@@ -92,6 +94,10 @@ pub struct ShellView {
     sel_anchor: Option<CellPos>,
     sel_active: Option<CellPos>,
     selecting: bool,
+    /// Keyboard-focused parsed link: index into the selected run's
+    /// `pr_links`. `None` means no link is focused (Enter focuses the
+    /// terminal). Cleared whenever the run selection moves.
+    link_cursor: Option<usize>,
 }
 
 impl ShellView {
@@ -114,6 +120,7 @@ impl ShellView {
             sel_anchor: None,
             sel_active: None,
             selecting: false,
+            link_cursor: None,
         }
     }
 
@@ -487,25 +494,84 @@ impl ShellView {
     /// applies window focus and clipboard effects for the returned action.
     /// `muse` captures keys if and only if focus is Terminal — nav keys
     /// never reach the PTY.
+    /// URL of the keyboard-focused parsed link, if the selected run has
+    /// one at [`Self::link_cursor`].
+    fn focused_link_url(&self) -> Option<String> {
+        let cursor = self.link_cursor?;
+        let id = self.active_id()?;
+        self.app
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.pr_links.get(cursor))
+            .cloned()
+    }
+
+    /// Advance link focus through the selected run's parsed links,
+    /// wrapping back to unfocused after the last one (so Enter can focus
+    /// the terminal again without moving the run selection).
+    fn cycle_link_focus(&mut self) {
+        let count = match self.active_id() {
+            Some(id) => self
+                .app
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.pr_links.len())
+                .unwrap_or(0),
+            None => 0,
+        };
+        if count == 0 {
+            self.link_cursor = None;
+            return;
+        }
+        self.link_cursor = match self.link_cursor {
+            None => Some(0),
+            Some(i) if i + 1 < count => Some(i + 1),
+            _ => None,
+        };
+    }
+
     fn nav_action(&mut self, key: &str, ctrl: bool) -> NavAction {
         let action = match (key, ctrl) {
             ("q", false) | ("escape", _) => NavAction::Quit,
             ("j", false) | ("down", _) => {
                 self.app.select_next();
                 self.clear_selection();
+                self.link_cursor = None;
                 NavAction::None
             }
             ("k", false) | ("up", _) => {
                 self.app.select_prev();
                 self.clear_selection();
+                self.link_cursor = None;
+                NavAction::None
+            }
+            ("pagedown", _) => {
+                self.app.select_page_next();
+                self.clear_selection();
+                self.link_cursor = None;
+                NavAction::None
+            }
+            ("pageup", _) => {
+                self.app.select_page_prev();
+                self.clear_selection();
+                self.link_cursor = None;
                 NavAction::None
             }
             ("n", false) => {
                 self.app.start_new_session();
                 self.clear_selection();
+                self.link_cursor = None;
                 NavAction::FocusTerm
             }
-            ("i", false) | ("enter", _) => NavAction::FocusTerm,
+            ("o", false) => {
+                self.cycle_link_focus();
+                NavAction::None
+            }
+            ("i", false) => NavAction::FocusTerm,
+            ("enter", _) if self.focused_link_url().is_some() => NavAction::CopyLink,
+            ("enter", _) => NavAction::FocusTerm,
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
             ("r", false) if self.can_restart() => NavAction::Restart,
@@ -637,6 +703,12 @@ impl ShellView {
             NavAction::Dismiss => {
                 self.app.clear_error();
             }
+            NavAction::CopyLink => {
+                if let Some(url) = self.focused_link_url() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url));
+                    self.app.set_status("copied PR link");
+                }
+            }
             NavAction::None => {}
         }
         window.refresh();
@@ -714,27 +786,40 @@ impl ShellView {
                     // URL. Display-capped: the first MAX_VISIBLE_LINKS
                     // rows stay live and the rest fold behind an N more
                     // disclosure; the full lists stay retained (and
-                    // copyable via yank) in the session.
-                    let link_row = |link: &str, label: &str| {
-                        let short = link
-                            .trim_start_matches("https://")
+                    // copyable via yank) in the session. `o`/Enter does
+                    // the same from the keyboard when a PR row holds link
+                    // focus (highlighted via `active`).
+                    let short_of = |link: &str| {
+                        link.trim_start_matches("https://")
                             .trim_start_matches("http://")
                             .trim_start_matches("github.com/")
-                            .to_string();
-                        let url = link.to_string();
-                        let flash = label.to_string();
-                        SidebarMenuItem::new(short).on_click(cx.listener(
-                            move |this, _ev, _window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                                this.app.set_status(flash.clone());
-                            },
-                        ))
+                            .to_string()
                     };
                     let mut links: Vec<SidebarMenuItem> = Vec::new();
                     let (shown_prs, hidden_prs) = crate::app::visible_links(&s.pr_links);
-                    links.extend(shown_prs.iter().map(|l| link_row(l, "copied PR link")));
+                    for (li, link) in shown_prs.iter().enumerate() {
+                        let short = short_of(link);
+                        let url = link.clone();
+                        let focused = i == self.app.selected && self.link_cursor == Some(li);
+                        links.push(SidebarMenuItem::new(short).active(focused).on_click(
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.link_cursor = Some(li);
+                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                                this.app.set_status("copied PR link");
+                            }),
+                        ));
+                    }
                     let (shown_rel, hidden_rel) = crate::app::visible_links(&s.related_links);
-                    links.extend(shown_rel.iter().map(|l| link_row(l, "copied link")));
+                    for link in shown_rel {
+                        let short = short_of(link);
+                        let url = link.clone();
+                        links.push(SidebarMenuItem::new(short).on_click(cx.listener(
+                            move |this, _ev, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                                this.app.set_status("copied link");
+                            },
+                        )));
+                    }
                     let hidden = hidden_prs + hidden_rel;
                     if hidden > 0 {
                         links.push(SidebarMenuItem::new(format!("… {hidden} more")));
@@ -751,6 +836,7 @@ impl ShellView {
                                 this.app.selected = pos;
                             }
                             this.clear_selection();
+                            this.link_cursor = None;
                             this.focus_list(window);
                         }))
                         .children(links)
@@ -935,7 +1021,7 @@ impl ShellView {
         } else if self.app.sessions.is_empty() {
             "n: new muse · q: quit".to_string()
         } else {
-            "n: new · j/k: move · Tab/i: type · x: close · drag: select · y: copy · p: paste · q: quit"
+            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · q: quit"
                 .to_string()
         }
     }
@@ -1271,6 +1357,70 @@ mod headless_tests {
         assert_eq!(view.nav_action("p", false), NavAction::Paste);
         assert_eq!(view.nav_action("z", false), NavAction::None);
         assert_eq!(view.nav_action("j", true), NavAction::None);
+    }
+
+    #[test]
+    fn pageup_pagedown_page_the_run_list() {
+        let mut view = ShellView::new();
+        // No runs: paging is inert.
+        assert_eq!(view.nav_action("pagedown", false), NavAction::None);
+        assert_eq!(view.nav_action("pageup", false), NavAction::None);
+        for _ in 0..8 {
+            view.app.start_new_session();
+            let _ = view.app.take_pending_spawn();
+        }
+        view.app.focus_nav();
+        view.app.selected = 0;
+        assert_eq!(view.nav_action("pagedown", false), NavAction::None);
+        assert_eq!(view.app.selected, crate::app::PAGE_STEP);
+        assert_eq!(view.nav_action("pagedown", false), NavAction::None);
+        assert_eq!(view.app.selected, 7);
+        assert_eq!(view.nav_action("pageup", false), NavAction::None);
+        assert_eq!(view.app.selected, 7 - crate::app::PAGE_STEP);
+        view.app.selected = 1;
+        assert_eq!(view.nav_action("pageup", false), NavAction::None);
+        assert_eq!(view.app.selected, 0);
+    }
+
+    #[test]
+    fn o_cycles_link_focus_and_enter_copies_the_focused_link() {
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        view.app.focus_nav();
+        // No links: `o` stays unfocused, Enter focuses the terminal.
+        assert_eq!(view.nav_action("o", false), NavAction::None);
+        assert_eq!(view.link_cursor, None);
+        assert_eq!(view.nav_action("enter", false), NavAction::FocusTerm);
+
+        let id = view.active_id().unwrap();
+        let s = view.app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.pr_links
+            .push("https://github.com/acme/app/pull/42".to_string());
+        s.pr_links
+            .push("https://github.com/acme/app/pull/43".to_string());
+
+        assert_eq!(view.nav_action("o", false), NavAction::None);
+        assert_eq!(view.link_cursor, Some(0));
+        assert_eq!(view.nav_action("enter", false), NavAction::CopyLink);
+        assert_eq!(
+            view.focused_link_url().as_deref(),
+            Some("https://github.com/acme/app/pull/42")
+        );
+        assert_eq!(view.nav_action("o", false), NavAction::None);
+        assert_eq!(view.link_cursor, Some(1));
+        assert_eq!(view.nav_action("enter", false), NavAction::CopyLink);
+        // Past the last link focus wraps back to unfocused: Enter types.
+        assert_eq!(view.nav_action("o", false), NavAction::None);
+        assert_eq!(view.link_cursor, None);
+        assert_eq!(view.nav_action("enter", false), NavAction::FocusTerm);
+        // `i` always focuses the terminal, even with a link focused.
+        assert_eq!(view.nav_action("o", false), NavAction::None);
+        assert_eq!(view.link_cursor, Some(0));
+        assert_eq!(view.nav_action("i", false), NavAction::FocusTerm);
+        // Moving the run selection clears link focus.
+        assert_eq!(view.nav_action("j", false), NavAction::None);
+        assert_eq!(view.link_cursor, None);
     }
 
     #[test]
