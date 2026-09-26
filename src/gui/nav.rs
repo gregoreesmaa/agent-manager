@@ -129,10 +129,13 @@ impl ShellView {
                 NavAction::None
             }
             ("n", false) => {
-                self.app.start_new_session();
-                self.clear_selection();
-                self.link_cursor = None;
-                NavAction::FocusTerm
+                // Capped by the live-run policy (issue #31): a refused
+                // 11th run stays in the list so the flash is readable.
+                if self.request_new_run() {
+                    NavAction::FocusTerm
+                } else {
+                    NavAction::None
+                }
             }
             ("o", false) => {
                 self.cycle_link_focus();
