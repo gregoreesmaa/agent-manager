@@ -1,18 +1,27 @@
 //! Per-chat GitHub PR link extraction.
 
+use std::collections::HashSet;
+use std::sync::LazyLock;
+
 use regex::Regex;
+
+/// Compiled once: per-run-per-tick compilation was the hottest alloc in
+/// the pump loop. Match semantics are unchanged (see [`extract_pr_links`]).
+static PR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+")
+        .expect("static PR regex")
+});
 
 /// Extract `https://github.com/<owner>/<repo>/pull/<n>` URLs (also bare
 /// `owner/repo#123` references are ignored — only full PR URLs count).
 /// Preserves first-seen order, deduplicated, trailing punctuation trimmed.
 pub fn extract_pr_links(text: &str) -> Vec<String> {
-    let re = Regex::new(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+")
-        .expect("static regex");
     let mut out = Vec::new();
-    for m in re.find_iter(text) {
-        let url = m.as_str().to_string();
-        if !out.contains(&url) {
-            out.push(url);
+    let mut seen = HashSet::new();
+    for m in PR_RE.find_iter(text) {
+        let url = m.as_str();
+        if seen.insert(url) {
+            out.push(url.to_string());
         }
     }
     out

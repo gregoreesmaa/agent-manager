@@ -69,6 +69,9 @@ pub struct ShellView {
     ptys: HashMap<String, EmbeddedPty>,
     last_output: HashMap<String, Instant>,
     pending_inputs: HashMap<String, String>,
+    /// Cached attention bit per run: unchanged screens skip the text
+    /// scans entirely (see `refresh`). Entries die with their run.
+    attention_cache: HashMap<String, bool>,
     /// Two-step quit arming: the first `q` with dirty runs only arms and
     /// hints; the second quits. Any other key disarms.
     quit_armed: bool,
@@ -98,6 +101,7 @@ impl ShellView {
             ptys: HashMap::new(),
             last_output: HashMap::new(),
             pending_inputs: HashMap::new(),
+            attention_cache: HashMap::new(),
             quit_armed: false,
             list_focus: None,
             term_focus: None,
@@ -189,6 +193,7 @@ impl ShellView {
             self.ptys.remove(&id);
             self.last_output.remove(&id);
             self.pending_inputs.remove(&id);
+            self.attention_cache.remove(&id);
             self.clear_selection();
             self.app.retry_spawn();
         }
@@ -203,6 +208,7 @@ impl ShellView {
             self.ptys.remove(&id);
             self.last_output.remove(&id);
             self.pending_inputs.remove(&id);
+            self.attention_cache.remove(&id);
             self.clear_selection();
             if let Some(title) = self.app.remove_session(&id) {
                 self.app.set_status(format!("closed '{title}'"));
@@ -237,34 +243,61 @@ impl ShellView {
 
     /// Pump every run, refresh each entry from its live screen (attention
     /// markers, working/idle by recency, PR links), re-sort pinned.
-    /// Returns true when any run produced fresh output.
+    /// Returns true when any run produced fresh output. Text scans
+    /// (attention regex + link extraction) run only for runs whose PTY
+    /// delivered bytes or changed exit state since the last tick;
+    /// unchanged screens reuse the cached attention bit, so an idle tick
+    /// costs no screen allocs at all.
     fn refresh(&mut self) -> bool {
         self.spawn_queued();
         let mut fresh_any = false;
+        let mut rescanned: Vec<String> = Vec::new();
         for (id, pty) in self.ptys.iter_mut() {
+            let exited_before = pty.view().exited;
             if pty.pump() {
                 fresh_any = true;
                 self.last_output.insert(id.clone(), Instant::now());
+                rescanned.push(id.clone());
+            } else if pty.view().exited != exited_before {
+                // No new bytes, but the child just exited: the run's
+                // status and links are stale, so rescan it as dirt.
+                fresh_any = true;
+                rescanned.push(id.clone());
             }
         }
         let now = Instant::now();
         let ids: Vec<String> = self.ptys.keys().cloned().collect();
         for id in ids {
-            let pty = &self.ptys[&id];
-            let view = pty.view();
-            let text = view.screen.contents();
+            // Scope the PTY borrow: the merge below touches other fields.
+            let (attention, exited, fresh_links) = {
+                let pty = &self.ptys[&id];
+                let view = pty.view();
+                if rescanned.contains(&id) {
+                    let text = view.screen.contents();
+                    let attention = crate::app::needs_attention(&text);
+                    (attention, view.exited, Some(extract_pr_links(&text)))
+                } else {
+                    (
+                        self.attention_cache.get(&id).copied().unwrap_or(false),
+                        view.exited,
+                        None,
+                    )
+                }
+            };
+            if rescanned.contains(&id) {
+                self.attention_cache.insert(id.clone(), attention);
+            }
             // One classifier for live and historic runs alike (owned by
             // `app`): attention markers win, then exit, then recency.
             let age = self.last_output.get(&id).map(|at| now.duration_since(*at));
-            let status = crate::app::classify(&text, age, view.exited);
+            let status = crate::app::classify_with_attention(attention, age, exited);
             // Accumulate PR links in first-seen order: the visible screen
             // is only a viewport (vt100 `contents()` shows the live grid,
             // not full scrollback), so replacing would drop links that
             // scrolled off. Merging keeps every PR URL ever seen per run.
-            let fresh = extract_pr_links(&text);
             if let Some(s) = self.app.sessions.iter_mut().find(|s| s.id == id) {
                 s.status = status;
-                for link in fresh {
+                for link in fresh_links.into_iter().flatten() {
                     if !s.pr_links.contains(&link) {
                         s.pr_links.push(link);
                     }
@@ -1389,6 +1422,64 @@ mod headless_tests {
         assert!(view.app.sessions.is_empty());
         assert!(view.ptys.is_empty());
         assert!(!view.confirm_quit_required());
+    }
+
+    #[test]
+    fn unchanged_screens_reuse_cached_attention() {
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        let pty = EmbeddedPty::spawn(
+            "printf",
+            &["Waiting for your approval to proceed\\n".to_string()],
+            80,
+            24,
+        )
+        .unwrap();
+        view.ptys.insert(id.clone(), pty);
+        view.last_output.insert(id.clone(), Instant::now());
+        for _ in 0..100 {
+            view.refresh();
+            let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+            if s.status == Status::Attention {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // The scan populated the cache; the now-static screen keeps its
+        // Attention status across refreshes via the cached bit alone.
+        assert_eq!(view.attention_cache.get(&id), Some(&true));
+        for _ in 0..10 {
+            view.refresh();
+        }
+        let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(s.status, Status::Attention);
+        assert_eq!(view.attention_cache.get(&id), Some(&true));
+    }
+
+    #[test]
+    fn exit_transition_counts_as_dirt_without_output_bytes() {
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        // `true` writes nothing: the only dirt is the exit itself.
+        view.ptys
+            .insert(id.clone(), EmbeddedPty::spawn("true", &[], 80, 24).unwrap());
+        view.last_output.insert(id.clone(), Instant::now());
+        let mut saw_dirt = false;
+        for _ in 0..100 {
+            if view.refresh() {
+                saw_dirt = true;
+            }
+            if view.ptys[&id].view().exited {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(view.ptys[&id].view().exited);
+        assert!(saw_dirt, "the exit tick must report dirt");
     }
 
     #[test]

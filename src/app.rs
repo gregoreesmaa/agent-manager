@@ -57,26 +57,21 @@ pub fn animal_name(n: usize) -> String {
 
 /// Screen-text markers suggesting `muse` waits on the user (approval
 /// prompts, permission questions, errors). Matched case-insensitively.
-/// This is the single reconciled marker list: the live shell and the
-/// historic provider classifier both funnel through [`classify`], so a run
-/// can never show a different status live vs historic by construction.
-pub const ATTENTION_MARKERS: &[&str] = &[
-    "approval",
-    "approve",
-    "permission",
-    "needs_input",
-    "needs input",
-    "\"error\"",
-    "(y/n)",
-    "allow once",
-    "allow always",
-    "would you like",
-    "press enter to confirm",
-];
+/// This is the single reconciled marker list, precompiled once: the live
+/// shell and the historic provider classifier both funnel through
+/// [`classify`], so a run can never show a different status live vs
+/// historic by construction, and no per-tick allocation happens here.
+static ATTENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?i)approval|approve|permission|needs_input|needs input|\"error\"|\(y/n\)|allow once|allow always|would you like|press enter to confirm"#,
+    )
+    .expect("static attention regex")
+});
 
+/// True when `text` carries an attention marker. Allocation-free:
+/// a single precompiled case-insensitive scan, no lowercase copy.
 pub fn needs_attention(text: &str) -> bool {
-    let lowered = text.to_lowercase();
-    ATTENTION_MARKERS.iter().any(|m| lowered.contains(m))
+    ATTENTION_RE.is_match(text)
 }
 
 /// A run counts as actively working while it produced output recently.
@@ -93,7 +88,18 @@ pub fn classify(
     output_age: Option<std::time::Duration>,
     exited: bool,
 ) -> Status {
-    if needs_attention(screen_text) {
+    classify_with_attention(needs_attention(screen_text), output_age, exited)
+}
+
+/// [`classify`] with the marker scan already done. The shell caches the
+/// scan per run and skips re-scanning unchanged screens; attention still
+/// outranks exit and recency exactly as in [`classify`].
+pub fn classify_with_attention(
+    attention: bool,
+    output_age: Option<std::time::Duration>,
+    exited: bool,
+) -> Status {
+    if attention {
         return Status::Attention;
     }
     if exited {
@@ -510,11 +516,31 @@ mod tests {
     }
 
     #[test]
+    fn cached_attention_agrees_with_full_scan() {
+        use std::time::Duration;
+        // The skip path (precomputed bit) decides exactly like the scan.
+        assert_eq!(
+            classify_with_attention(true, None, true),
+            classify("allow once? (y/n)", None, true)
+        );
+        assert_eq!(
+            classify_with_attention(false, Some(Duration::from_secs(5)), false),
+            classify("plain output", Some(Duration::from_secs(5)), false)
+        );
+    }
+
+    #[test]
     fn attention_markers_match_approval_and_error_text() {
         assert!(needs_attention("Waiting for your approval to proceed"));
         assert!(needs_attention("Allow once? (y/n)"));
         assert!(needs_attention("permission denied by policy"));
         assert!(needs_attention("Tool failed with \"error\""));
+        // Precompiled case-insensitive scan: same hits as the old
+        // lowercase-copy version, without the per-tick allocation.
+        assert!(needs_attention(
+            "APPROVAL REQUIRED — Press ENTER to confirm"
+        ));
+        assert!(needs_attention("Would You Like to continue?"));
         assert!(!needs_attention("Muse Code 1.4.0"));
         assert!(!needs_attention(""));
     }
