@@ -49,6 +49,49 @@ impl ShellView {
         }
     }
 
+    /// Evict the oldest-exited live run (entry + PTY) to make room under
+    /// the live-run cap (issue #31). Returns the reaped title for the
+    /// confirmation flash, or `None` when every live run is still running
+    /// (the caller refuses instead of killing a live child).
+    pub(crate) fn evict_oldest_exited(&mut self) -> Option<String> {
+        let id = super::runs::oldest_exited_id(&self.runs)?;
+        self.runs.remove(&id);
+        self.clear_selection();
+        self.app.remove_session(&id)
+    }
+
+    /// Open a new run under the live-run cap (issue #31). Returns true
+    /// when the run was created: under the cap it starts immediately; at
+    /// the cap the oldest-exited run is reaped first (the flash names it).
+    /// When every live run is still running the request is refused — no
+    /// entry, no PTY, no unbounded growth — with a flash pointing at
+    /// per-run close (`x`).
+    pub(crate) fn request_new_run(&mut self) -> bool {
+        if self.runs.len() < super::runs::MAX_LIVE_RUNS {
+            self.app.start_new_session();
+            self.clear_selection();
+            self.link_cursor = None;
+            return true;
+        }
+        match self.evict_oldest_exited() {
+            Some(title) => {
+                self.app.start_new_session();
+                self.clear_selection();
+                self.link_cursor = None;
+                self.app
+                    .set_status(format!("reaped exited run '{title}' for room"));
+                true
+            }
+            None => {
+                self.app.set_status(format!(
+                    "at {} live runs · x closes the selected run",
+                    super::runs::MAX_LIVE_RUNS
+                ));
+                false
+            }
+        }
+    }
+
     /// Close (kill) the selected run: drop its live PTY — `Drop` kills
     /// and reaps the child so no zombie survives — and remove its entry
     /// (pending input dies with it). Immediate and single-step;
@@ -248,5 +291,81 @@ mod tests {
         assert!(view.app.sessions.is_empty());
         assert!(view.runs.is_empty());
         assert!(!view.confirm_quit_required());
+    }
+
+    #[test]
+    fn eleventh_run_reaps_oldest_exited_first() {
+        use super::super::runs::{insert_test_pty, test_shell, MAX_LIVE_RUNS};
+        use std::time::{Duration, Instant};
+
+        let mut view = test_shell();
+        for _ in 0..(MAX_LIVE_RUNS - 2) {
+            insert_test_pty(&mut view, "sleep", &["5"]);
+        }
+        let mut exited_ids = vec![];
+        for _ in 0..2 {
+            exited_ids.push(insert_test_pty(&mut view, "true", &[]));
+        }
+        assert_eq!(view.runs.len(), MAX_LIVE_RUNS);
+        // Settle the exits: pump until both `true` children report exited.
+        for _ in 0..200 {
+            view.refresh();
+            if exited_ids
+                .iter()
+                .all(|id| view.runs.get(id).is_some_and(|run| run.exited()))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(exited_ids
+            .iter()
+            .all(|id| view.runs.get(id).is_some_and(|run| run.exited())));
+        // Oldest = stalest output: the first exited run went quiet longest
+        // ago, so it is the reap victim.
+        let older = exited_ids[0].clone();
+        let newer = exited_ids[1].clone();
+        view.runs.get_mut(&newer).unwrap().last_output = Instant::now();
+        view.runs.get_mut(&older).unwrap().last_output =
+            Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        let sessions_before = view.app.sessions.len();
+        assert!(view.request_new_run());
+        // Room made under the cap: the victim's entry+PTY are gone, the
+        // newer exited run survives, a spawn is queued for the new entry
+        // (its PTY lands on the next pump tick via the normal spawn path,
+        // still under the cap), and the flash names the reaped run.
+        assert_eq!(view.runs.len(), MAX_LIVE_RUNS - 1);
+        assert_eq!(view.app.sessions.len(), sessions_before);
+        assert!(!view.runs.contains_key(&older));
+        assert!(view.app.sessions.iter().all(|s| s.id != older));
+        assert!(view.runs.contains_key(&newer));
+        assert_eq!(
+            view.app.take_pending_spawn(),
+            Some(crate::embedded::SpawnKind::New)
+        );
+        assert!(view.status_text().contains("reaped"));
+    }
+
+    #[test]
+    fn eleventh_run_refused_when_all_live() {
+        use super::super::runs::{insert_test_pty, test_shell, MAX_LIVE_RUNS};
+
+        let mut view = test_shell();
+        for _ in 0..MAX_LIVE_RUNS {
+            insert_test_pty(&mut view, "sleep", &["5"]);
+        }
+        view.app.focus_nav();
+        let sessions_before = view.app.sessions.len();
+        assert!(!view.request_new_run());
+        // No entry, no PTY, no queued spawn: the map never grows past
+        // the cap, and the flash points at per-run close.
+        assert_eq!(view.runs.len(), MAX_LIVE_RUNS);
+        assert_eq!(view.app.sessions.len(), sessions_before);
+        assert!(view.app.take_pending_spawn().is_none());
+        assert!(view.status_text().contains("x closes"));
+        // The `n` key reports the same refusal without stealing focus.
+        assert_eq!(view.nav_action("n", false), NavAction::None);
+        assert_eq!(view.runs.len(), MAX_LIVE_RUNS);
+        assert_eq!(view.app.sessions.len(), sessions_before);
     }
 }

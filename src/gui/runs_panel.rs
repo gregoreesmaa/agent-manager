@@ -60,9 +60,11 @@ impl ShellView {
                     .primary()
                     .small()
                     .on_click(cx.listener(|this, _ev, window, _cx| {
-                        this.app.start_new_session();
-                        this.clear_selection();
-                        this.focus_term(window);
+                        // Same live-run cap as the `n` key (issue #31):
+                        // a refused 11th run never steals focus.
+                        if this.request_new_run() {
+                            this.focus_term(window);
+                        }
                     })),
             ),
         );

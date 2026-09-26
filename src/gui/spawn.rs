@@ -18,6 +18,29 @@ impl ShellView {
     pub(crate) fn spawn_queued(&mut self) -> bool {
         if let Some(kind) = self.app.take_pending_spawn() {
             let run_id = self.active_id().unwrap_or_default();
+            // Live-run cap backstop (issue #31): `n`/`+ New` are gated up
+            // front in `request_new_run`, but resume/retry queue a PTY for
+            // an existing entry and can still arrive at the cap. Reap the
+            // oldest-exited run first; when all are live, refuse with a
+            // sticky error — the entry is kept (nothing user-kept is
+            // deleted) and stays startable via `r` once room exists.
+            // Restarts never trigger this: they drop the dead PTY before
+            // queueing, so the count already fell by one.
+            if self.runs.len() >= super::runs::MAX_LIVE_RUNS && !self.runs.contains_key(&run_id) {
+                match self.evict_oldest_exited() {
+                    Some(title) => {
+                        self.app
+                            .set_status(format!("reaped exited run '{title}' for room"));
+                    }
+                    None => {
+                        self.app.set_error(format!(
+                            "at {} live runs · close one with x, then r to start",
+                            super::runs::MAX_LIVE_RUNS
+                        ));
+                        return true;
+                    }
+                }
+            }
             // Configured per-agent flags ride along (issue #33).
             let (program, args) = self.app.spawn_command_for(&kind);
             match EmbeddedPty::spawn(&program, &args, self.cols, self.rows) {
@@ -207,5 +230,56 @@ mod tests {
         view.forward_key("enter", None, false, false);
         let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
         assert_eq!(s.title, "fix");
+    }
+
+    #[test]
+    fn spawn_backstop_reaps_exited_run_for_queued_spawn() {
+        use super::super::runs::{insert_test_pty, test_shell, MAX_LIVE_RUNS};
+        use std::time::Duration;
+
+        let mut view = test_shell();
+        for _ in 0..(MAX_LIVE_RUNS - 1) {
+            insert_test_pty(&mut view, "sleep", &["5"]);
+        }
+        let victim = insert_test_pty(&mut view, "true", &[]);
+        for _ in 0..200 {
+            view.refresh();
+            if view.runs.get(&victim).is_some_and(|run| run.exited()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(view.runs.get(&victim).is_some_and(|run| run.exited()));
+        // A queued spawn arrives at the cap (e.g. resume): the victim is
+        // reaped for room and the map never exceeds the cap, whether or
+        // not the real `muse` binary exists to complete the spawn.
+        let sessions_before = view.app.sessions.len();
+        view.app.start_new_session();
+        view.refresh();
+        assert!(!view.runs.contains_key(&victim));
+        assert!(view.app.sessions.iter().all(|s| s.id != victim));
+        assert!(view.runs.len() <= MAX_LIVE_RUNS);
+        assert_eq!(view.app.sessions.len(), sessions_before);
+    }
+
+    #[test]
+    fn spawn_backstop_refuses_queued_spawn_when_all_live() {
+        use super::super::runs::{insert_test_pty, test_shell, MAX_LIVE_RUNS};
+
+        let mut view = test_shell();
+        for _ in 0..MAX_LIVE_RUNS {
+            insert_test_pty(&mut view, "sleep", &["5"]);
+        }
+        let sessions_before = view.app.sessions.len();
+        view.app.start_new_session();
+        view.refresh();
+        // Refused before any spawn attempt: no 11th PTY, the entry kept
+        // (nothing user-kept is deleted), and the sticky error names the
+        // recovery (`x` to close, `r` to start once room exists).
+        assert_eq!(view.runs.len(), MAX_LIVE_RUNS);
+        assert_eq!(view.app.sessions.len(), sessions_before + 1);
+        let err = view.app.error_text().unwrap_or_default();
+        assert!(err.contains("live runs"), "unexpected error: {err}");
+        assert!(view.can_retry());
     }
 }

@@ -5,9 +5,28 @@
 //! able to desync. A single `Run` struct per id removes that bug class:
 //! spawning, pumping, keying, closing, and restarting all move one entry.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::embedded::EmbeddedPty;
+
+/// Live-run cap (issue #31): at most this many PTYs exist at once.
+/// Product pick (per ROADMAP): the 11th run reaps the oldest-exited run
+/// first; when every live run is still running the 11th is refused and
+/// the user closes one explicitly (`x`, issues #4/#23).
+pub const MAX_LIVE_RUNS: usize = 10;
+
+/// Oldest-exited live run: least-recently-active among exited children.
+/// Output recency is the closest proxy for exit age (output stops at
+/// exit), so the stalest exited run is the one untouched longest.
+/// `None` when every live run is still running (refuse, don't reap a
+/// live child).
+pub(crate) fn oldest_exited_id(runs: &HashMap<String, Run>) -> Option<String> {
+    runs.iter()
+        .filter(|(_, run)| run.exited())
+        .min_by_key(|(_, run)| run.last_output)
+        .map(|(id, _)| id.clone())
+}
 
 /// One live run: its PTY, output recency, and the cached attention bit
 /// (unchanged screens skip re-scanning). The pending input line lives on
@@ -103,5 +122,35 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(run.exited());
+    }
+
+    #[test]
+    fn oldest_exited_id_ignores_live_runs_and_picks_stalest() {
+        use std::time::{Duration, Instant};
+
+        let mut runs: HashMap<String, Run> = HashMap::new();
+        // A live run, fresher than everything: never a reap victim.
+        let mut live = Run::new(EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap());
+        live.last_output = Instant::now();
+        runs.insert("live".to_string(), live);
+        for id in ["old", "new"] {
+            let mut run = Run::new(EmbeddedPty::spawn("true", &[], 80, 24).unwrap());
+            for _ in 0..100 {
+                run.pump();
+                if run.exited() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(run.exited());
+            runs.insert(id.to_string(), run);
+        }
+        runs.get_mut("old").unwrap().last_output =
+            Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        runs.get_mut("new").unwrap().last_output = Instant::now();
+        assert_eq!(oldest_exited_id(&runs).as_deref(), Some("old"));
+        runs.remove("old");
+        runs.remove("new");
+        assert_eq!(oldest_exited_id(&runs), None);
     }
 }
