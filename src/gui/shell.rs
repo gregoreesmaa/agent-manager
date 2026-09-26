@@ -631,21 +631,61 @@ impl ShellView {
         sidebar.into_any_element()
     }
 
-    fn render_terminal(&self) -> gpui::Div {
-        let Some(view) = self.active_view() else {
-            return div()
-                .flex_1()
-                .h_full()
-                .p_4()
-                .child(
-                    div()
-                        .text_color(rgb(0x888888))
-                        .child(match self.app.error_text() {
-                            Some(e) => format!("spawn failed: {e}"),
-                            None => "No session yet. Press n to start a new muse.".to_string(),
-                        }),
-                );
+    /// First-run orientation copy: icon + message + error flag so the
+    /// empty state (`No session yet`) and the failure state (`spawn
+    /// failed`) differ by shape and color, not text alone.
+    fn empty_pane_copy(&self) -> (&'static str, String, bool) {
+        match self.app.error_text() {
+            Some(e) => ("✕", format!("spawn failed: {e}"), true),
+            None => (
+                "○",
+                "No session yet. Press n to start a new muse.".to_string(),
+                false,
+            ),
+        }
+    }
+
+    /// Empty terminal pane: icon-split status line plus a clickable
+    /// `+ New` CTA (keyboard parity: `n` still works) so first run does
+    /// not depend on discovering the key hint.
+    fn render_empty_pane(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let (icon, msg, is_error) = self.empty_pane_copy();
+        let color = if is_error {
+            rgb(0xff9999)
+        } else {
+            rgb(0x888888)
         };
+        div().flex_1().h_full().p_4().child(
+            div()
+                .flex()
+                .flex_col()
+                .child(div().text_color(color).child(format!("{icon} {msg}")))
+                .child(
+                    div().pt_2().child(
+                        Button::new(ElementId::Name("empty-new-run-btn".into()))
+                            .label("+ New (n)")
+                            .primary()
+                            .small()
+                            .on_click(cx.listener(|this, _ev, window, _cx| {
+                                this.app.start_new_session();
+                                this.clear_selection();
+                                this.focus_term(window);
+                            })),
+                    ),
+                ),
+        )
+    }
+
+    fn render_terminal(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let Some(view) = self.active_view() else {
+            return self.render_empty_pane(cx);
+        };
+        self.render_live_terminal(view)
+    }
+
+    /// Live terminal pane. Takes no window context so headless tests can
+    /// build the element without a gpui harness.
+    fn render_live_terminal(&self, view: LiveView<'_>) -> gpui::Div {
         let cursor = if view.exited || view.screen.hide_cursor() {
             None
         } else {
@@ -829,7 +869,7 @@ impl Render for ShellView {
                                     .child(title),
                             )
                             .child(self.render_error_banner(cx))
-                            .child(self.render_terminal())
+                            .child(self.render_terminal(cx))
                             // Tracked: clicking here must move real keyboard
                             // focus, or typed keys never reach `muse`. Drag
                             // highlights terminal text (copy-on-select);
@@ -1321,7 +1361,33 @@ mod headless_tests {
             view.refresh();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let _ = view.render_terminal();
+        let live = view.active_view().expect("live pty has a view");
+        let _ = view.render_live_terminal(live);
+    }
+
+    #[test]
+    fn empty_pane_splits_empty_vs_failed_by_icon() {
+        let mut view = ShellView::new();
+        // No sessions, no error: the calm empty state.
+        let (icon, msg, is_error) = view.empty_pane_copy();
+        assert_eq!(icon, "○");
+        assert!(msg.starts_with("No session yet"));
+        assert!(!is_error);
+        // A recorded spawn failure flips icon, copy, and error flag so the
+        // states differ by shape, not text alone.
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        view.app.set_error("missing binary");
+        let (icon, msg, is_error) = view.empty_pane_copy();
+        assert_eq!(icon, "✕");
+        assert!(msg.starts_with("spawn failed:"));
+        assert!(is_error);
+        // Dismissal restores the empty state.
+        view.app.clear_error();
+        let (icon, msg, is_error) = view.empty_pane_copy();
+        assert_eq!(icon, "○");
+        assert!(msg.starts_with("No session yet"));
+        assert!(!is_error);
     }
 
     #[test]
