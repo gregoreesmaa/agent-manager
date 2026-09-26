@@ -1916,7 +1916,10 @@ mod headless_tests {
     #[test]
     fn gpui_version_is_pinned() {
         // Fails loudly on upgrade: review gpui API changes consciously.
-        let lock = std::fs::read_to_string("Cargo.lock").expect("Cargo.lock readable in tests");
+        // Manifest-relative so the test passes regardless of the
+        // process working directory (CI, editors, `cargo test -p`).
+        let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
+            .expect("Cargo.lock readable in tests");
         let mut lines = lock.lines();
         let mut found = false;
         while let Some(line) = lines.next() {
@@ -1939,7 +1942,10 @@ mod headless_tests {
         // The sessions chrome uses gpui-component 0.5.x, the last line built
         // on gpui 0.2.2. 0.6+ moved to the gpui-pre 0.3.6 fork and would
         // force a framework migration: fail loudly so that move is conscious.
-        let lock = std::fs::read_to_string("Cargo.lock").expect("Cargo.lock readable in tests");
+        // Manifest-relative so the test passes regardless of the
+        // process working directory (CI, editors, `cargo test -p`).
+        let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
+            .expect("Cargo.lock readable in tests");
         let mut lines = lock.lines();
         let mut found = false;
         while let Some(line) = lines.next() {
