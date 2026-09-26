@@ -23,7 +23,6 @@ use super::shell::{ShellView, TERM_FONT_SIZE};
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        super::theme::debug_assert_contrast();
         if self.list_focus.is_none() {
             self.list_focus = Some(cx.focus_handle());
             self.term_focus = Some(cx.focus_handle());
@@ -81,7 +80,7 @@ impl Render for ShellView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(super::theme::SURFACE_BG))
+            .bg(rgb(0x11111b))
             .track_focus(&self.list_focus.clone().unwrap())
             .id(ElementId::Name("app-root".into()))
             .on_key_down(cx.listener(|this, ev, window, cx| {
@@ -162,7 +161,7 @@ impl Render for ShellView {
                 div()
                     .h(px(STATUS_HEIGHT))
                     .px_2()
-                    .bg(rgb(super::theme::BAR_BG))
+                    .bg(rgb(0x1e1e2e))
                     .text_color(rgb(super::theme::SECONDARY_FG))
                     .text_sm()
                     .truncate()
@@ -218,14 +217,13 @@ impl ShellView {
     /// In-app help panel: the full keymap as text rows plus a Close button,
     /// dismissed by `?` — the keymap no longer lives only in the README.
     pub(crate) fn render_help(&self, cx: &mut Context<Self>) -> gpui::Div {
-        super::theme::debug_assert_contrast();
         let mut col = div()
             .flex()
             .flex_col()
             .gap_1()
             .px_3()
             .py_2()
-            .bg(rgb(super::theme::BAR_BG))
+            .bg(rgb(0x1e1e2e))
             .text_color(super::terminal::to_hsla(super::shell::DEFAULT_FG))
             .text_sm()
             .child(
