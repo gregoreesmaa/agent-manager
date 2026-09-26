@@ -57,22 +57,52 @@ pub fn animal_name(n: usize) -> String {
 
 /// Screen-text markers suggesting `muse` waits on the user (approval
 /// prompts, permission questions, errors). Matched case-insensitively.
+/// This is the single reconciled marker list: the live shell and the
+/// historic provider classifier both funnel through [`classify`], so a run
+/// can never show a different status live vs historic by construction.
+pub const ATTENTION_MARKERS: &[&str] = &[
+    "approval",
+    "approve",
+    "permission",
+    "needs_input",
+    "needs input",
+    "\"error\"",
+    "(y/n)",
+    "allow once",
+    "allow always",
+    "would you like",
+    "press enter to confirm",
+];
+
 pub fn needs_attention(text: &str) -> bool {
-    const MARKERS: &[&str] = &[
-        "approval",
-        "approve",
-        "permission",
-        "needs_input",
-        "needs input",
-        "\"error\"",
-        "(y/n)",
-        "allow once",
-        "allow always",
-        "would you like",
-        "press enter to confirm",
-    ];
     let lowered = text.to_lowercase();
-    MARKERS.iter().any(|m| lowered.contains(m))
+    ATTENTION_MARKERS.iter().any(|m| lowered.contains(m))
+}
+
+/// A run counts as actively working while it produced output recently.
+pub const WORKING_WINDOW_SECS: u64 = 60;
+
+/// The one status classifier, owned by `app`. `screen_text` is the live
+/// screen (or the historic transcript tail), `output_age` is how long ago
+/// the run last produced output (`None` = never/unknown), and `exited`
+/// reports the child state (always `false` for historic sessions).
+/// Attention markers win over everything; an exited run without markers is
+/// idle; otherwise recency inside the working window decides.
+pub fn classify(
+    screen_text: &str,
+    output_age: Option<std::time::Duration>,
+    exited: bool,
+) -> Status {
+    if needs_attention(screen_text) {
+        return Status::Attention;
+    }
+    if exited {
+        return Status::Idle;
+    }
+    match output_age {
+        Some(age) if age < std::time::Duration::from_secs(WORKING_WINDOW_SECS) => Status::Working,
+        _ => Status::Idle,
+    }
 }
 
 /// Top-down sort: attention first, then idle, then working; stable by
@@ -419,6 +449,36 @@ mod tests {
         app2.start_new_session();
         app2.note_submitted_prompt("run-1", "   ");
         assert_eq!(app2.sessions[0].title, "otter");
+    }
+
+    #[test]
+    fn unified_classifier_covers_both_live_and_historic_paths() {
+        use std::time::Duration;
+        // Attention wins over exit and recency on either path.
+        assert_eq!(
+            classify(
+                "Waiting for your approval",
+                Some(Duration::from_secs(0)),
+                false
+            ),
+            Status::Attention
+        );
+        assert_eq!(classify("allow once? (y/n)", None, true), Status::Attention);
+        // Exited without markers is idle, however recent.
+        assert_eq!(
+            classify("done", Some(Duration::from_secs(0)), true),
+            Status::Idle
+        );
+        // Recency decides the rest.
+        assert_eq!(
+            classify("working…", Some(Duration::from_secs(5)), false),
+            Status::Working
+        );
+        assert_eq!(
+            classify("old output", Some(Duration::from_secs(3600)), false),
+            Status::Idle
+        );
+        assert_eq!(classify("nothing yet", None, false), Status::Idle);
     }
 
     #[test]

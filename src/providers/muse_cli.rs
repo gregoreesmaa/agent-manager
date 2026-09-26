@@ -72,27 +72,16 @@ impl MuseCliProvider {
         (buf, was_cut)
     }
 
+    /// Historic leg of the one `app`-owned classifier: the transcript
+    /// tail plays the screen role, the session log mtime plays output
+    /// recency, and historic sessions never count as exited.
     fn classify(&self, dir: &std::path::Path, tail: &str) -> Status {
-        let lowered = tail.to_lowercase();
-        if lowered.contains("approval")
-            || lowered.contains("permission")
-            || lowered.contains("\"error\"")
-            || lowered.contains("needs_input")
-        {
-            return Status::Attention;
-        }
-        // Recently touched session file => actively working.
         let log = dir.join("session.jsonl");
-        if let Ok(meta) = std::fs::metadata(&log) {
-            if let Ok(mtime) = meta.modified() {
-                if let Ok(age) = SystemTime::now().duration_since(mtime) {
-                    if age.as_secs() < 60 {
-                        return Status::Working;
-                    }
-                }
-            }
-        }
-        Status::Idle
+        let age = std::fs::metadata(&log)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|mtime| SystemTime::now().duration_since(mtime).ok());
+        crate::app::classify(tail, age, false)
     }
 }
 
@@ -204,6 +193,32 @@ fn shorten(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::parsers::registry::RegistryParser;
+
+    #[test]
+    fn historic_classify_agrees_with_live_classifier() {
+        // Same reconciled markers as the live shell: an approval marker
+        // in the tail means Attention even though the log mtime is fresh
+        // (which alone would read Working).
+        let root = std::env::temp_dir().join(format!(
+            "agent-manager-classify-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let leaf = root.join("2026/09/26/attention-session");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(
+            leaf.join("session.jsonl"),
+            "waiting for your approval to proceed",
+        )
+        .unwrap();
+        let p = MuseCliProvider::new(root.clone(), Box::new(RegistryParser::default()));
+        let sessions = p.discover_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].status, crate::app::Status::Attention);
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn unreachable_store_yields_empty_list() {

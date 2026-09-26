@@ -23,8 +23,6 @@ mod providers;
 #[allow(dead_code, unused_imports)]
 mod transcript;
 
-use std::time::Duration;
-
 use gpui::{AppContext, Application, Entity};
 use gpui_component::{Root, Theme, ThemeMode};
 
@@ -42,7 +40,7 @@ fn main() {
         // and the window repaints while anything is alive.
         cx.spawn(async move |cx| loop {
             cx.background_executor()
-                .timer(Duration::from_millis(50))
+                .timer(gui::shell::PUMP_INTERVAL)
                 .await;
             let alive = cx.update(|cx| {
                 pump_view.update(cx, |view, cx| {

@@ -24,7 +24,7 @@ use gpui_component::{
     Sizable as _,
 };
 
-use crate::app::{needs_attention, section_title, status_sections, App, Status};
+use crate::app::{section_title, status_sections, App, Status};
 use crate::embedded::{EmbeddedPty, LiveView};
 use crate::parsers::github::extract_pr_links;
 
@@ -39,8 +39,9 @@ const LEFT_WIDTH: f32 = 264.0;
 const STATUS_HEIGHT: f32 = 28.0;
 /// Terminal font size in points.
 const TERM_FONT_SIZE: f32 = 13.0;
-/// A run counts as actively working while it produced output recently.
-const WORKING_WINDOW: Duration = Duration::from_secs(60);
+/// Pump cadence: the background task polls PTYs at 20 Hz; actual
+/// repaints are dirty-gated (see `tick`), so idle costs ~zero.
+pub const PUMP_INTERVAL: Duration = Duration::from_millis(50);
 /// Selection highlight behind terminal text (classic selection blue).
 const SELECTION_BG: u32 = 0x264f78;
 /// Default terminal foreground when the child requests the default color.
@@ -185,19 +186,10 @@ impl ShellView {
             let pty = &self.ptys[&id];
             let view = pty.view();
             let text = view.screen.contents();
-            let status = if needs_attention(&text) {
-                Status::Attention
-            } else if view.exited {
-                Status::Idle
-            } else if self
-                .last_output
-                .get(&id)
-                .is_some_and(|at| now.duration_since(*at) < WORKING_WINDOW)
-            {
-                Status::Working
-            } else {
-                Status::Idle
-            };
+            // One classifier for live and historic runs alike (owned by
+            // `app`): attention markers win, then exit, then recency.
+            let age = self.last_output.get(&id).map(|at| now.duration_since(*at));
+            let status = crate::app::classify(&text, age, view.exited);
             // Accumulate PR links in first-seen order: the visible screen
             // is only a viewport (vt100 `contents()` shows the live grid,
             // not full scrollback), so replacing would drop links that
