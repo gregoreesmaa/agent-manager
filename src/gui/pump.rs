@@ -116,6 +116,15 @@ impl ShellView {
             // here), so a changed pump is exactly when rows could have
             // moved; a clean pump leaves order and selection index alone.
             self.app.resort_keep_selection();
+            // Persist across restarts (issue #26), throttled so a
+            // streaming run doesn't rewrite the file every 50 ms tick
+            // (the first change always saves; quit/close save too).
+            let due = self
+                .last_persist
+                .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(5));
+            if due {
+                self.persist_runs();
+            }
         }
         // Transition-triggered bells, after the borrows end: only the tick
         // that observes a background flip rings, so 20 Hz polling never
@@ -143,6 +152,24 @@ mod tests {
             .unwrap();
         view.runs.insert(id, Run::new(pty));
         view
+    }
+
+    #[test]
+    fn refresh_persists_run_state_without_touching_disk() {
+        // Issue #26: a changed pump advances the persist clock (the file
+        // write itself is production-only so tests never rewrite the
+        // developer's live runs file; the roundtrip is covered in
+        // `persist.rs` with temp paths).
+        let mut view = view_with_echo();
+        assert!(view.last_persist.is_none());
+        for _ in 0..100 {
+            view.refresh();
+            if view.last_persist.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(view.last_persist.is_some());
     }
 
     #[test]

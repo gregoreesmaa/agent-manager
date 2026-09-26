@@ -29,6 +29,8 @@ pub(crate) enum NavAction {
     /// Advance the theme choice (dark → light → system); the caller
     /// applies, persists, and flashes it.
     CycleTheme,
+    /// Export the selected run's visible text plus links to markdown.
+    Export,
     None,
 }
 
@@ -50,6 +52,7 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
         ("Tab", "switch sessions ↔ terminal focus"),
         ("y", "copy selection (or whole screen)"),
         ("p", "paste clipboard into muse"),
+        ("e", "export selected run to markdown (local file)"),
         ("r", "restart ended run / retry failed spawn"),
         ("x", "close (kill) the selected run"),
         ("d", "dismiss the sticky error"),
@@ -150,6 +153,7 @@ impl ShellView {
             ("enter", _) => NavAction::FocusTerm,
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
+            ("e", false) => NavAction::Export,
             ("r", false) if self.can_restart() => NavAction::Restart,
             ("r", false) if self.can_retry() => NavAction::Retry,
             ("r", false) if self.can_resume() => NavAction::Restart,

@@ -104,6 +104,10 @@ pub struct ShellView {
     /// Title-filter capture (issue #29): while true, printable keys extend
     /// [`App::filter`] instead of dispatching nav actions.
     pub(crate) filtering: bool,
+    /// Last run-state persist (issue #26); `None` until the first save.
+    /// Throttles refresh-time saves so a streaming run doesn't rewrite
+    /// the file every 50 ms tick; quitting and closing always save.
+    pub(crate) last_persist: Option<std::time::Instant>,
 }
 
 impl ShellView {
@@ -127,6 +131,7 @@ impl ShellView {
             font_size: prefs.font_size,
             sidebar_width: prefs.sidebar_width,
             filtering: false,
+            last_persist: None,
             runs: HashMap::new(),
             quit_armed: false,
             link_cursor: None,
@@ -295,6 +300,9 @@ impl ShellView {
             NavAction::FocusTerm => self.focus_term(window),
             NavAction::Copy => self.copy_screen(cx),
             NavAction::Paste => self.paste_clipboard(cx),
+            NavAction::Export => {
+                self.export_selected_run();
+            }
             NavAction::Retry => {
                 self.retry_spawn();
                 self.focus_term(window);
