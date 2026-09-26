@@ -4,12 +4,17 @@ use crate::app::ChatSession;
 
 /// A source of chat sessions (Muse CLI store, mock, future providers).
 pub trait Provider {
-    #[allow(dead_code)]
+    /// Short identifier for startup diagnostics (e.g. `"muse-cli"`).
     fn name(&self) -> &'static str;
     fn discover_sessions(&self) -> Result<Vec<ChatSession>, ProviderError>;
 }
 
 /// Provider failure modes.
+///
+/// No variant is constructed today by design: discovery degrades to an
+/// empty list on unreachable stores (see `MuseCliProvider` docs), and
+/// startup funnels `Err` into that same empty list. The type stays so a
+/// future provider can fail loudly without changing the seam.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum ProviderError {

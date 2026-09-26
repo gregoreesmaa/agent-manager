@@ -48,7 +48,7 @@ impl Run {
 
 #[cfg(test)]
 pub(crate) fn test_shell() -> super::shell::ShellView {
-    super::shell::ShellView::new()
+    super::shell::ShellView::new_with_sessions(vec![])
 }
 
 /// Start a run in `view` backed by a real child process, returning its id.

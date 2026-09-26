@@ -148,8 +148,9 @@ override just the head of the chain; `terminal.font_size` and
   pump loop, clipboard.
 - `src/app.rs` — run list state, titles, activity sort.
 - `src/parsers/` — modular link parsers (GitHub PR URLs today).
-- `src/providers/` — session-provider abstraction (parked for a future
-  historic-attach flow; live runs are spawned in-app).
+- `src/providers/` — session-provider abstraction: `MuseCliProvider`
+  discovery seeds historic sessions at startup (`r` re-attaches one);
+  live runs are spawned in-app.
 
 ## Regression shield
 

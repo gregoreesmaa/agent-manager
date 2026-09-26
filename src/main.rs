@@ -29,12 +29,16 @@ fn main() {
     // Historic attach: provider-discovered sessions seed the list before
     // any PTY exists (unreachable store degrades to an empty list, never
     // a startup failure). `r` on a seeded entry re-attaches it.
-    let seeded = MuseCliProvider::new(
+    let provider = MuseCliProvider::new(
         MuseCliProvider::default_store_root(),
         Box::new(parsers::registry::RegistryParser::default()),
-    )
-    .discover_sessions()
-    .unwrap_or_default();
+    );
+    let seeded = provider.discover_sessions().unwrap_or_default();
+    eprintln!(
+        "agent-manager: provider '{}' seeded {} historic session(s)",
+        provider.name(),
+        seeded.len()
+    );
     // Issues #33/#34: user config (per-agent flags, theme choice); a
     // missing file means plain `muse` + follow-system theme.
     let config = config::Config::load();

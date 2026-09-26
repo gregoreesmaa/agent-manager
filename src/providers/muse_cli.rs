@@ -7,7 +7,7 @@
 //! binary snapshots; it is not parsed here.
 //!
 //! If the store root does not exist or is unreadable, discovery returns an
-//! empty list instead of failing, so the TUI still starts (documented
+//! empty list instead of failing, so the GUI still starts (documented
 //! degraded mode). Status heuristics: a session whose `session.jsonl` was
 //! modified within the last 60 s counts as [`Status::Working`]; parse or
 //! approval markers flip it to [`Status::Attention`]; otherwise

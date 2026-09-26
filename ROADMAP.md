@@ -12,7 +12,8 @@ Drawn from `VISION.md` / `VISION-UX.md` / `VISION-TECHNICAL.md` /
 - Persist + export run state, local-only (#26).
 - Scrollback pager over the retained 2000-line buffer (#25).
 - Background attention signal: badge + title count + bell (#24).
-- Historic attach on startup (#22) + parked-modules fate (#16).
+- Historic attach on startup (#22; provider seeding at startup shipped
+  with #16, `r` resumes a seeded session).
 - Per-frame terminal cache; hoist mono_metrics (#19).
 - Run eviction policy: max 10 PTYs, oldest-exited reaped first (#31).
 - Non-color + contrast cues (#8); in-app help (#7); vertical space (#32);

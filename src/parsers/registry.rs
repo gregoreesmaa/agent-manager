@@ -3,7 +3,6 @@
 use crate::parsers::{pr_links, related_links, Parsed, Parser};
 
 /// Tries a title heuristic (first non-empty line) plus shared PR extraction.
-/// Additional strategies can be pushed into `strategies` later.
 pub struct RegistryParser {
     strategies: Vec<Box<dyn Parser>>,
 }
@@ -13,13 +12,6 @@ impl Default for RegistryParser {
         Self {
             strategies: vec![Box::new(FirstLineTitle)],
         }
-    }
-}
-
-impl RegistryParser {
-    #[allow(dead_code)]
-    pub fn with_strategies(strategies: Vec<Box<dyn Parser>>) -> Self {
-        Self { strategies }
     }
 }
 

@@ -495,7 +495,7 @@ mod tests {
         // End-to-end of the "new session" crash path: a real child writes
         // colored output, and render_terminal builds the gpui element.
         // Pre-fix this panicked inside StyledText::with_runs.
-        let mut view = ShellView::new();
+        let mut view = ShellView::new_with_sessions(vec![]);
         view.app.start_new_session();
         let _ = view.app.take_pending_spawn();
         let id = view.active_id().unwrap();

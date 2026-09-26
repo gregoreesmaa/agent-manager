@@ -92,11 +92,6 @@ pub struct ShellView {
 }
 
 impl ShellView {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self::new_with_sessions(vec![])
-    }
-
     /// Start with provider-discovered entries (historic attach): sessions
     /// appear in the list with their titles, links, and transcripts before
     /// any PTY exists; `r` re-attaches the selected one (`Resume`).
@@ -375,7 +370,7 @@ mod tests {
         // get compact hints that still name every essential key. A live
         // run keeps the view on the key-hint lines (the ready/resume and
         // empty states are width-invariant by design).
-        let mut view = ShellView::new();
+        let mut view = ShellView::new_with_sessions(vec![]);
         crate::gui::runs::insert_test_pty(&mut view, "sleep", &["5"]);
         view.app.focus_nav();
         let full = view.status_text_for_width(1280.0);
