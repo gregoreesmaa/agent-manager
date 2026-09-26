@@ -351,7 +351,7 @@ mod tests {
     fn long_title_truncates_with_marker() {
         let messages = vec![TranscriptMessage {
             role: Role::User,
-            text: "x".repeat(200).into(),
+            text: "x".repeat(200),
         }];
         let title = derive_title(&messages, "fallback-id");
         assert!(!title.contains('\n'));

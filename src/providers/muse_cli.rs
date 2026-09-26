@@ -274,7 +274,7 @@ mod tests {
         let leaf = root.join("2026/09/26/transcript-session");
         std::fs::create_dir_all(&leaf).unwrap();
         let log = leaf.join("session.jsonl");
-        let lines = vec![
+        let lines = [
             serde_json::json!({
                 "payload_type": "runtime.session.metadata",
                 "payload": {"kind": "metadata", "record": {"workspace_root": "/tmp/work/myproj"}}
