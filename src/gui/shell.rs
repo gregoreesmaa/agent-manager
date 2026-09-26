@@ -56,6 +56,7 @@ enum NavAction {
     FocusTerm,
     Copy,
     Paste,
+    Retry,
     None,
 }
 
@@ -131,6 +132,28 @@ impl ShellView {
                     self.spawn_error = Some(e.to_string());
                 }
             }
+        }
+    }
+
+    /// Retry is offered when a spawn actually failed and the selected run
+    /// still owns no live PTY. Gating on the recorded failure (not just a
+    /// missing PTY) keeps a fast-typed `r` reaching a still-starting child
+    /// instead of queueing a duplicate spawn.
+    fn can_retry(&self) -> bool {
+        if self.spawn_error.is_none() {
+            return false;
+        }
+        match self.active_id() {
+            Some(id) => !self.ptys.contains_key(&id),
+            None => false,
+        }
+    }
+
+    /// Retry action for a failed spawn: re-queue a fresh `muse` for the
+    /// selected run (same id, no new entry). Never touches a live PTY.
+    fn retry_spawn(&mut self) {
+        if self.can_retry() {
+            self.app.retry_spawn();
         }
     }
 
@@ -386,6 +409,7 @@ impl ShellView {
             ("i", false) | ("enter", _) => NavAction::FocusTerm,
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
+            ("r", false) if self.can_retry() => NavAction::Retry,
             _ => NavAction::None,
         }
     }
@@ -434,6 +458,14 @@ impl ShellView {
                 window.refresh();
                 return;
             }
+            // Dead pane (spawn failed, no PTY owns the keys): `r` retries
+            // instead of typing into nothing. Gated on a recorded failure
+            // so a fast first `r` still reaches a starting child.
+            if key.eq_ignore_ascii_case("r") && !ctrl && !platform && self.can_retry() {
+                self.retry_spawn();
+                window.refresh();
+                return;
+            }
             // Clipboard shortcuts never reach `muse`: Cmd+C copies the mouse
             // selection (or screen), Cmd/Ctrl+V pastes. Ctrl+C still
             // interrupts (forwarded below).
@@ -469,6 +501,10 @@ impl ShellView {
             NavAction::FocusTerm => self.focus_term(window),
             NavAction::Copy => self.copy_screen(cx),
             NavAction::Paste => self.paste_clipboard(cx),
+            NavAction::Retry => {
+                self.retry_spawn();
+                self.focus_term(window);
+            }
             NavAction::None => {}
         }
         window.refresh();
@@ -652,9 +688,40 @@ impl ShellView {
             .child(inner)
     }
 
+    /// Spawn-failure banner above the terminal pane: the error stays
+    /// visible with a one-click Retry (keyboard `r`), instead of a passive
+    /// line in the empty pane. Empty (zero-size) when no spawn failed.
+    fn render_error_banner(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let Some(err) = self.spawn_error.clone() else {
+            return div();
+        };
+        div()
+            .flex()
+            .flex_row()
+            .px_2()
+            .py_1()
+            .bg(rgb(0x3a1d1d))
+            .text_color(rgb(0xff9999))
+            .text_sm()
+            .child(format!("spawn failed: {err}"))
+            .child(
+                Button::new(ElementId::Name("retry-spawn-btn".into()))
+                    .label("Retry (r)")
+                    .primary()
+                    .small()
+                    .on_click(cx.listener(|this, _ev, window, _cx| {
+                        this.retry_spawn();
+                        this.focus_term(window);
+                    })),
+            )
+    }
+
     fn status_text(&self) -> String {
         if let Some(msg) = self.app.status_text() {
             return msg.to_string();
+        }
+        if self.can_retry() {
+            return "spawn failed · r: retry · n: new · q: quit".to_string();
         }
         if self.app.is_terminal_focused() {
             "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
@@ -738,6 +805,7 @@ impl Render for ShellView {
                                     .text_sm()
                                     .child(title),
                             )
+                            .child(self.render_error_banner(cx))
                             .child(self.render_terminal())
                             // Tracked: clicking here must move real keyboard
                             // focus, or typed keys never reach `muse`. Drag
@@ -981,6 +1049,45 @@ mod headless_tests {
         assert_eq!(view.nav_action("p", false), NavAction::Paste);
         assert_eq!(view.nav_action("z", false), NavAction::None);
         assert_eq!(view.nav_action("j", true), NavAction::None);
+    }
+
+    #[test]
+    fn retry_requeues_failed_spawn_and_never_touches_live_pty() {
+        let mut view = ShellView::new();
+        // No run: retry is inert.
+        assert!(!view.can_retry());
+        assert_eq!(view.nav_action("r", false), NavAction::None);
+        view.retry_spawn();
+        assert!(view.app.take_pending_spawn().is_none());
+
+        view.app.start_new_session();
+        // Fresh run, failure not yet recorded: `r` stays inert so fast
+        // typing still reaches the starting child.
+        assert!(!view.can_retry());
+        assert_eq!(view.nav_action("r", false), NavAction::None);
+
+        // Simulate the pump consuming the spawn and failing.
+        let _ = view.app.take_pending_spawn();
+        view.spawn_error = Some("failed to spawn `muse`: missing binary".to_string());
+        assert!(view.can_retry());
+        assert_eq!(view.nav_action("r", false), NavAction::Retry);
+        view.retry_spawn();
+        assert_eq!(
+            view.app.take_pending_spawn(),
+            Some(crate::embedded::SpawnKind::New)
+        );
+        assert_eq!(
+            view.status_text(),
+            "spawn failed · r: retry · n: new · q: quit"
+        );
+
+        // A live PTY disables retry: the run is already up.
+        let id = view.active_id().unwrap();
+        let _ = view.app.take_pending_spawn();
+        let pty = EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap();
+        view.ptys.insert(id, pty);
+        assert!(!view.can_retry());
+        assert_eq!(view.nav_action("r", false), NavAction::None);
     }
 
     #[test]

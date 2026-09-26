@@ -192,6 +192,15 @@ impl App {
         self.pending_spawn.take()
     }
 
+    /// Re-queue a spawn for the selected run (Retry after a spawn failure).
+    /// Creates no new run entry: the failed run keeps its id and title.
+    /// No-op when no run is selected.
+    pub fn retry_spawn(&mut self) {
+        if self.selected_session().is_some() {
+            self.pending_spawn = Some(SpawnKind::New);
+        }
+    }
+
     /// Enter terminal focus: keys go to the embedded `muse`.
     pub fn focus_terminal(&mut self) {
         self.focus = Focus::Terminal;
@@ -439,6 +448,23 @@ mod tests {
         let sections = status_sections(&only_idle);
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].0, Status::Idle);
+    }
+
+    #[test]
+    fn retry_requeues_spawn_without_new_run_entry() {
+        let mut app = App::new(vec![]);
+        // No selection: no-op, never spawns.
+        app.retry_spawn();
+        assert!(app.take_pending_spawn().is_none());
+        app.start_new_session();
+        assert_eq!(app.sessions.len(), 1);
+        // Simulate the main loop consuming the spawn, then failing.
+        assert_eq!(app.take_pending_spawn(), Some(SpawnKind::New));
+        app.retry_spawn();
+        assert_eq!(app.take_pending_spawn(), Some(SpawnKind::New));
+        // Retry reuses the same run id: no extra entry.
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].id, "run-1");
     }
 
     #[test]
