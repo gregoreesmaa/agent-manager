@@ -298,6 +298,11 @@ impl App {
         self.config.save()
     }
 
+    /// Terminal-pane font setting (issue #35).
+    pub fn terminal_config(&self) -> &crate::config::TerminalConfig {
+        &self.config.terminal
+    }
+
     /// Spawn command for `kind` with the configured per-agent extra flags
     /// appended (issue #33). The key is the program name, so every
     /// supported agent (`muse`, `claude`, …) can carry its own flags.

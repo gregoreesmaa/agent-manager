@@ -109,6 +109,28 @@ follows the OS appearance at startup. Press `t` in the sessions list to
 cycle dark → light → system — the choice applies immediately and is
 saved back to the config file.
 
+### Terminal font
+
+```json
+{ "terminal": { "font_family": "JetBrainsMono Nerd Font", "font_size": 13.0 } }
+```
+
+The terminal panes default to **JetBrainsMono Nerd Font** (OFL-licensed,
+unambiguous glyphs, full box-drawing/block coverage, Nerd Font symbols
+for agent status lines). Recommended install:
+
+```sh
+brew install --cask font-jetbrains-mono-nerd-font
+```
+
+(Linux: download the `JetBrainsMono` Nerd Font release zip from
+ryanoasis/nerd-fonts and install the TTFs.) Behind the primary runs an
+explicit fallback chain — system emoji, CJK monospace fallbacks, then
+system monospace — so emoji/CJK render at correct double width instead
+of tofu. Set `terminal.font_family` to any installed patched font to
+override just the head of the chain; `terminal.font_size` and
+`terminal.fallback_fonts` are overridable too.
+
 ## How it works
 
 - `src/embedded.rs` — PTY spawn/pump/resize/reap via `portable-pty`, plus a

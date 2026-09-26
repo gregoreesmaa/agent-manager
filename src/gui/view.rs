@@ -19,7 +19,7 @@ use super::layout::{
     effective_sidebar_width, sidebar_visible_for_width, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
     STATUS_HEIGHT,
 };
-use super::shell::{ShellView, TERM_FONT_SIZE};
+use super::shell::ShellView;
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -183,7 +183,7 @@ impl ShellView {
         let avail_w =
             f32::from(viewport.width) - effective_sidebar_width(f32::from(viewport.width));
         let avail_h = f32::from(viewport.height) - STATUS_HEIGHT;
-        // Metrics come from the one-time cache: only the grid math below
+        // Metrics come from the font cache: only the grid math below
         // re-runs per frame, never the font-system measure.
         let (char_w, line_h) = self.cached_mono_metrics(cx);
         self.char_w = char_w;
@@ -202,25 +202,34 @@ impl ShellView {
 }
 
 impl ShellView {
-    /// Font-system metrics, measured once and kept: the family (`Menlo`)
-    /// and size are compile-time constants and the text system is
-    /// app-global rather than per-window, so resizes and display moves
-    /// change the grid math in [`Self::fit_pty`] but can never change
-    /// this answer — per-frame re-measuring only burned font-system
-    /// lookups for an identical result.
+    /// Font-system metrics, cached per configured font (issue #35): the
+    /// text system is app-global rather than per-window, so resizes and
+    /// display moves change the grid math in [`Self::fit_pty`] but never
+    /// re-measure — unless the configured family/size changed, which
+    /// drops the stale entry.
     fn cached_mono_metrics(&mut self, cx: &mut Context<ShellView>) -> (f32, f32) {
-        if self.mono_metrics.is_none() {
-            self.mono_metrics = Some(mono_metrics(cx));
+        let family = self.app.terminal_config().font_family.clone();
+        let size = self.term_font_size();
+        let key = (family.clone(), size.to_bits());
+        if let Some((k, m)) = self.mono_metrics.as_ref() {
+            if *k == key {
+                return *m;
+            }
         }
-        self.mono_metrics.unwrap_or((8.0, 18.0))
+        let metrics = mono_metrics(cx, &family, size);
+        self.mono_metrics = Some((key, metrics));
+        metrics
     }
 }
 
 /// Monospace cell metrics for PTY sizing, with sane fallbacks.
-pub(crate) fn mono_metrics(cx: &mut Context<ShellView>) -> (f32, f32) {
-    let size = px(TERM_FONT_SIZE);
+/// `family`/`size` come from the terminal config (issue #35) via
+/// [`ShellView::cached_mono_metrics`] so the PTY grid matches what the
+/// pane actually renders.
+pub(crate) fn mono_metrics(cx: &mut Context<ShellView>, family: &str, size: f32) -> (f32, f32) {
+    let size = px(size);
     let system = cx.text_system();
-    let fid = system.resolve_font(&font("Menlo"));
+    let fid = system.resolve_font(&font(family.to_string()));
     let char_w = system
         .advance(fid, size, ' ')
         .map(|s| f32::from(s.width))

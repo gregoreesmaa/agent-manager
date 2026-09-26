@@ -6,14 +6,15 @@
 //! behind it. Framework-free mapping details stay in [`super::terminal`].
 
 use gpui::{
-    div, font, px, rgb, App as GpuiApp, ClipboardItem, Context, ElementId, ParentElement, Pixels,
-    Point, Styled, StyledText, TextRun, UnderlineStyle,
+    div, px, rgb, App as GpuiApp, ClipboardItem, Context, ElementId, Font, FontFallbacks,
+    ParentElement, Pixels, Point, Styled, StyledText, TextRun, UnderlineStyle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 
+use crate::config::TerminalConfig;
 use crate::embedded::LiveView;
 
-use super::shell::{ShellView, CURSOR_BG, DEFAULT_FG, SELECTION_BG, TERM_FONT_SIZE};
+use super::shell::{ShellView, CURSOR_BG, DEFAULT_FG, SELECTION_BG};
 use super::terminal::{
     point_to_cell, screen_fingerprint, screen_rows, selection_rows, selection_text, to_hsla,
     CellPos,
@@ -177,7 +178,8 @@ impl ShellView {
             return self.render_empty_pane(cx);
         };
         let rows = screen_rows(view.screen, resolved_cursor(&view), CURSOR_BG);
-        let (full, runs) = layout_text(&rows);
+        let term_font = terminal_font(self.app.terminal_config());
+        let (full, runs) = layout_text(&rows, &term_font);
         self.term_frame
             .store(run_id, fingerprint, full.clone(), runs.clone());
         self.assemble_live_terminal(full, runs, cols)
@@ -222,13 +224,14 @@ impl ShellView {
                     }
                 }),
         );
+        let stack = self.app.terminal_config().font_stack();
         div()
             .flex_1()
             .h_full()
             .bg(rgb(0x11111b))
             .p_2()
-            .font_family("Menlo")
-            .text_size(px(TERM_FONT_SIZE))
+            .font_family(stack[0].clone())
+            .text_size(px(self.term_font_size()))
             .child(inner)
     }
 
@@ -274,11 +277,30 @@ impl ShellView {
     }
 }
 
+/// Build the gpui [`Font`] for the terminal pane from the user setting
+/// (issue #35): the configured primary family plus the explicit
+/// emoji/CJK/monospace fallback chain, so one missing family never
+/// silently changes metrics mid-row.
+pub(crate) fn terminal_font(cfg: &TerminalConfig) -> Font {
+    let stack = cfg.font_stack();
+    let mut fallbacks = stack.clone();
+    fallbacks.remove(0);
+    Font {
+        family: stack[0].clone().into(),
+        features: Default::default(),
+        weight: Default::default(),
+        style: Default::default(),
+        fallbacks: Some(FontFallbacks::from_fonts(fallbacks)),
+    }
+}
+
 /// Flatten screen rows into one string plus gpui text runs. Every byte of
 /// the string belongs to exactly one non-empty run — gpui validates this
 /// partition and panics otherwise (crashed the first launch).
-pub(crate) fn layout_text(rows: &[Vec<super::terminal::TermSpan>]) -> (String, Vec<TextRun>) {
-    let mono = font("Menlo");
+pub(crate) fn layout_text(
+    rows: &[Vec<super::terminal::TermSpan>],
+    mono: &Font,
+) -> (String, Vec<TextRun>) {
     let plain = || TextRun {
         len: 0,
         font: mono.clone(),
@@ -346,10 +368,12 @@ mod tests {
         // Regression test for the "new session" crash: gpui validates that
         // run lengths partition the text byte-exactly and panics otherwise.
         // This calls the real constructor, so it panics here first.
+        use crate::config::TerminalConfig;
+        let mono = terminal_font(&TerminalConfig::default());
         let mut parser = vt100::Parser::new(24, 80, 0);
         parser.process(b"\x1b[2J\x1b[1;1Htop \x1b[31mred\x1b[0m \xc3\xa9\xe2\x9d\xaf");
         let rows = screen_rows(parser.screen(), Some((0, 0)), Rgb8(200, 200, 200));
-        let (full, runs) = layout_text(&rows);
+        let (full, runs) = layout_text(&rows, &mono);
         let total: usize = runs.iter().map(|r| r.len).sum();
         assert_eq!(total, full.len(), "runs must cover every byte");
         assert!(runs.iter().all(|r| r.len > 0), "no empty runs");
@@ -358,7 +382,82 @@ mod tests {
         let mut empty = vt100::Parser::new(24, 80, 0);
         empty.process(b"");
         let rows = screen_rows(empty.screen(), None, Rgb8(0, 0, 0));
-        let (full, runs) = layout_text(&rows);
+        let (full, runs) = layout_text(&rows, &mono);
+        let total: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, full.len());
+        let _ = gpui::StyledText::new(full).with_runs(runs);
+    }
+
+    #[test]
+    fn terminal_font_heads_primary_with_fallback_chain() {
+        // Issue #35: the gpui font carries the configured primary plus
+        // the explicit fallback list; an override swaps only the head.
+        use crate::config::TerminalConfig;
+        let head = terminal_font(&TerminalConfig::default());
+        assert_eq!(head.family.as_ref(), "JetBrainsMono Nerd Font");
+        let fallbacks = head
+            .fallbacks
+            .expect("fallback chain is explicit")
+            .fallback_list()
+            .to_vec();
+        assert!(fallbacks.contains(&"Apple Color Emoji".to_string()));
+        assert!(fallbacks.contains(&"Noto Sans Mono CJK SC".to_string()));
+        assert!(!fallbacks.contains(&"JetBrainsMono Nerd Font".to_string()));
+        let custom = TerminalConfig {
+            font_family: "Iosevka Nerd Font".to_string(),
+            ..TerminalConfig::default()
+        };
+        let swapped = terminal_font(&custom);
+        assert_eq!(swapped.family.as_ref(), "Iosevka Nerd Font");
+        let fallbacks = swapped
+            .fallbacks
+            .as_ref()
+            .expect("fallbacks survive override")
+            .fallback_list()
+            .to_vec();
+        assert!(fallbacks.contains(&"Apple Color Emoji".to_string()));
+        // Bold keeps the same chain (styled spans must not change metrics).
+        assert_eq!(swapped.clone().bold().family, swapped.family);
+        assert_eq!(swapped.clone().bold().fallbacks, swapped.fallbacks);
+    }
+
+    #[test]
+    fn coverage_fixture_renders_without_tofu_or_column_drift() {
+        // Issue #35 acceptance fixture: every glyph class the CLIs can
+        // emit passes through screen_rows → layout_text intact, partitions
+        // byte-exactly, and wide chars still occupy two cells.
+        use crate::config::TerminalConfig;
+        let mono = terminal_font(&TerminalConfig::default());
+        let mut parser = vt100::Parser::new(24, 100, 0);
+        // Box-drawing, blocks/shades, powerline + Nerd Font icons,
+        // bold/italic styles, CJK, and emoji.
+        let fixture = "─│┌┐└┘├┤┬┴┼ █▉▊▋▌▍▎▏▓▒░▀▄ \u{e0b0}\u{e0b1}\u{e0b2}  \u{f0244} \x1b[1mbold\x1b[0m \x1b[3mital\x1b[0m 你好世界 \u{1f600}";
+        parser.process(fixture.as_bytes());
+        let screen = parser.screen();
+        let contents = screen.contents();
+        for needle in ["─│┌┐", "▓▒░▀", "bold", "ital", "你好世界"] {
+            assert!(
+                contents.contains(needle),
+                "fixture keeps {needle:?}: {contents:?}"
+            );
+        }
+        // Wide chars (CJK/emoji) occupy two cells: a continuation cell
+        // follows each lead, so the vt100 column grid cannot drift.
+        let mut saw_continuation = false;
+        let (rows, cols) = screen.size();
+        for r in 0..rows {
+            for c in 0..cols {
+                if let Some(cell) = screen.cell(r, c) {
+                    if cell.is_wide_continuation() {
+                        saw_continuation = true;
+                    }
+                }
+            }
+        }
+        assert!(saw_continuation, "wide chars take two cells");
+        // And the whole grid still partitions for gpui.
+        let grid = screen_rows(screen, None, Rgb8(200, 200, 200));
+        let (full, runs) = layout_text(&grid, &mono);
         let total: usize = runs.iter().map(|r| r.len).sum();
         assert_eq!(total, full.len());
         let _ = gpui::StyledText::new(full).with_runs(runs);
@@ -373,7 +472,8 @@ mod tests {
         parser.process(b"hello");
         let fp = screen_fingerprint(parser.screen(), Some((0, 5)));
         let rows = screen_rows(parser.screen(), Some((0, 5)), Rgb8(0, 0, 0));
-        let (full, runs) = layout_text(&rows);
+        let mono = terminal_font(&TerminalConfig::default());
+        let (full, runs) = layout_text(&rows, &mono);
         cache.store("run-1".to_string(), fp, full.clone(), runs.clone());
         // Same run + fingerprint: the cached text and runs come back
         // byte-identical (the repaint reuses them instead of rebuilding).
@@ -416,7 +516,8 @@ mod tests {
         let live = view.active_view().expect("live pty has a view");
         // Same pieces the cached path assembles: rows, layout, element.
         let rows = screen_rows(live.screen, resolved_cursor(&live), CURSOR_BG);
-        let (full, runs) = layout_text(&rows);
+        let mono = terminal_font(&TerminalConfig::default());
+        let (full, runs) = layout_text(&rows, &mono);
         let (_, cols) = live.screen.size();
         let _ = view.assemble_live_terminal(full, runs, cols);
     }

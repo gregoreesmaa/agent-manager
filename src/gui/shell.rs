@@ -27,8 +27,18 @@ use super::nav::NavAction;
 use super::runs::Run;
 use super::terminal::{CellPos, Rgb8};
 
-/// Terminal font size in points.
-pub(crate) const TERM_FONT_SIZE: f32 = 13.0;
+impl ShellView {
+    /// Terminal font size in points (issue #35: user-overridable via
+    /// `terminal.font_size`, default 13.0).
+    pub(crate) fn term_font_size(&self) -> f32 {
+        let size = self.app.terminal_config().font_size;
+        if size > 0.0 {
+            size
+        } else {
+            13.0
+        }
+    }
+}
 /// Pump cadence: the background task polls PTYs at 20 Hz; actual
 /// repaints are dirty-gated (see `tick`), so idle costs ~zero.
 pub const PUMP_INTERVAL: Duration = Duration::from_millis(50);
@@ -65,10 +75,11 @@ pub struct ShellView {
     /// painting the selection highlight behind the text.
     pub(crate) char_w: f32,
     pub(crate) line_h: f32,
-    /// Font-system metrics, measured once (see `fit_pty`): the family and
-    /// size are constants and the text system is app-global, so no
-    /// per-frame re-measure is ever needed.
-    pub(crate) mono_metrics: Option<(f32, f32)>,
+    /// Font-system metrics cache (see `fit_pty`): the measured cells plus
+    /// the configured `(font family, size bits)` they were measured for.
+    /// The text system is app-global so resizes never re-measure — only a
+    /// changed terminal font (issue #35) drops the entry.
+    pub(crate) mono_metrics: Option<((String, u32), (f32, f32))>,
     /// Last rendered terminal frame, keyed by run id + screen fingerprint
     /// (see [`super::terminal_pane::TermFrameCache`]): unchanged screens
     /// skip the `screen_rows` + `layout_text` rebuild every frame.

@@ -31,7 +31,7 @@ pub struct AgentConfig {
 }
 
 /// Whole-file user configuration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// Per-agent startup flags, keyed by program name.
     #[serde(default)]
@@ -39,6 +39,79 @@ pub struct Config {
     /// App theme choice (issue #34).
     #[serde(default)]
     pub theme: ThemePreference,
+    /// Terminal-pane font (issue #35).
+    #[serde(default)]
+    pub terminal: TerminalConfig,
+}
+
+/// Default terminal-pane font: OFL-licensed, full box-drawing + block
+/// coverage, Nerd Font symbols baked in (issue #35).
+pub fn default_terminal_font() -> String {
+    "JetBrainsMono Nerd Font".to_string()
+}
+
+/// Default terminal font size in points (matches the historic 13.0).
+pub fn default_terminal_font_size() -> f32 {
+    13.0
+}
+
+/// Default fallback chain behind the primary font (issue #35): emoji,
+/// then CJK monospace fallbacks, then system monospace last resort.
+/// A user `font_family` override replaces the head of this chain, never
+/// the emoji/CJK tail.
+pub fn default_fallback_fonts() -> Vec<String> {
+    vec![
+        "Apple Color Emoji".to_string(),
+        "Noto Color Emoji".to_string(),
+        "Noto Sans Mono CJK SC".to_string(),
+        "Noto Sans Mono CJK JP".to_string(),
+        "Hiragino Kaku Gothic ProN".to_string(),
+        "PingFang SC".to_string(),
+        "Menlo".to_string(),
+        "DejaVu Sans Mono".to_string(),
+    ]
+}
+
+/// Terminal-pane font setting (issue #35). No `Eq`: `font_size` is a
+/// float (config equality is still exact via `PartialEq` in tests).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerminalConfig {
+    /// Primary monospace font family. Default is the recommended
+    /// JetBrainsMono Nerd Font (see README for install); set this to any
+    /// installed patched font (FiraCode, Hack, Iosevka, …) to override.
+    #[serde(default = "default_terminal_font")]
+    pub font_family: String,
+    /// Font size in points.
+    #[serde(default = "default_terminal_font_size")]
+    pub font_size: f32,
+    /// Ordered fallback families behind `font_family`.
+    #[serde(default = "default_fallback_fonts")]
+    pub fallback_fonts: Vec<String>,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            font_family: default_terminal_font(),
+            font_size: default_terminal_font_size(),
+            fallback_fonts: default_fallback_fonts(),
+        }
+    }
+}
+
+impl TerminalConfig {
+    /// Ordered font stack: the (possibly overridden) primary first, then
+    /// the emoji/CJK/system fallbacks with any duplicate of the primary
+    /// removed. The override replaces the head, never the tail.
+    pub fn font_stack(&self) -> Vec<String> {
+        let mut stack = vec![self.font_family.clone()];
+        for fallback in &self.fallback_fonts {
+            if *fallback != self.font_family && !stack.contains(fallback) {
+                stack.push(fallback.clone());
+            }
+        }
+        stack
+    }
 }
 
 /// App theme choice (issue #34): explicit dark/light, or follow the OS.
@@ -156,6 +229,37 @@ mod tests {
         assert!(cfg.extra_args_for("muse").is_empty());
         assert!(cfg.extra_args_for("claude").is_empty());
         assert_eq!(cfg.theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn terminal_font_stack_heads_primary_and_keeps_fallbacks() {
+        // Issue #35: default head is JetBrainsMono Nerd Font with the
+        // emoji/CJK tail behind it.
+        let cfg = TerminalConfig::default();
+        let stack = cfg.font_stack();
+        assert_eq!(stack[0], "JetBrainsMono Nerd Font");
+        assert!(stack.contains(&"Apple Color Emoji".to_string()));
+        assert!(stack.contains(&"Noto Sans Mono CJK SC".to_string()));
+        assert_eq!(stack.last().unwrap(), "DejaVu Sans Mono");
+        assert_eq!(cfg.font_size, 13.0);
+        // A user override replaces the head, never the tail.
+        let custom = TerminalConfig {
+            font_family: "FiraCode Nerd Font".to_string(),
+            ..TerminalConfig::default()
+        };
+        let stack = custom.font_stack();
+        assert_eq!(stack[0], "FiraCode Nerd Font");
+        assert!(stack.contains(&"Apple Color Emoji".to_string()));
+        assert!(stack.contains(&"Noto Sans Mono CJK SC".to_string()));
+        assert_eq!(
+            stack.iter().filter(|f| *f == "FiraCode Nerd Font").count(),
+            1
+        );
+        // Partial JSON keeps defaults for missing keys.
+        let partial: Config = serde_json::from_str(r#"{"terminal": {"font_size": 15.0}}"#).unwrap();
+        assert_eq!(partial.terminal.font_family, "JetBrainsMono Nerd Font");
+        assert_eq!(partial.terminal.font_size, 15.0);
+        assert_eq!(partial.terminal.fallback_fonts, default_fallback_fonts());
     }
 
     #[test]
