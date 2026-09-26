@@ -187,7 +187,9 @@ impl EmbeddedPty {
     }
 
     /// Feed queued output into the emulator. Returns true when new output
-    /// arrived. Also polls the child, recording exit exactly once.
+    /// arrived or the child newly exited (both change what the UI shows,
+    /// so both must dirty the pump). Also polls the child, recording exit
+    /// exactly once.
     pub fn pump(&mut self) -> bool {
         let mut fresh = false;
         while let Ok(chunk) = self.rx.try_recv() {
@@ -197,6 +199,7 @@ impl EmbeddedPty {
         if !self.exited {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
+                    fresh = true;
                     self.exited = true;
                     self.exited_ok = status.success();
                     // Feed any last bytes the reader thread already queued.
@@ -211,6 +214,7 @@ impl EmbeddedPty {
                 }
                 Ok(None) => {}
                 Err(_) => {
+                    fresh = true;
                     self.exited = true;
                     self.exit_note = Some("[process wait failed]".to_string());
                 }
