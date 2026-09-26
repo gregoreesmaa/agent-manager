@@ -1,8 +1,19 @@
 //! Native gpui shell (runs panel, terminal pane, status bar).
 //!
 //! Layout of the volatility shield: [`keys`] and [`terminal`] are
-//! framework-free and unit-tested; [`shell`] is the thin gpui view.
+//! framework-free and unit-tested; [`shell`] is the thin gpui view over
+//! focused modules — [`runs`] (the single live-run struct), [`spawn`]
+//! (spawn/key paths), [`lifecycle`] (restart/close/quit), [`pump`]
+//! (dirty-gated pump), [`nav`] (key dispatch), [`runs_panel`] (sessions
+//! panel), [`terminal_pane`] (terminal render, selection, clipboard).
 
 pub mod keys;
+pub mod lifecycle;
+pub mod nav;
+pub mod pump;
+pub mod runs;
+pub mod runs_panel;
 pub mod shell;
+pub mod spawn;
 pub mod terminal;
+pub mod terminal_pane;

@@ -51,6 +51,11 @@ pub struct ChatSession {
     /// True once a submitted prompt replaced the placeholder animal title.
     #[serde(default)]
     pub title_locked: bool,
+    /// Current input line being typed into this run (Terminal focus).
+    /// Session state, not PTY state: title tracking works before the
+    /// child spawns and after it exits. Cleared on submit and restart.
+    #[serde(default)]
+    pub pending_input: String,
 }
 
 impl ChatSession {
@@ -421,6 +426,7 @@ impl App {
             transcript: vec![],
             transcript_truncated: false,
             title_locked: false,
+            pending_input: String::new(),
         });
         self.selected = self.sessions.len() - 1;
         self.pending_spawn = Some(SpawnKind::New);
@@ -486,6 +492,7 @@ mod tests {
             transcript: vec![],
             transcript_truncated: false,
             title_locked: true,
+            pending_input: String::new(),
         }
     }
 

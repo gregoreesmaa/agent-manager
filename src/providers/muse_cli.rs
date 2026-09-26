@@ -147,6 +147,7 @@ impl Provider for MuseCliProvider {
                     transcript: transcript.messages,
                     transcript_truncated: transcript.truncated || tail_cut,
                     title_locked: true,
+                    pending_input: String::new(),
                 });
             }
         }
