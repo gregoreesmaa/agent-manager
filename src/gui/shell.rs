@@ -59,6 +59,7 @@ enum NavAction {
     Paste,
     Retry,
     Restart,
+    Close,
     Dismiss,
     None,
 }
@@ -68,6 +69,9 @@ pub struct ShellView {
     ptys: HashMap<String, EmbeddedPty>,
     last_output: HashMap<String, Instant>,
     pending_inputs: HashMap<String, String>,
+    /// Two-step quit arming: the first `q` with dirty runs only arms and
+    /// hints; the second quits. Any other key disarms.
+    quit_armed: bool,
     list_focus: Option<FocusHandle>,
     term_focus: Option<FocusHandle>,
     cols: u16,
@@ -94,6 +98,7 @@ impl ShellView {
             ptys: HashMap::new(),
             last_output: HashMap::new(),
             pending_inputs: HashMap::new(),
+            quit_armed: false,
             list_focus: None,
             term_focus: None,
             cols: 100,
@@ -187,6 +192,42 @@ impl ShellView {
             self.clear_selection();
             self.app.retry_spawn();
         }
+    }
+
+    /// Close (kill) the selected run: drop its live PTY — `Drop` kills
+    /// and reaps the child so no zombie survives — and remove its entry.
+    /// Immediate and single-step; quitting the whole app is what asks.
+    /// No-op when no run is selected.
+    fn close_run(&mut self) {
+        if let Some(id) = self.active_id() {
+            self.ptys.remove(&id);
+            self.last_output.remove(&id);
+            self.pending_inputs.remove(&id);
+            self.clear_selection();
+            if let Some(title) = self.app.remove_session(&id) {
+                self.app.set_status(format!("closed '{title}'"));
+            }
+        }
+    }
+
+    /// True when quitting must confirm first: any Working/Attention run
+    /// or any live (non-exited) PTY. Empty/idle shells quit instantly.
+    fn confirm_quit_required(&self) -> bool {
+        self.app.needs_quit_confirm() || self.ptys.values().any(|pty| !pty.view().exited)
+    }
+
+    /// Two-step quit: returns true when the app should exit now. The
+    /// first call with dirty runs only arms (with a hint); the second
+    /// quits. Safe states quit on the first call and never arm.
+    fn request_quit(&mut self) -> bool {
+        if !self.confirm_quit_required() {
+            return true;
+        }
+        if self.quit_armed {
+            return true;
+        }
+        self.quit_armed = true;
+        false
     }
 
     /// One pump iteration for the background task.
@@ -412,7 +453,7 @@ impl ShellView {
     /// `muse` captures keys if and only if focus is Terminal — nav keys
     /// never reach the PTY.
     fn nav_action(&mut self, key: &str, ctrl: bool) -> NavAction {
-        match (key, ctrl) {
+        let action = match (key, ctrl) {
             ("q", false) | ("escape", _) => NavAction::Quit,
             ("j", false) | ("down", _) => {
                 self.app.select_next();
@@ -434,9 +475,15 @@ impl ShellView {
             ("p", false) => NavAction::Paste,
             ("r", false) if self.can_restart() => NavAction::Restart,
             ("r", false) if self.can_retry() => NavAction::Retry,
+            ("x", false) => NavAction::Close,
             ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
             _ => NavAction::None,
+        };
+        // Any key other than a quit intent cancels an armed quit.
+        if action != NavAction::Quit {
+            self.quit_armed = false;
         }
+        action
     }
 
     fn focus_term(&mut self, window: &mut Window) {
@@ -477,6 +524,8 @@ impl ShellView {
             return;
         }
         if self.app.is_terminal_focused() {
+            // Typing means the user is staying: cancel an armed quit.
+            self.quit_armed = false;
             if key == "escape" {
                 self.clear_selection();
                 self.focus_list(window);
@@ -529,7 +578,11 @@ impl ShellView {
         }
         match self.nav_action(key, ctrl) {
             NavAction::Quit => {
-                cx.quit();
+                // Dirty shells arm first and quit on the second `q`;
+                // safe shells quit instantly and never arm.
+                if self.request_quit() {
+                    cx.quit();
+                }
                 return;
             }
             NavAction::FocusTerm => self.focus_term(window),
@@ -542,6 +595,9 @@ impl ShellView {
             NavAction::Restart => {
                 self.restart_run();
                 self.focus_term(window);
+            }
+            NavAction::Close => {
+                self.close_run();
             }
             NavAction::Dismiss => {
                 self.app.clear_error();
@@ -771,6 +827,10 @@ impl ShellView {
     }
 
     fn status_text(&self) -> String {
+        // An armed quit outranks everything: the user asked to leave.
+        if self.quit_armed {
+            return "Live runs active — q again to quit · any other key cancels".to_string();
+        }
         if let Some(msg) = self.app.status_text() {
             // Sticky errors keep their recovery hint while Retry applies.
             if self.app.error_text().is_some() && self.can_retry() {
@@ -787,7 +847,7 @@ impl ShellView {
         } else if self.app.sessions.is_empty() {
             "n: new muse · q: quit".to_string()
         } else {
-            "n: new · j/k: move · Tab/i: type · drag: select · y: copy · p: paste · q: quit"
+            "n: new · j/k: move · Tab/i: type · x: close · drag: select · y: copy · p: paste · q: quit"
                 .to_string()
         }
     }
@@ -1260,6 +1320,75 @@ mod headless_tests {
         assert_eq!(view.active_id().as_deref(), Some(id.as_str()));
         assert_eq!(view.app.selected_session().unwrap().title, title_before);
         assert!(!view.can_restart());
+    }
+
+    #[test]
+    fn safe_quit_is_instant_dirty_quit_arms_then_quits() {
+        // Empty shell quits instantly and never arms.
+        let mut view = ShellView::new();
+        assert!(!view.confirm_quit_required());
+        assert!(view.request_quit());
+        assert!(!view.quit_armed);
+        // A live PTY forces the two-step: arm first, quit second.
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        view.ptys.insert(
+            id,
+            EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap(),
+        );
+        assert!(view.confirm_quit_required());
+        assert!(!view.request_quit());
+        assert!(view.quit_armed);
+        assert_eq!(
+            view.status_text(),
+            "Live runs active — q again to quit · any other key cancels"
+        );
+        assert!(view.request_quit());
+        // Any other key disarms back to the hint.
+        let mut view2 = ShellView::new();
+        view2.app.start_new_session();
+        let _ = view2.app.take_pending_spawn();
+        let id2 = view2.active_id().unwrap();
+        view2.ptys.insert(
+            id2,
+            EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap(),
+        );
+        assert!(!view2.request_quit());
+        view2.nav_action("j", false);
+        assert!(!view2.quit_armed);
+        assert!(!view2.request_quit());
+    }
+
+    #[test]
+    fn close_kills_run_entry_and_pty_without_touching_neighbors() {
+        let mut view = ShellView::new();
+        for _ in 0..2 {
+            view.app.start_new_session();
+            let _ = view.app.take_pending_spawn();
+            let id = view.active_id().unwrap();
+            view.ptys.insert(
+                id,
+                EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap(),
+            );
+            view.app.focus_nav();
+        }
+        assert_eq!(view.app.sessions.len(), 2);
+        assert_eq!(view.app.selected, 1);
+        assert_eq!(view.nav_action("x", false), NavAction::Close);
+        view.close_run();
+        // The selected run is gone — entry and PTY — the neighbor keeps
+        // both, and the flash names the closed run.
+        assert_eq!(view.app.sessions.len(), 1);
+        assert_eq!(view.app.sessions[0].id, "run-1");
+        assert_eq!(view.ptys.len(), 1);
+        assert!(view.ptys.contains_key("run-1"));
+        assert!(view.status_text().contains("closed"));
+        // Closing the last run empties the list without panicking.
+        view.close_run();
+        assert!(view.app.sessions.is_empty());
+        assert!(view.ptys.is_empty());
+        assert!(!view.confirm_quit_required());
     }
 
     #[test]

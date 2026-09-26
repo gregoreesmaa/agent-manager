@@ -255,6 +255,34 @@ impl App {
         }
     }
 
+    /// Remove the run entry with `run_id` (per-run close/kill: the shell
+    /// drops the live PTY alongside, so `Drop` reaps the child).
+    /// Returns the removed title for the confirmation flash. Selection
+    /// clamps into the shrunken list; a pending spawn for the closed run
+    /// is dropped with it. No-op (returns `None`) when missing.
+    pub fn remove_session(&mut self, run_id: &str) -> Option<String> {
+        let pos = self.sessions.iter().position(|s| s.id == run_id)?;
+        // A queued spawn always belongs to the selected (newest) run; it
+        // dies with that run, never with a bystander.
+        let closing_selected = pos == self.selected;
+        let removed = self.sessions.remove(pos);
+        if self.selected >= self.sessions.len() {
+            self.selected = self.sessions.len().saturating_sub(1);
+        }
+        if closing_selected {
+            self.pending_spawn = None;
+        }
+        Some(removed.title)
+    }
+
+    /// True when quitting deserves a confirmation step: any run is
+    /// Working or Attention. (The shell ORs in live PTYs it owns.)
+    pub fn needs_quit_confirm(&self) -> bool {
+        self.sessions
+            .iter()
+            .any(|s| matches!(s.status, Status::Working | Status::Attention))
+    }
+
     /// Enter terminal focus: keys go to the embedded `muse`.
     pub fn focus_terminal(&mut self) {
         self.focus = Focus::Terminal;
@@ -551,6 +579,27 @@ mod tests {
         app.clear_error();
         assert_eq!(app.error_text(), None);
         assert_eq!(app.status_text(), Some("pasted 3 chars"));
+    }
+
+    #[test]
+    fn close_removes_entry_clamps_selection_and_drops_its_spawn() {
+        let mut app = App::new(vec![sess("a", Status::Idle, 1), sess("b", Status::Idle, 2)]);
+        // Constructor sorts recency-desc: [b, a]; select "a" (index 1).
+        app.selected = 1;
+        app.pending_spawn = Some(SpawnKind::New);
+        assert_eq!(app.remove_session("a"), Some("a".to_string()));
+        // Closing the selected run drops its queued spawn; selection
+        // clamps back into the shrunken list.
+        assert!(app.take_pending_spawn().is_none());
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.selected, 0);
+        // Missing ids are a no-op; dirty runs force a quit confirm.
+        assert_eq!(app.remove_session("zzz"), None);
+        assert!(!app.needs_quit_confirm());
+        app.sessions[0].status = Status::Working;
+        assert!(app.needs_quit_confirm());
+        app.sessions[0].status = Status::Attention;
+        assert!(app.needs_quit_confirm());
     }
 
     #[test]
