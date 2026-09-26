@@ -1,11 +1,13 @@
 //! Background attention signal: needs-input count + bell.
 //!
-//! The status bar and the terminal header both carry the count of runs in
+//! The status line — the sidebar footer in wide mode, the slim bar under
+//! the terminal in narrow mode (issue #32) — carries the count of runs in
 //! [`crate::app::Status::Attention`], and a non-selected run flipping to
 //! Attention rings the terminal bell once (issue #24). The flip detector
 //! is transition-triggered, so the 20 Hz pump and per-frame refreshes can
 //! both call it without double-ringing: only the tick that observes the
-//! flip counts.
+//! flip counts. A scrolled-up pager position rides the same line (issue
+//! #25) so it stays visible without its own chrome.
 
 use crate::app::Status;
 
@@ -60,13 +62,6 @@ impl ShellView {
         }
     }
 
-    /// Terminal-pane header with the needs-input badge. The header is the
-    /// in-app window title (gpui 0.2.2 sets the OS title once at window
-    /// creation), so the badge here is the visible title signal.
-    pub(crate) fn header_title(&self, state: &str, cmd: &str, note: &str) -> String {
-        format!("Muse [{state}] — {cmd}{note}{}", self.attention_suffix())
-    }
-
     /// Wide (default) status hints. Test-only shorthand: production render
     /// always goes through [`Self::status_text_for_width`] with the live
     /// viewport width.
@@ -75,18 +70,20 @@ impl ShellView {
         self.status_text_for_width(f32::INFINITY)
     }
 
-    /// Width-aware status text with the needs-input badge. An armed quit
-    /// outranks everything (the user asked to leave); otherwise the badge
-    /// rides along so a background approval is visible without switching
-    /// runs. Moved here from `shell` so the shell stays under its line
-    /// budget as comfort features land.
+    /// Width-aware status text with the needs-input badge and the pager
+    /// position. An armed quit outranks the badge (the user asked to
+    /// leave) but not the pager position; otherwise both ride along so a
+    /// background approval is visible without switching runs. Moved here
+    /// from `shell` so the shell stays under its line budget as comfort
+    /// features land.
     pub(crate) fn status_text_for_width(&self, viewport_w: f32) -> String {
         let base = self.base_status_text_for_width(viewport_w);
+        let pager = self.pager_note();
         if self.quit_armed {
-            return base;
+            return format!("{base}{pager}");
         }
         let suffix = self.attention_suffix();
-        format!("{base}{suffix}")
+        format!("{base}{suffix}{pager}")
     }
 
     /// Width-aware status text: narrow viewports (<700px) get compact key
@@ -139,10 +136,10 @@ impl ShellView {
         } else if self.app.sessions.is_empty() {
             "n: new muse · ?: help · q: quit".to_string()
         } else if narrow {
-            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · ?: help · q: quit"
+            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit"
                 .to_string()
         } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · ?: help · q: quit"
+            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit"
                 .to_string()
         }
     }
@@ -186,16 +183,18 @@ mod tests {
     }
 
     #[test]
-    fn badge_counts_attention_in_status_bar_and_header() {
+    fn badge_counts_attention_in_the_status_line() {
+        // The badge rides the status line (sidebar footer in wide mode,
+        // slim bar in narrow mode) at every viewport width.
         let mut view = attention_shell();
         assert_eq!(view.attention_count(), 0);
         assert!(!view.status_text().contains("need input"));
         view.app.sessions[0].status = Status::Attention;
         assert_eq!(view.attention_count(), 1);
         assert!(view.status_text().contains("1 need input"));
-        let title = view.header_title("live", "muse", "");
-        assert!(title.contains("1 need input"), "header badges: {title:?}");
-        // Armed quit still outranks the badge.
+        assert!(view.status_text_for_width(1280.0).contains("1 need input"));
+        assert!(view.status_text_for_width(600.0).contains("1 need input"));
+        // Armed quit still outranks the badge (but not the pager note).
         view.quit_armed = true;
         assert!(!view.status_text_for_width(1280.0).contains("need input"));
     }

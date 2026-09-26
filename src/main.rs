@@ -17,7 +17,6 @@ mod embedded;
 mod gui;
 mod parsers;
 mod persist;
-mod prefs;
 mod providers;
 mod scrollback;
 mod transcript;

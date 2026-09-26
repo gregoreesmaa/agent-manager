@@ -1,49 +1,43 @@
 //! Local-only comfort UX: font/panel keys + title filter (issue #29).
 //!
 //! `+`/`-` resize the terminal font, `[`/`]` resize the sessions panel —
-//! both persist to local JSON prefs so they survive restarts. `/` opens a
+//! both persist to the local JSON config file (shared with the #33–#35
+//! settings) so they survive restarts. `/` opens a
 //! title-substring filter that hides non-matching runs from the panel
 //! without changing sort order. All dispatch here is window-free
 //! (`filter_key`, `comfort_key`) so headless tests cover it; `on_key`
 //! only forwards.
 
 use super::shell::ShellView;
-#[cfg(not(test))]
-use crate::prefs::Prefs;
 
 impl ShellView {
-    /// Persist the current comfort settings (best effort: a failed save
-    /// just falls back to defaults next start). Skipped in unit-test
+    /// Persist the comfort settings (best effort: a failed save just
+    /// falls back to file defaults next start). Skipped in unit-test
     /// builds: dispatch and clamping are covered here while the
-    /// save/load roundtrip is covered in `prefs.rs`, so `cargo test`
-    /// never rewrites the developer's live prefs file.
+    /// save/load roundtrip is covered in `config.rs`, so `cargo test`
+    /// never rewrites the developer's live config file.
     fn persist_comfort(&self) {
         #[cfg(not(test))]
-        let _ = Prefs {
-            font_size: self.font_size,
-            sidebar_width: self.sidebar_width,
-        }
-        .save();
+        let _ = self.app.save_config();
     }
 
     /// Grow (`delta > 0`) or shrink the terminal font, clamped and
-    /// persisted, with a confirming flash.
+    /// persisted, with a confirming flash. The metrics cache is keyed by
+    /// the configured size, so the next frame re-measures on its own.
     pub(crate) fn adjust_font(&mut self, delta: f32) {
-        self.font_size = (self.font_size + delta).clamp(8.0, 32.0);
-        // Cell metrics depend on the size: drop the one-time cache so the
-        // next frame re-measures and the PTY grid follows the new font.
-        self.mono_metrics = None;
+        let size = self.app.terminal_config().font_size + delta;
+        let size = self.app.set_terminal_font_size(size);
         self.persist_comfort();
-        self.app.set_status(format!("font {:.0}pt", self.font_size));
+        self.app.set_status(format!("font {size:.0}pt"));
     }
 
     /// Widen (`delta > 0`) or narrow the sessions panel, clamped and
     /// persisted, with a confirming flash.
     pub(crate) fn adjust_sidebar(&mut self, delta: f32) {
-        self.sidebar_width = (self.sidebar_width + delta).clamp(160.0, 480.0);
+        let width = self.app.sidebar_width() + delta;
+        let width = self.app.set_sidebar_width(width);
         self.persist_comfort();
-        self.app
-            .set_status(format!("panel {:.0}px", self.sidebar_width));
+        self.app.set_status(format!("panel {width:.0}px"));
     }
 
     /// Comfort keys in nav focus. Returns true when consumed: `+`/`-`
@@ -205,25 +199,25 @@ mod tests {
     #[test]
     fn comfort_keys_resize_and_persist_without_reaching_the_pty() {
         let mut view = test_shell();
-        let base_font = view.font_size;
-        let base_panel = view.sidebar_width;
+        let base_font = view.app.terminal_config().font_size;
+        let base_panel = view.app.sidebar_width();
         assert!(view.comfort_key(Some("+")));
-        assert_eq!(view.font_size, base_font + 1.0);
+        assert_eq!(view.app.terminal_config().font_size, base_font + 1.0);
         assert!(view.comfort_key(Some("-")));
-        assert_eq!(view.font_size, base_font);
+        assert_eq!(view.app.terminal_config().font_size, base_font);
         assert!(view.comfort_key(Some("]")));
-        assert_eq!(view.sidebar_width, base_panel + 24.0);
+        assert_eq!(view.app.sidebar_width(), base_panel + 24.0);
         assert!(view.comfort_key(Some("[")));
-        assert_eq!(view.sidebar_width, base_panel);
+        assert_eq!(view.app.sidebar_width(), base_panel);
         assert!(!view.comfort_key(Some("q")));
         // Clamp guards: no runaway growth or collapse.
         for _ in 0..100 {
             view.comfort_key(Some("+"));
         }
-        assert!(view.font_size <= 32.0);
+        assert!(view.app.terminal_config().font_size <= 32.0);
         for _ in 0..100 {
             view.comfort_key(Some("["));
         }
-        assert!(view.sidebar_width >= 160.0);
+        assert!(view.app.sidebar_width() >= 160.0);
     }
 }

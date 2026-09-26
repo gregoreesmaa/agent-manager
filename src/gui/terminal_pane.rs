@@ -168,7 +168,8 @@ impl ShellView {
                 .active_view()
                 .map(|v| v.screen.size().1)
                 .unwrap_or(self.cols);
-            let (full, runs) = layout_text(&spans);
+            let term_font = terminal_font(self.app.terminal_config());
+            let (full, runs) = layout_text(&spans, &term_font);
             return self.assemble_live_terminal(full, runs, cols);
         }
         // Cache the flattened frame per (run, screen fingerprint): an
