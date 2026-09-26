@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::Config;
 use crate::embedded::SpawnKind;
 use crate::transcript::TranscriptMessage;
 
@@ -253,6 +254,8 @@ pub struct App {
     next_run: usize,
     status_msg: Option<(String, std::time::Instant)>,
     sticky_error: Option<String>,
+    /// User configuration (issue #33: per-agent extra CLI flags).
+    config: Config,
 }
 
 /// How long a transient status-bar message stays visible.
@@ -273,6 +276,32 @@ impl App {
             next_run: 0,
             status_msg: None,
             sticky_error: None,
+            config: Config::default(),
+        }
+    }
+
+    /// Install the user configuration (loaded once at startup in
+    /// `main`). Tests keep the default (no extra flags).
+    pub fn set_config(&mut self, config: Config) {
+        self.config = config;
+    }
+
+    /// Spawn command for `kind` with the configured per-agent extra flags
+    /// appended (issue #33). The key is the program name, so every
+    /// supported agent (`muse`, `claude`, …) can carry its own flags.
+    pub fn spawn_command_for(&self, kind: &SpawnKind) -> (String, Vec<String>) {
+        let (program, mut args) = kind.command();
+        args.extend(self.config.extra_args_for(&program));
+        (program, args)
+    }
+
+    /// One-line spawn description for UI affordances (`muse --yolo`).
+    pub fn spawn_command_string(&self) -> String {
+        let (program, args) = self.spawn_command_for(&SpawnKind::New);
+        if args.is_empty() {
+            program
+        } else {
+            format!("{program} {}", args.join(" "))
         }
     }
 
@@ -647,6 +676,28 @@ mod tests {
         assert_eq!(app.sessions.len(), 2);
         assert_eq!(app.sessions[1].id, "run-2");
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn configured_extra_args_append_to_spawn_command() {
+        // Issue #33: default spawns stay plain; configured flags append.
+        use crate::config::{AgentConfig, Config};
+        let mut app = App::new(vec![]);
+        assert_eq!(app.spawn_command_string(), "muse");
+        let (program, args) = app.spawn_command_for(&SpawnKind::New);
+        assert_eq!((program.as_str(), args.len()), ("muse", 0));
+        let mut cfg = Config::default();
+        cfg.agents.insert(
+            "muse".to_string(),
+            AgentConfig {
+                extra_args: vec!["--yolo".to_string()],
+            },
+        );
+        app.set_config(cfg);
+        assert_eq!(app.spawn_command_string(), "muse --yolo");
+        let (program, args) = app.spawn_command_for(&SpawnKind::New);
+        assert_eq!(program, "muse");
+        assert_eq!(args, vec!["--yolo".to_string()]);
     }
 
     #[test]

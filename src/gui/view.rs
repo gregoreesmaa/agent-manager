@@ -269,7 +269,12 @@ impl ShellView {
             Some(e) => ("✕", format!("spawn failed: {e}"), true),
             None => (
                 "○",
-                "No session yet. Press n to start a new muse. Press ? for keys.".to_string(),
+                // The effective spawn command is the UI affordance for
+                // issue #33: configured flags are visible before launch.
+                format!(
+                    "No session yet. Press n to start: {}. Press ? for keys.",
+                    self.app.spawn_command_string()
+                ),
                 false,
             ),
         }
@@ -351,6 +356,28 @@ mod tests {
         );
         assert!(cols >= MIN_COLS, "min width fits {cols} cols");
         assert!(rows >= MIN_ROWS, "min height fits {rows} rows");
+    }
+
+    #[test]
+    fn empty_pane_advertises_configured_spawn_flags() {
+        // Issue #33: the empty pane names the effective spawn command so
+        // configured flags are visible before launch.
+        use crate::config::{AgentConfig, Config};
+        let view = test_shell();
+        let (_, msg, _) = view.empty_pane_copy();
+        assert!(msg.starts_with("No session yet"));
+        assert!(msg.contains("start: muse."), "plain spawn: {msg:?}");
+        let mut flagged = test_shell();
+        let mut cfg = Config::default();
+        cfg.agents.insert(
+            "muse".to_string(),
+            AgentConfig {
+                extra_args: vec!["--yolo".to_string()],
+            },
+        );
+        flagged.app.set_config(cfg);
+        let (_, msg, _) = flagged.empty_pane_copy();
+        assert!(msg.contains("muse --yolo"), "flags shown: {msg:?}");
     }
 
     #[test]

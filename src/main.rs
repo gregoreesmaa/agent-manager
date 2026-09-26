@@ -12,6 +12,7 @@
 //! the list.
 
 mod app;
+mod config;
 mod embedded;
 mod gui;
 mod parsers;
@@ -39,7 +40,13 @@ fn main() {
         // match the terminal pane.
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
-        let view: Entity<ShellView> = cx.new(|_cx| ShellView::new_with_sessions(seeded.clone()));
+        let view: Entity<ShellView> = cx.new(|_cx| {
+            // Issue #33: per-agent extra CLI flags come from the user
+            // config; a missing file simply means plain `muse`.
+            let mut shell = ShellView::new_with_sessions(seeded.clone());
+            shell.app.set_config(config::Config::load());
+            shell
+        });
         let pump_view = view.clone();
         // Pump loop: poll PTYs at 20 Hz so background runs keep streaming;
         // the window repaints only when the pump reports dirtiness (fresh

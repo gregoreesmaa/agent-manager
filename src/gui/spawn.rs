@@ -18,7 +18,9 @@ impl ShellView {
     pub(crate) fn spawn_queued(&mut self) -> bool {
         if let Some(kind) = self.app.take_pending_spawn() {
             let run_id = self.active_id().unwrap_or_default();
-            match EmbeddedPty::spawn_kind(&kind, self.cols, self.rows) {
+            // Configured per-agent flags ride along (issue #33).
+            let (program, args) = self.app.spawn_command_for(&kind);
+            match EmbeddedPty::spawn(&program, &args, self.cols, self.rows) {
                 Ok(pty) => {
                     self.runs.insert(run_id.clone(), Run::new(pty));
                     self.note_spawn_success(&run_id);

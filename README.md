@@ -80,6 +80,23 @@ reading source. `Tab` toggles which pane owns the keyboard.
   `Cmd+C` copies the selection (or the whole screen when nothing is
   selected); `p` or `Cmd`/`Ctrl+V` pastes the clipboard into `muse`.
 
+## Configuration
+
+`~/.config/agent-manager/config.json` (JSON, all keys optional; a missing
+or malformed file means defaults). The empty terminal pane always shows
+the effective spawn command, so you can see your flags before launch.
+
+### Per-agent startup flags
+
+```json
+{ "agents": { "muse": { "extra_args": ["--yolo"] } } }
+```
+
+`extra_args` append to every spawn of that agent binary — e.g. `muse`
+launches as `muse --yolo`, `claude` could carry
+`--dangerously-skip-permissions`. Keys are program names, so any
+supported agent gets its own flags.
+
 ## How it works
 
 - `src/embedded.rs` — PTY spawn/pump/resize/reap via `portable-pty`, plus a
