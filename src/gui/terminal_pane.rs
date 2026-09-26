@@ -14,7 +14,8 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use crate::embedded::LiveView;
 
 use super::shell::{
-    ShellView, CURSOR_BG, DEFAULT_FG, LEFT_WIDTH, SELECTION_BG, STATUS_HEIGHT, TERM_FONT_SIZE,
+    effective_sidebar_width, pty_grid_for, ShellView, CURSOR_BG, DEFAULT_FG, SELECTION_BG,
+    STATUS_HEIGHT, TERM_FONT_SIZE,
 };
 use super::terminal::{
     point_to_cell, screen_rows, selection_rows, selection_text, to_hsla, CellPos,
@@ -255,15 +256,17 @@ impl ShellView {
     }
 
     /// Resize the active PTY to the central pane, measured in monospace cells.
+    /// Narrow viewports (<700px) collapse the sidebar, so the pane (and the
+    /// PTY) use the full window width instead of squeezing beside 264px.
     pub(crate) fn fit_pty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = window.viewport_size();
-        let avail_w = (f32::from(viewport.width) - LEFT_WIDTH).max(200.0);
-        let avail_h = (f32::from(viewport.height) - STATUS_HEIGHT).max(120.0);
+        let avail_w =
+            f32::from(viewport.width) - effective_sidebar_width(f32::from(viewport.width));
+        let avail_h = f32::from(viewport.height) - STATUS_HEIGHT;
         let (char_w, line_h) = mono_metrics(cx);
         self.char_w = char_w;
         self.line_h = line_h;
-        let cols = ((avail_w / char_w) as u16).clamp(20, 400);
-        let rows = ((avail_h / line_h) as u16).clamp(10, 200);
+        let (cols, rows) = pty_grid_for(avail_w, avail_h, char_w, line_h);
         if (cols, rows) != (self.cols, self.rows) {
             self.cols = cols;
             self.rows = rows;
