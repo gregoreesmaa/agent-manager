@@ -11,6 +11,7 @@
 //! Tab/i type, q quit. Typing focus: keys go to `muse`; Tab/Esc back to
 //! the list.
 
+mod agents;
 mod app;
 mod embedded;
 mod gui;

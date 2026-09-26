@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::agents::{Agent, AgentConfig};
 use crate::embedded::SpawnKind;
 use crate::transcript::TranscriptMessage;
 
@@ -239,6 +240,8 @@ pub struct App {
     pub sessions: Vec<ChatSession>,
     pub selected: usize,
     pub focus: Focus,
+    /// Per-agent extra startup flags plus the agent new runs launch.
+    pub agent_config: AgentConfig,
     pending_spawn: Option<SpawnKind>,
     next_run: usize,
     status_msg: Option<(String, std::time::Instant)>,
@@ -259,6 +262,7 @@ impl App {
             sessions,
             selected: 0,
             focus: Focus::Nav,
+            agent_config: AgentConfig::default(),
             pending_spawn: None,
             next_run: 0,
             status_msg: None,
@@ -302,6 +306,34 @@ impl App {
                 None
             }
         })
+    }
+
+    /// Agent new runs launch (selected in the flags editor / switcher).
+    pub fn active_agent(&self) -> Agent {
+        self.agent_config.active_agent
+    }
+
+    /// Full launch command for the active agent: its binary plus the
+    /// stored extra flags. The shell spawns exactly this.
+    pub fn launch_command(&self) -> (String, Vec<String>) {
+        self.agent_config.launch_command(self.active_agent())
+    }
+
+    /// Parse `raw` shell-style words and store them for `agent`.
+    /// Returns the normalized flags text; a parse failure leaves the
+    /// stored flags untouched.
+    pub fn set_agent_flags(&mut self, agent: Agent, raw: &str) -> Result<String, String> {
+        self.agent_config.set_extra_raw(agent, raw)
+    }
+
+    /// Switch new launches to the next supported agent, flashing which
+    /// command that means (binary plus its flags).
+    pub fn cycle_agent(&mut self) -> Agent {
+        let next = self.active_agent().next();
+        self.agent_config.active_agent = next;
+        let summary = self.agent_config.describe(next);
+        self.set_status(format!("agent: {summary}"));
+        next
     }
 
     /// Take the pending spawn request, if any (the main loop spawns it,
@@ -835,5 +867,75 @@ mod tests {
         app.focus_terminal();
         app.focus_nav();
         assert_eq!(app.focus, Focus::Nav);
+    }
+
+    #[test]
+    fn launch_defaults_to_the_bare_active_binary() {
+        let app = App::new(vec![]);
+        assert_eq!(app.active_agent(), crate::agents::Agent::Muse);
+        assert_eq!(app.launch_command(), ("muse".to_string(), vec![]));
+    }
+
+    #[test]
+    fn launch_appends_stored_flags_for_the_active_agent_only() {
+        let mut app = App::new(vec![]);
+        app.set_agent_flags(crate::agents::Agent::Muse, "--yolo")
+            .unwrap();
+        app.set_agent_flags(
+            crate::agents::Agent::Claude,
+            "--dangerously-skip-permissions",
+        )
+        .unwrap();
+        // Active agent is still muse: only its flags apply.
+        assert_eq!(
+            app.launch_command(),
+            ("muse".to_string(), vec!["--yolo".to_string()])
+        );
+        app.agent_config.active_agent = crate::agents::Agent::Claude;
+        assert_eq!(
+            app.launch_command(),
+            (
+                "claude".to_string(),
+                vec!["--dangerously-skip-permissions".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn invalid_flags_are_rejected_and_keep_the_old_command() {
+        let mut app = App::new(vec![]);
+        app.set_agent_flags(crate::agents::Agent::Muse, "--yolo")
+            .unwrap();
+        assert!(app
+            .set_agent_flags(crate::agents::Agent::Muse, "--x \"oops")
+            .is_err());
+        assert_eq!(
+            app.launch_command(),
+            ("muse".to_string(), vec!["--yolo".to_string()])
+        );
+    }
+
+    #[test]
+    fn cycling_agents_wraps_and_flashes_the_new_command() {
+        let mut app = App::new(vec![]);
+        app.set_agent_flags(
+            crate::agents::Agent::Claude,
+            "--dangerously-skip-permissions",
+        )
+        .unwrap();
+        assert_eq!(app.cycle_agent(), crate::agents::Agent::Claude);
+        assert_eq!(
+            app.status_text(),
+            Some("agent: claude --dangerously-skip-permissions")
+        );
+        assert_eq!(
+            app.launch_command().0,
+            "claude",
+            "new runs launch the newly selected agent"
+        );
+        app.cycle_agent();
+        app.cycle_agent();
+        // Full wrap back to muse.
+        assert_eq!(app.cycle_agent(), crate::agents::Agent::Muse);
     }
 }

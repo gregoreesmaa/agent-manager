@@ -180,12 +180,6 @@ impl EmbeddedPty {
         })
     }
 
-    /// Spawn whatever [`SpawnKind`] describes.
-    pub fn spawn_kind(kind: &SpawnKind, cols: u16, rows: u16) -> Result<Self> {
-        let (program, args) = kind.command();
-        Self::spawn(&program, &args, cols, rows)
-    }
-
     /// Feed queued output into the emulator. Returns true when new output
     /// arrived or the child newly exited (both change what the UI shows,
     /// so both must dirty the pump). Also polls the child, recording exit

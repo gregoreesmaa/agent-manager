@@ -9,6 +9,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,7 @@ use gpui_component::{
     Sizable as _,
 };
 
+use crate::agents::{Agent, AgentConfig};
 use crate::app::{section_title, status_sections, App, Status};
 use crate::embedded::{EmbeddedPty, LiveView};
 use crate::parsers::github::extract_pr_links;
@@ -66,6 +68,15 @@ enum NavAction {
     None,
 }
 
+/// Draft state for the startup-flags editor: which agent's flags are
+/// being edited plus the raw text typed so far. While `Some`, keys go
+/// to the draft (Enter saves, Esc cancels) instead of nav or `muse`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlagsDraft {
+    agent: Agent,
+    draft: String,
+}
+
 pub struct ShellView {
     app: App,
     ptys: HashMap<String, EmbeddedPty>,
@@ -98,12 +109,21 @@ pub struct ShellView {
     /// `pr_links`. `None` means no link is focused (Enter focuses the
     /// terminal). Cleared whenever the run selection moves.
     link_cursor: Option<usize>,
+    /// Startup-flags editor draft (`Some` while editing). Keys go to
+    /// the draft instead of nav or the PTY until Enter/Esc.
+    flags_editor: Option<FlagsDraft>,
+    /// Where the per-agent flags file lives (overridable in tests so
+    /// the editor never touches the real home directory).
+    config_path: PathBuf,
 }
 
 impl ShellView {
     pub fn new() -> Self {
+        let config_path = AgentConfig::config_path();
+        let mut app = App::new(vec![]);
+        app.agent_config = AgentConfig::load_from(&config_path);
         Self {
-            app: App::new(vec![]),
+            app,
             ptys: HashMap::new(),
             last_output: HashMap::new(),
             pending_inputs: HashMap::new(),
@@ -121,6 +141,8 @@ impl ShellView {
             sel_active: None,
             selecting: false,
             link_cursor: None,
+            flags_editor: None,
+            config_path,
         }
     }
 
@@ -135,13 +157,20 @@ impl ShellView {
             .map(|pty| pty.view())
     }
 
-    /// Start the queued `muse` for the newly created run. Returns true when
-    /// a spawn was consumed: success adds a live view, failure sticks an
-    /// error banner — either way the screen changed and needs a repaint.
+    /// Start the queued agent for the newly created run: the active
+    /// agent's binary plus its stored extra flags (see [`App::launch_command`]).
+    /// Returns true when a spawn was consumed: success adds a live view,
+    /// failure sticks an error banner — either way the screen changed and
+    /// needs a repaint.
     fn spawn_queued(&mut self) -> bool {
         if let Some(kind) = self.app.take_pending_spawn() {
+            // `New` is the only spawn kind; the binary plus flags come
+            // from the active agent config, which is exactly plain
+            // `muse` while no flags are stored.
+            debug_assert_eq!(kind.command(), crate::embedded::new_session_command());
             let run_id = self.active_id().unwrap_or_default();
-            match EmbeddedPty::spawn_kind(&kind, self.cols, self.rows) {
+            let (program, args) = self.resolve_launch();
+            match EmbeddedPty::spawn(&program, &args, self.cols, self.rows) {
                 Ok(pty) => {
                     self.ptys.insert(run_id.clone(), pty);
                     self.note_spawn_success(&run_id);
@@ -153,6 +182,73 @@ impl ShellView {
             true
         } else {
             false
+        }
+    }
+
+    /// Resolve the exact command the next spawn will use (binary plus the
+    /// active agent's stored flags), without spawning. The editor tests
+    /// assert passthrough through here; [`Self::spawn_queued`] spawns it.
+    fn resolve_launch(&self) -> (String, Vec<String>) {
+        self.app.launch_command()
+    }
+
+    /// Open the startup-flags editor for the active agent, seeded with
+    /// its current flags text. While open, keys edit the draft: Enter
+    /// saves, Esc cancels.
+    fn open_flags_editor(&mut self) {
+        let agent = self.app.active_agent();
+        let draft = self.app.agent_config.extra_text(agent);
+        self.flags_editor = Some(FlagsDraft { agent, draft });
+    }
+
+    /// Discard the flags draft without touching stored flags.
+    fn cancel_flags_editor(&mut self) {
+        self.flags_editor = None;
+    }
+
+    /// Append a typed char to the flags draft (no-op when closed).
+    fn push_flags_char(&mut self, c: char) {
+        if let Some(d) = self.flags_editor.as_mut() {
+            d.draft.push(c);
+        }
+    }
+
+    /// Delete the last draft char (no-op when closed or empty).
+    fn pop_flags_char(&mut self) {
+        if let Some(d) = self.flags_editor.as_mut() {
+            d.draft.pop();
+        }
+    }
+
+    /// Commit the flags draft: parse it shell-style, store it for the
+    /// edited agent, and persist the config file. Success flashes the
+    /// new command; a parse failure keeps the old flags, leaves the
+    /// editor open for fixing, and sticks an error (same slot as spawn
+    /// failures). A save failure still applies the flags for this
+    /// session and says so in the flash.
+    fn commit_flags_editor(&mut self) {
+        let Some(draft) = self.flags_editor.take() else {
+            return;
+        };
+        let agent = draft.agent;
+        match self.app.set_agent_flags(agent, &draft.draft) {
+            Ok(normalized) => {
+                let flash = if normalized.is_empty() {
+                    format!("flags for {agent} cleared")
+                } else {
+                    format!("flags for {agent}: {normalized}")
+                };
+                match self.app.agent_config.save_to(&self.config_path) {
+                    Ok(()) => self.app.set_status(flash),
+                    Err(e) => self.app.set_status(format!("{flash} (not saved: {e})")),
+                }
+            }
+            Err(e) => {
+                // Keep the draft so the user can fix the quoting.
+                self.flags_editor = Some(draft);
+                self.app
+                    .set_error(format!("invalid flags for {agent}: {e}"));
+            }
         }
     }
 
@@ -592,6 +688,14 @@ impl ShellView {
                 self.link_cursor = None;
                 NavAction::FocusTerm
             }
+            ("e", false) => {
+                self.open_flags_editor();
+                NavAction::None
+            }
+            ("a", false) => {
+                self.app.cycle_agent();
+                NavAction::None
+            }
             ("o", false) => {
                 self.cycle_link_focus();
                 NavAction::None
@@ -641,6 +745,27 @@ impl ShellView {
         let ctrl = ks.modifiers.control;
         let alt = ks.modifiers.alt;
         let platform = ks.modifiers.platform;
+        // Flags editor is modal: while open, keys edit the draft (Enter
+        // saves, Esc cancels) instead of driving nav or the PTY.
+        if self.flags_editor.is_some() {
+            // Typing means the user is staying: cancel an armed quit.
+            self.quit_armed = false;
+            match key {
+                "escape" => self.cancel_flags_editor(),
+                "enter" => self.commit_flags_editor(),
+                "backspace" => self.pop_flags_char(),
+                _ => {
+                    let text = key_char.filter(|c| !c.is_empty()).unwrap_or(key);
+                    if text.chars().count() == 1 && !ctrl && !platform && !alt {
+                        for c in text.chars() {
+                            self.push_flags_char(c);
+                        }
+                    }
+                }
+            }
+            window.refresh();
+            return;
+        }
         if key == "tab" {
             self.app.toggle_focus();
             if self.app.is_terminal_focused() {
@@ -787,9 +912,13 @@ impl ShellView {
             return sidebar
                 .footer(
                     div()
-                        .text_color(rgb(0x888888))
-                        .text_xs()
-                        .child("No sessions yet.".to_string()),
+                        .child(
+                            div()
+                                .text_color(rgb(0x888888))
+                                .text_xs()
+                                .child("No sessions yet.".to_string()),
+                        )
+                        .child(self.agent_footer(cx)),
                 )
                 .into_any_element();
         }
@@ -877,7 +1006,77 @@ impl ShellView {
             .child(SidebarMenu::new().children(items));
             sidebar = sidebar.child(group);
         }
-        sidebar.into_any_element()
+        sidebar.footer(self.agent_footer(cx)).into_any_element()
+    }
+
+    /// Sidebar footer: the agent new runs launch plus its stored flags,
+    /// with buttons for the flags editor (`e`) and the agent switcher
+    /// (`a`). While the editor is open the footer instead shows the
+    /// live draft with its save/cancel hints.
+    fn agent_footer(&self, cx: &mut Context<Self>) -> gpui::Div {
+        if let Some(d) = &self.flags_editor {
+            let mut col = div()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .child(format!("Flags for {}:", d.agent))
+                .child(
+                    div()
+                        .text_color(rgb(0xffd866))
+                        .child(format!("{}_", d.draft)),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(0x888888))
+                        .child("Enter: save · Esc: cancel".to_string()),
+                );
+            let hint = d.agent.suggested_flags();
+            if !hint.is_empty() {
+                col = col.child(
+                    div()
+                        .text_color(rgb(0x888888))
+                        .child(format!("e.g. {hint}")),
+                );
+            }
+            return col;
+        }
+        let agent = self.app.active_agent();
+        let flags = self.app.agent_config.extra_text(agent);
+        let summary = if flags.is_empty() {
+            "(no extra flags)".to_string()
+        } else {
+            flags
+        };
+        div()
+            .px_2()
+            .py_1()
+            .text_xs()
+            .child(
+                div()
+                    .text_color(rgb(0x888888))
+                    .child(format!("Agent: {agent} · {summary}")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(
+                        Button::new(ElementId::Name("edit-flags-btn".into()))
+                            .label("Flags (e)")
+                            .small()
+                            .on_click(cx.listener(|this, _ev, _window, _cx| {
+                                this.open_flags_editor();
+                            })),
+                    )
+                    .child(
+                        Button::new(ElementId::Name("switch-agent-btn".into()))
+                            .label("Agent (a)")
+                            .small()
+                            .on_click(cx.listener(|this, _ev, _window, _cx| {
+                                this.app.cycle_agent();
+                            })),
+                    ),
+            )
     }
 
     /// First-run orientation copy: icon + message + error flag so the
@@ -888,7 +1087,10 @@ impl ShellView {
             Some(e) => ("✕", format!("spawn failed: {e}"), true),
             None => (
                 "○",
-                "No session yet. Press n to start a new muse.".to_string(),
+                format!(
+                    "No session yet. Press n to start a new {}.",
+                    self.app.active_agent()
+                ),
                 false,
             ),
         }
@@ -1042,13 +1244,15 @@ impl ShellView {
         if self.can_restart() {
             return "run ended · r: restart · n: new · q: quit".to_string();
         }
+        let brand = self.app.active_agent();
         if self.app.is_terminal_focused() {
-            "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
-                .to_string()
+            format!(
+                "typing in {brand} · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
+            )
         } else if self.app.sessions.is_empty() {
-            "n: new muse · q: quit".to_string()
+            format!("n: new {brand} · q: quit · e: flags · a: agent")
         } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · q: quit"
+            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · e: flags · a: agent · q: quit"
                 .to_string()
         }
     }
@@ -1088,7 +1292,7 @@ impl Render for ShellView {
                     v.exit_note.map(|n| format!(" {n}")).unwrap_or_default(),
                 )
             })
-            .unwrap_or_else(|| ("muse".to_string(), String::new()));
+            .unwrap_or_else(|| (self.app.active_agent().to_string(), String::new()));
         let title = format!("Muse [{state}] — {cmd}{note}");
         // Focus indicator: the pane that owns the keyboard gets the bright
         // title; the other dims. `muse` captures keys iff focus is Terminal.
@@ -2008,6 +2212,138 @@ mod headless_tests {
         assert_eq!(icon, "○");
         assert!(msg.starts_with("No session yet"));
         assert!(!is_error);
+    }
+
+    /// A shell whose config file points at a scratch dir, so editor
+    /// commits never touch the real home directory.
+    fn view_with_tmp_config() -> (ShellView, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-manager-shell-flags-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut view = ShellView::new();
+        view.config_path = dir.join("config.json");
+        (view, dir)
+    }
+
+    #[test]
+    fn flags_editor_commit_persists_and_feeds_the_next_launch() {
+        let (mut view, dir) = view_with_tmp_config();
+        // `e` opens the editor seeded with the current (empty) flags.
+        assert_eq!(view.nav_action("e", false), NavAction::None);
+        assert_eq!(
+            view.flags_editor,
+            Some(FlagsDraft {
+                agent: Agent::Muse,
+                draft: String::new(),
+            })
+        );
+        for c in "--yolo".chars() {
+            view.push_flags_char(c);
+        }
+        view.commit_flags_editor();
+        assert!(view.flags_editor.is_none());
+        // The exact command the next spawn uses carries the flag ...
+        assert_eq!(
+            view.resolve_launch(),
+            ("muse".to_string(), vec!["--yolo".to_string()])
+        );
+        assert_eq!(view.app.status_text(), Some("flags for muse: --yolo"));
+        // ... and it survived to the config file.
+        let back = AgentConfig::load_from(&view.config_path);
+        assert_eq!(back.extra_text(Agent::Muse), "--yolo");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flags_editor_rejects_bad_quoting_and_keeps_old_flags() {
+        let (mut view, dir) = view_with_tmp_config();
+        view.app
+            .set_agent_flags(Agent::Claude, "--dangerously-skip-permissions")
+            .unwrap();
+        view.app.agent_config.active_agent = Agent::Claude;
+        view.open_flags_editor();
+        view.push_flags_char('"'); // unbalanced: must not parse
+        view.commit_flags_editor();
+        // Editor stays open for fixing; old flags still launch.
+        assert!(view.flags_editor.is_some());
+        assert_eq!(
+            view.app.error_text(),
+            Some("invalid flags for claude: unclosed quote in flags")
+        );
+        assert_eq!(
+            view.resolve_launch(),
+            (
+                "claude".to_string(),
+                vec!["--dangerously-skip-permissions".to_string()]
+            )
+        );
+        view.cancel_flags_editor();
+        view.app.clear_error();
+        assert!(view.flags_editor.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flags_editor_cancel_discards_the_draft() {
+        let (mut view, dir) = view_with_tmp_config();
+        view.open_flags_editor();
+        for c in "--yolo".chars() {
+            view.push_flags_char(c);
+        }
+        view.pop_flags_char();
+        assert_eq!(view.flags_editor.as_ref().unwrap().draft, "--yol");
+        view.cancel_flags_editor();
+        assert!(view.flags_editor.is_none());
+        assert_eq!(view.resolve_launch(), ("muse".to_string(), vec![]));
+        assert_eq!(view.app.status_text(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn agent_key_cycles_and_editor_targets_the_active_agent() {
+        let (mut view, dir) = view_with_tmp_config();
+        assert_eq!(view.app.active_agent(), Agent::Muse);
+        assert_eq!(view.nav_action("a", false), NavAction::None);
+        assert_eq!(view.app.active_agent(), Agent::Claude);
+        // The editor always edits the active agent's flags.
+        view.open_flags_editor();
+        assert_eq!(view.flags_editor.as_ref().unwrap().agent, Agent::Claude);
+        assert_eq!(view.flags_editor.as_ref().unwrap().draft, "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_launch_passes_each_agents_flags_through() {
+        let (mut view, dir) = view_with_tmp_config();
+        let cases: &[(Agent, &str, Vec<&str>)] = &[
+            (Agent::Muse, "--yolo", vec!["--yolo"]),
+            (
+                Agent::Claude,
+                "--dangerously-skip-permissions",
+                vec!["--dangerously-skip-permissions"],
+            ),
+            (
+                Agent::Codex,
+                "--sandbox workspace-write",
+                vec!["--sandbox", "workspace-write"],
+            ),
+            (Agent::Opencode, "", vec![]),
+        ];
+        for (agent, raw, argv) in cases {
+            view.app.agent_config.active_agent = *agent;
+            view.app.set_agent_flags(*agent, raw).unwrap();
+            let expected: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                view.resolve_launch(),
+                (agent.to_string(), expected),
+                "passthrough for {agent}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -51,6 +51,8 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | `y`, `Cmd+C` | copy selection (or whole screen) | copy selection (or whole screen) |
 | `p`, `Cmd`/`Ctrl+V` | paste clipboard into `muse` | paste clipboard into `muse` |
 | `r` | restart ended run / retry failed spawn | same, on a dead pane |
+| `e` | edit the active agent's startup flags | types into `muse` |
+| `a` | switch the agent for new runs | types into `muse` |
 | `x` | close (kill) the selected run | — (types `x`) |
 | `d` | dismiss the sticky error | — (types `d`) |
 | `q`, `Esc` | quit (confirms first with live runs) | back to the list |
@@ -77,6 +79,28 @@ reading source. `Tab` toggles which pane owns the keyboard.
   `Cmd+C` copies the selection (or the whole screen when nothing is
   selected); `p` or `Cmd`/`Ctrl+V` pastes the clipboard into `muse`.
 
+### Startup flags
+
+New runs launch the active agent's binary plus its stored extra flags —
+e.g. `--yolo` for `muse`, `--dangerously-skip-permissions` for `claude`.
+Press `e` (or the **Flags (e)** button in the sidebar footer) to edit the
+active agent's flags: type shell-style words (`--model "opus 4"` works),
+`Enter` saves, `Esc` cancels. Bad quoting keeps the old flags and sticks
+an error until dismissed. Press `a` (or **Agent (a)**) to switch the agent
+for new runs (`muse` → `claude` → `codex` → `opencode`). Flags persist as
+plain JSON in `$XDG_CONFIG_HOME/agent-manager/config.json` (else
+`~/.config/agent-manager/config.json`):
+
+```json
+{
+  "active_agent": "claude",
+  "extra_args": {
+    "muse": ["--yolo"],
+    "claude": ["--dangerously-skip-permissions"]
+  }
+}
+```
+
 ## How it works
 
 - `src/embedded.rs` — PTY spawn/pump/resize/reap via `portable-pty`, plus a
@@ -89,6 +113,8 @@ reading source. `Tab` toggles which pane owns the keyboard.
   (`Sidebar`/`Button`, via `Root` + dark theme in `main.rs`), hand-rolled
   terminal pane, status bar, pump loop, clipboard.
 - `src/app.rs` — run list state, titles, activity sort.
+- `src/agents.rs` — supported agent CLIs, per-agent extra startup flags,
+  shell-style flag parsing, and the JSON config file.
 - `src/parsers/` — modular link parsers (GitHub PR URLs today).
 - `src/providers/` — session-provider abstraction (parked for a future
   historic-attach flow; live runs are spawned in-app).
