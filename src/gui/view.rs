@@ -183,7 +183,9 @@ impl ShellView {
         let avail_w =
             f32::from(viewport.width) - effective_sidebar_width(f32::from(viewport.width));
         let avail_h = f32::from(viewport.height) - STATUS_HEIGHT;
-        let (char_w, line_h) = mono_metrics(cx);
+        // Metrics come from the one-time cache: only the grid math below
+        // re-runs per frame, never the font-system measure.
+        let (char_w, line_h) = self.cached_mono_metrics(cx);
         self.char_w = char_w;
         self.line_h = line_h;
         let (cols, rows) = super::layout::pty_grid_for(avail_w, avail_h, char_w, line_h);
@@ -196,6 +198,21 @@ impl ShellView {
                 }
             }
         }
+    }
+}
+
+impl ShellView {
+    /// Font-system metrics, measured once and kept: the family (`Menlo`)
+    /// and size are compile-time constants and the text system is
+    /// app-global rather than per-window, so resizes and display moves
+    /// change the grid math in [`Self::fit_pty`] but can never change
+    /// this answer — per-frame re-measuring only burned font-system
+    /// lookups for an identical result.
+    fn cached_mono_metrics(&mut self, cx: &mut Context<ShellView>) -> (f32, f32) {
+        if self.mono_metrics.is_none() {
+            self.mono_metrics = Some(mono_metrics(cx));
+        }
+        self.mono_metrics.unwrap_or((8.0, 18.0))
     }
 }
 

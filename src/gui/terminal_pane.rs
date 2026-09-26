@@ -15,9 +15,61 @@ use crate::embedded::LiveView;
 
 use super::shell::{ShellView, CURSOR_BG, DEFAULT_FG, SELECTION_BG, TERM_FONT_SIZE};
 use super::terminal::{
-    point_to_cell, screen_rows, selection_rows, selection_text, to_hsla, CellPos,
+    point_to_cell, screen_fingerprint, screen_rows, selection_rows, selection_text, to_hsla,
+    CellPos,
 };
 use gpui_component::Sizable as _;
+
+/// Cursor cell the frame renders, if any: exited runs and hidden cursors
+/// paint no caret. Shared by the render path and the cache fingerprint
+/// so the key can never disagree with the pixels.
+pub(crate) fn resolved_cursor(view: &LiveView) -> Option<CellPos> {
+    if view.exited || view.screen.hide_cursor() {
+        None
+    } else {
+        Some(view.screen.cursor_position())
+    }
+}
+
+/// One cached terminal frame: the flattened text + gpui runs for a
+/// (run id, screen fingerprint) key. Single-entry: a miss overwrites, so
+/// memory stays flat and run switches invalidate by construction.
+#[derive(Default)]
+pub(crate) struct TermFrameCache {
+    key: Option<(String, u64)>,
+    full: String,
+    runs: Vec<TextRun>,
+}
+
+impl TermFrameCache {
+    /// Hit: hand back a clone of the cached frame. `StyledText` takes
+    /// ownership per repaint, so one `String` + one `Vec` clone is the
+    /// per-frame price — not a full grid rebuild.
+    pub(crate) fn get(&self, run_id: &str, fingerprint: u64) -> Option<(String, Vec<TextRun>)> {
+        if self
+            .key
+            .as_ref()
+            .is_some_and(|(id, f)| id == run_id && *f == fingerprint)
+        {
+            Some((self.full.clone(), self.runs.clone()))
+        } else {
+            None
+        }
+    }
+
+    /// Miss: remember this frame, dropping whatever was cached.
+    pub(crate) fn store(
+        &mut self,
+        run_id: String,
+        fingerprint: u64,
+        full: String,
+        runs: Vec<TextRun>,
+    ) {
+        self.key = Some((run_id, fingerprint));
+        self.full = full;
+        self.runs = runs;
+    }
+}
 
 impl ShellView {
     /// Normalized, non-empty mouse selection in terminal cells, if any.
@@ -105,28 +157,42 @@ impl ShellView {
         }
     }
 
-    pub(crate) fn render_terminal(&self, cx: &mut Context<Self>) -> gpui::Div {
+    pub(crate) fn render_terminal(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        // Cache the flattened frame per (run, screen fingerprint): an
+        // unchanged screen skips the `screen_rows` + `layout_text` rebuild
+        // (thousands of allocations) on every repaint and reuses the
+        // cloned text + runs instead.
+        let (run_id, fingerprint, cols) = match (self.active_id(), self.active_view()) {
+            (Some(id), Some(view)) => {
+                let fingerprint = screen_fingerprint(view.screen, resolved_cursor(&view));
+                let (_, cols) = view.screen.size();
+                (id, fingerprint, cols)
+            }
+            _ => return self.render_empty_pane(cx),
+        };
+        if let Some((full, runs)) = self.term_frame.get(&run_id, fingerprint) {
+            return self.assemble_live_terminal(full, runs, cols);
+        }
         let Some(view) = self.active_view() else {
             return self.render_empty_pane(cx);
         };
-        self.render_live_terminal(view)
+        let rows = screen_rows(view.screen, resolved_cursor(&view), CURSOR_BG);
+        let (full, runs) = layout_text(&rows);
+        self.term_frame
+            .store(run_id, fingerprint, full.clone(), runs.clone());
+        self.assemble_live_terminal(full, runs, cols)
     }
 
-    /// Live terminal pane. Takes no window context so headless tests can
-    /// build the element without a gpui harness.
-    pub(crate) fn render_live_terminal(&self, view: LiveView<'_>) -> gpui::Div {
-        let cursor = if view.exited || view.screen.hide_cursor() {
-            None
-        } else {
-            Some(view.screen.cursor_position())
-        };
-        let rows = screen_rows(view.screen, cursor, CURSOR_BG);
-        let (full, runs) = layout_text(&rows);
+    /// Assemble the terminal element from flattened text + runs: the
+    /// `StyledText` plus the mouse-selection highlight behind it. Takes
+    /// no window context so headless tests can build the element without
+    /// a gpui harness; production always reaches it through the cached
+    /// [`Self::render_terminal`] path.
+    fn assemble_live_terminal(&self, full: String, runs: Vec<TextRun>, cols: u16) -> gpui::Div {
         let text = StyledText::new(full).with_runs(runs);
         // Mouse selection highlight: cell rectangles behind the text. The
         // inner wrapper has no padding, so overlay origin == text origin and
         // no padding constant is needed.
-        let (_, cols) = view.screen.size();
         let spans = match self.selection_pair() {
             Some((s, e)) => selection_rows(s, e, cols),
             None => Vec::new(),
@@ -299,6 +365,32 @@ mod tests {
     }
 
     #[test]
+    fn frame_cache_hits_reuse_output_and_misses_on_change_or_run() {
+        use super::super::terminal::screen_fingerprint;
+        let mut cache = TermFrameCache::default();
+        assert!(cache.get("run-1", 42).is_none());
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"hello");
+        let fp = screen_fingerprint(parser.screen(), Some((0, 5)));
+        let rows = screen_rows(parser.screen(), Some((0, 5)), Rgb8(0, 0, 0));
+        let (full, runs) = layout_text(&rows);
+        cache.store("run-1".to_string(), fp, full.clone(), runs.clone());
+        // Same run + fingerprint: the cached text and runs come back
+        // byte-identical (the repaint reuses them instead of rebuilding).
+        let (hit_full, hit_runs) = cache.get("run-1", fp).expect("cache hit");
+        assert_eq!(hit_full, full);
+        assert_eq!(hit_runs, runs);
+        // A different run never aliases, even with an identical screen.
+        assert!(cache.get("run-2", fp).is_none());
+        // New output misses under the old key: the caller rebuilds and
+        // the store drops the stale frame.
+        parser.process(b"!");
+        let fp2 = screen_fingerprint(parser.screen(), Some((0, 6)));
+        assert_ne!(fp2, fp);
+        assert!(cache.get("run-1", fp2).is_none());
+    }
+
+    #[test]
     fn render_terminal_with_live_pty_does_not_panic() {
         // End-to-end of the "new session" crash path: a real child writes
         // colored output, and render_terminal builds the gpui element.
@@ -322,7 +414,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let live = view.active_view().expect("live pty has a view");
-        let _ = view.render_live_terminal(live);
+        // Same pieces the cached path assembles: rows, layout, element.
+        let rows = screen_rows(live.screen, resolved_cursor(&live), CURSOR_BG);
+        let (full, runs) = layout_text(&rows);
+        let (_, cols) = live.screen.size();
+        let _ = view.assemble_live_terminal(full, runs, cols);
     }
 
     #[test]

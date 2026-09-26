@@ -65,6 +65,14 @@ pub struct ShellView {
     /// painting the selection highlight behind the text.
     pub(crate) char_w: f32,
     pub(crate) line_h: f32,
+    /// Font-system metrics, measured once (see `fit_pty`): the family and
+    /// size are constants and the text system is app-global, so no
+    /// per-frame re-measure is ever needed.
+    pub(crate) mono_metrics: Option<(f32, f32)>,
+    /// Last rendered terminal frame, keyed by run id + screen fingerprint
+    /// (see [`super::terminal_pane::TermFrameCache`]): unchanged screens
+    /// skip the `screen_rows` + `layout_text` rebuild every frame.
+    pub(crate) term_frame: super::terminal_pane::TermFrameCache,
     /// Mouse-drag selection in terminal cells (anchor, cursor). `None` while
     /// no drag is in progress / no selection exists.
     pub(crate) sel_anchor: Option<CellPos>,
@@ -96,6 +104,8 @@ impl ShellView {
             term_text_bounds: Rc::new(RefCell::new(None)),
             char_w: 8.0,
             line_h: 18.0,
+            mono_metrics: None,
+            term_frame: super::terminal_pane::TermFrameCache::default(),
             sel_anchor: None,
             sel_active: None,
             selecting: false,

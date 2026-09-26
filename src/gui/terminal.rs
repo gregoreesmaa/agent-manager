@@ -173,6 +173,22 @@ pub fn selection_text(screen: &vt100::Screen, anchor: CellPos, active: CellPos) 
     screen.contents_between(start.0, start.1, end.0, end.1)
 }
 
+/// Fingerprint of everything [`screen_rows`] renders: grid size, the
+/// resolved cursor, and the formatted grid (text plus styles, in one
+/// allocation). vt100 exposes no generation counter, so the render cache
+/// keys on this instead of rebuilding rows (thousands of allocations)
+/// every frame. Hashing the *formatted* grid — not plain `contents()` —
+/// keeps style-only changes (a moved highlight with identical text) from
+/// going stale.
+pub fn screen_fingerprint(screen: &vt100::Screen, cursor: Option<(u16, u16)>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    screen.size().hash(&mut h);
+    cursor.hash(&mut h);
+    screen.contents_formatted().hash(&mut h);
+    h.finish()
+}
+
 /// Render the emulated screen grid as rows of coalesced spans. `cursor` is
 /// the 0-based cursor cell, painted with `cursor_bg` when given (this is how
 /// the child tool's caret stays visible).
@@ -270,6 +286,40 @@ mod tests {
         assert!((s - 0.0).abs() < 1e-5 && (l - 1.0).abs() < 1e-5);
         let gpui::Hsla { l, .. } = to_hsla(Rgb8(0, 0, 0));
         assert!((l - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_sensitive_to_text_style_and_cursor() {
+        let mut a = vt100::Parser::new(24, 80, 0);
+        a.process(b"hello");
+        let mut b = vt100::Parser::new(24, 80, 0);
+        b.process(b"hello");
+        // Same bytes, same cursor: identical fingerprint (cache hit).
+        assert_eq!(
+            screen_fingerprint(a.screen(), Some((0, 5))),
+            screen_fingerprint(b.screen(), Some((0, 5)))
+        );
+        // New text changes it.
+        b.process(b"!");
+        assert_ne!(
+            screen_fingerprint(a.screen(), Some((0, 5))),
+            screen_fingerprint(b.screen(), Some((0, 6)))
+        );
+        // A moved cursor alone changes it (the caret cell repaints).
+        let mut c = vt100::Parser::new(24, 80, 0);
+        c.process(b"hello");
+        assert_ne!(
+            screen_fingerprint(a.screen(), Some((0, 5))),
+            screen_fingerprint(c.screen(), Some((0, 0)))
+        );
+        // Style-only change with identical text changes it: recoloring
+        // "hello" red must not reuse the unstyled frame.
+        let mut d = vt100::Parser::new(24, 80, 0);
+        d.process(b"\x1b[31mhello\x1b[0m");
+        assert_ne!(
+            screen_fingerprint(a.screen(), None),
+            screen_fingerprint(d.screen(), None)
+        );
     }
 
     #[test]
