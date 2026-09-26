@@ -1,6 +1,6 @@
 //! Parser registry: fan-out over parser strategies.
 
-use crate::parsers::{pr_links, Parsed, Parser};
+use crate::parsers::{pr_links, related_links, Parsed, Parser};
 
 /// Tries a title heuristic (first non-empty line) plus shared PR extraction.
 /// Additional strategies can be pushed into `strategies` later.
@@ -26,6 +26,7 @@ impl Parser for RegistryParser {
     fn parse(&self, text: &str) -> Parsed {
         let mut merged = Parsed {
             pr_links: pr_links(text),
+            related_links: related_links(text),
             ..Default::default()
         };
         for s in &self.strategies {
@@ -39,6 +40,11 @@ impl Parser for RegistryParser {
             for link in p.pr_links {
                 if !merged.pr_links.contains(&link) {
                     merged.pr_links.push(link);
+                }
+            }
+            for link in p.related_links {
+                if !merged.related_links.contains(&link) {
+                    merged.related_links.push(link);
                 }
             }
         }
@@ -73,5 +79,22 @@ mod tests {
             RegistryParser::default().parse("Fix login\nsee https://github.com/acme/app/pull/9");
         assert_eq!(p.title.as_deref(), Some("Fix login"));
         assert_eq!(p.pr_links, vec!["https://github.com/acme/app/pull/9"]);
+    }
+
+    #[test]
+    fn merges_issue_commit_and_file_refs_as_related() {
+        let p = RegistryParser::default().parse(
+            "bug https://github.com/acme/app/issues/3 in src/app.rs:9 \
+             fixed by https://github.com/acme/app/commit/abcdef1234567890",
+        );
+        assert!(p.pr_links.is_empty());
+        assert_eq!(
+            p.related_links,
+            vec![
+                "https://github.com/acme/app/issues/3",
+                "https://github.com/acme/app/commit/abcdef1234567890",
+                "src/app.rs:9",
+            ]
+        );
     }
 }

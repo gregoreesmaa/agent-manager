@@ -275,7 +275,9 @@ impl ShellView {
                 if rescanned.contains(&id) {
                     let text = view.screen.contents();
                     let attention = crate::app::needs_attention(&text);
-                    (attention, view.exited, Some(extract_pr_links(&text)))
+                    let pr = extract_pr_links(&text);
+                    let related = crate::parsers::related_links(&text);
+                    (attention, view.exited, Some((pr, related)))
                 } else {
                     (
                         self.attention_cache.get(&id).copied().unwrap_or(false),
@@ -297,10 +299,10 @@ impl ShellView {
             // scrolled off. Merging keeps every PR URL ever seen per run.
             if let Some(s) = self.app.sessions.iter_mut().find(|s| s.id == id) {
                 s.status = status;
-                for link in fresh_links.into_iter().flatten() {
-                    if !s.pr_links.contains(&link) {
-                        s.pr_links.push(link);
-                    }
+                // Cap-not-drop merge (storage cap + truncation flag live
+                // in `push_links`); the panel folds extras behind N more.
+                if let Some((pr, related)) = fresh_links {
+                    s.push_links(pr, related);
                 }
             }
         }
@@ -708,25 +710,38 @@ impl ShellView {
                         Status::Working => ">",
                     };
                     let row_id = s.id.clone();
-                    // PR links as child items: click copies the full URL.
-                    let links: Vec<SidebarMenuItem> = s
-                        .pr_links
-                        .iter()
-                        .map(|link| {
-                            let short = link
-                                .trim_start_matches("https://")
-                                .trim_start_matches("http://")
-                                .trim_start_matches("github.com/")
-                                .to_string();
-                            let url = link.clone();
-                            SidebarMenuItem::new(short).on_click(cx.listener(
-                                move |this, _ev, _window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                                    this.app.set_status("copied PR link");
-                                },
-                            ))
-                        })
-                        .collect();
+                    // Parsed links as child items: click copies the full
+                    // URL. Display-capped: the first MAX_VISIBLE_LINKS
+                    // rows stay live and the rest fold behind an N more
+                    // disclosure; the full lists stay retained (and
+                    // copyable via yank) in the session.
+                    let link_row = |link: &str, label: &str| {
+                        let short = link
+                            .trim_start_matches("https://")
+                            .trim_start_matches("http://")
+                            .trim_start_matches("github.com/")
+                            .to_string();
+                        let url = link.to_string();
+                        let flash = label.to_string();
+                        SidebarMenuItem::new(short).on_click(cx.listener(
+                            move |this, _ev, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                                this.app.set_status(flash.clone());
+                            },
+                        ))
+                    };
+                    let mut links: Vec<SidebarMenuItem> = Vec::new();
+                    let (shown_prs, hidden_prs) = crate::app::visible_links(&s.pr_links);
+                    links.extend(shown_prs.iter().map(|l| link_row(l, "copied PR link")));
+                    let (shown_rel, hidden_rel) = crate::app::visible_links(&s.related_links);
+                    links.extend(shown_rel.iter().map(|l| link_row(l, "copied link")));
+                    let hidden = hidden_prs + hidden_rel;
+                    if hidden > 0 {
+                        links.push(SidebarMenuItem::new(format!("… {hidden} more")));
+                    }
+                    if s.links_truncated {
+                        links.push(SidebarMenuItem::new("(capped at 50 per list)".to_string()));
+                    }
                     SidebarMenuItem::new(format!("{row_marker} {}", s.title))
                         .active(i == self.app.selected)
                         .default_open(true)
@@ -1480,6 +1495,39 @@ mod headless_tests {
         }
         assert!(view.ptys[&id].view().exited);
         assert!(saw_dirt, "the exit tick must report dirt");
+    }
+
+    #[test]
+    fn issue_and_file_refs_accumulate_like_pr_links() {
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        let pty = EmbeddedPty::spawn(
+            "printf",
+            &["see https://github.com/acme/app/issues/7 at src/app.rs:9\\n".to_string()],
+            80,
+            24,
+        )
+        .unwrap();
+        view.ptys.insert(id.clone(), pty);
+        view.last_output.insert(id.clone(), Instant::now());
+        for _ in 0..100 {
+            view.refresh();
+            let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+            if !s.related_links.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(
+            s.related_links,
+            vec![
+                "https://github.com/acme/app/issues/7".to_string(),
+                "src/app.rs:9".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -16,6 +16,15 @@ pub enum Status {
     Working,
 }
 
+/// Max parsed links retained per list per run (PRs and related alike).
+/// Cap-not-drop display keeps the full story bounded: feeding 10k links
+/// keeps memory flat and surfaces [`ChatSession::links_truncated`].
+pub const MAX_STORED_LINKS: usize = 50;
+
+/// Max parsed-link rows shown per run in the sessions panel; the rest
+/// fold behind an `N more` disclosure ([`visible_links`]).
+pub const MAX_VISIBLE_LINKS: usize = 20;
+
 /// One chat/agent conversation surfaced by a [`crate::providers::Provider`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatSession {
@@ -27,6 +36,12 @@ pub struct ChatSession {
     pub last_active: i64,
     /// GitHub PR URLs extracted from the conversation transcript.
     pub pr_links: Vec<String>,
+    /// Non-PR references (issues, commits, file refs), same treatment.
+    #[serde(default)]
+    pub related_links: Vec<String>,
+    /// True once either link list hit [`MAX_STORED_LINKS`].
+    #[serde(default)]
+    pub links_truncated: bool,
     /// Most recent chat messages parsed from the `session.jsonl` tail.
     #[serde(default)]
     pub transcript: Vec<TranscriptMessage>,
@@ -36,6 +51,44 @@ pub struct ChatSession {
     /// True once a submitted prompt replaced the placeholder animal title.
     #[serde(default)]
     pub title_locked: bool,
+}
+
+impl ChatSession {
+    /// Merge freshly scanned links in first-seen order, capping each list
+    /// at [`MAX_STORED_LINKS`] and raising `links_truncated` on overflow.
+    /// Underlying data is never dropped by the display cap: the panel
+    /// folds extras behind `N more` via [`visible_links`].
+    pub fn push_links(&mut self, pr_fresh: Vec<String>, related_fresh: Vec<String>) {
+        for link in pr_fresh {
+            if !self.pr_links.contains(&link) {
+                if self.pr_links.len() >= MAX_STORED_LINKS {
+                    self.links_truncated = true;
+                } else {
+                    self.pr_links.push(link);
+                }
+            }
+        }
+        for link in related_fresh {
+            if !self.related_links.contains(&link) {
+                if self.related_links.len() >= MAX_STORED_LINKS {
+                    self.links_truncated = true;
+                } else {
+                    self.related_links.push(link);
+                }
+            }
+        }
+    }
+}
+
+/// Split a retained link list into the rows the panel shows plus the
+/// folded count: the first [`MAX_VISIBLE_LINKS`] stay visible, the rest
+/// collapse into the `N more` disclosure.
+pub fn visible_links(links: &[String]) -> (&[String], usize) {
+    if links.len() > MAX_VISIBLE_LINKS {
+        (&links[..MAX_VISIBLE_LINKS], links.len() - MAX_VISIBLE_LINKS)
+    } else {
+        (links, 0)
+    }
 }
 
 /// Placeholder names for runs before the user types their first prompt.
@@ -342,6 +395,8 @@ impl App {
             status: Status::Working,
             last_active: now_secs(),
             pr_links: vec![],
+            related_links: vec![],
+            links_truncated: false,
             transcript: vec![],
             transcript_truncated: false,
             title_locked: false,
@@ -395,10 +450,42 @@ mod tests {
             status,
             last_active,
             pr_links: vec![],
+            related_links: vec![],
+            links_truncated: false,
             transcript: vec![],
             transcript_truncated: false,
             title_locked: true,
         }
+    }
+
+    #[test]
+    fn link_storage_caps_at_50_with_truncation_flag() {
+        let mut s = sess("a", Status::Working, 1);
+        // 60 fresh PR links: first 50 retained in order, flag raised.
+        let fresh: Vec<String> = (0..60)
+            .map(|n| format!("https://github.com/acme/app/pull/{n}"))
+            .collect();
+        s.push_links(fresh, vec![]);
+        assert_eq!(s.pr_links.len(), MAX_STORED_LINKS);
+        assert_eq!(s.pr_links[0], "https://github.com/acme/app/pull/0");
+        assert!(s.links_truncated);
+        // Related lists cap independently; duplicates never double-count.
+        let related: Vec<String> = (0..55).map(|n| format!("src/f{n}.rs:1")).collect();
+        s.push_links(vec![s.pr_links[0].clone()], related);
+        assert_eq!(s.pr_links.len(), MAX_STORED_LINKS);
+        assert_eq!(s.related_links.len(), MAX_STORED_LINKS);
+    }
+
+    #[test]
+    fn visible_links_folds_beyond_20_behind_n_more() {
+        let links: Vec<String> = (0..25).map(|n| format!("l{n}")).collect();
+        let (shown, hidden) = visible_links(&links);
+        assert_eq!(shown.len(), MAX_VISIBLE_LINKS);
+        assert_eq!(hidden, 5);
+        let short: Vec<String> = (0..3).map(|n| format!("l{n}")).collect();
+        let (shown, hidden) = visible_links(&short);
+        assert_eq!(shown.len(), 3);
+        assert_eq!(hidden, 0);
     }
 
     #[test]

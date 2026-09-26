@@ -142,6 +142,8 @@ impl Provider for MuseCliProvider {
                     status: self.classify(&dir, &tail),
                     last_active: mtime,
                     pr_links: parsed.pr_links,
+                    related_links: parsed.related_links,
+                    links_truncated: false,
                     transcript: transcript.messages,
                     transcript_truncated: transcript.truncated || tail_cut,
                     title_locked: true,
