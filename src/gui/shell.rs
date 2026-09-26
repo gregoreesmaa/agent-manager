@@ -135,8 +135,10 @@ impl ShellView {
             .map(|pty| pty.view())
     }
 
-    /// Start the queued `muse` for the newly created run.
-    fn spawn_queued(&mut self) {
+    /// Start the queued `muse` for the newly created run. Returns true when
+    /// a spawn was consumed: success adds a live view, failure sticks an
+    /// error banner — either way the screen changed and needs a repaint.
+    fn spawn_queued(&mut self) -> bool {
         if let Some(kind) = self.app.take_pending_spawn() {
             let run_id = self.active_id().unwrap_or_default();
             match EmbeddedPty::spawn_kind(&kind, self.cols, self.rows) {
@@ -148,6 +150,9 @@ impl ShellView {
                     self.app.set_error(e.to_string());
                 }
             }
+            true
+        } else {
+            false
         }
     }
 
@@ -206,6 +211,7 @@ impl ShellView {
         }
     }
 
+<<<<<<< HEAD
     /// Close (kill) the selected run: drop its live PTY — `Drop` kills
     /// and reaps the child so no zombie survives — and remove its entry.
     /// Immediate and single-step; quitting the whole app is what asks.
@@ -246,17 +252,34 @@ impl ShellView {
     /// One pump iteration for the background task.
     pub fn tick(&mut self) {
         self.refresh();
+=======
+    /// One pump iteration for the background task. Returns true when the
+    /// pump observed anything visible — fresh output, a newly exited child,
+    /// a consumed spawn, a status flip, a new PR link, or a moved row — so
+    /// the caller repaints only then and idle costs ~zero instead of a full
+    /// refresh + repaint at 20 Hz. Selection/focus moves are event-driven
+    /// (they repaint directly), so the pump only tracks PTY-derived change.
+    pub fn tick(&mut self) -> bool {
+        self.refresh()
+>>>>>>> origin/fix-issue-11-dirty-gated-pump
     }
 
     /// Pump every run, refresh each entry from its live screen (attention
     /// markers, working/idle by recency, PR links), re-sort pinned.
+<<<<<<< HEAD
     /// Returns true when any run produced fresh output. Text scans
     /// (attention regex + link extraction) run only for runs whose PTY
     /// delivered bytes or changed exit state since the last tick;
     /// unchanged screens reuse the cached attention bit, so an idle tick
     /// costs no screen allocs at all.
+=======
+    /// Returns true when anything visible changed (see [`ShellView::tick`]).
+    /// Re-sorting runs on the same gate: row order only depends on status,
+    /// so an unchanged pump leaves the order (and the selection index)
+    /// untouched instead of re-sorting every tick.
+>>>>>>> origin/fix-issue-11-dirty-gated-pump
     fn refresh(&mut self) -> bool {
-        self.spawn_queued();
+        let spawned = self.spawn_queued();
         let mut fresh_any = false;
         let mut rescanned: Vec<String> = Vec::new();
         for (id, pty) in self.ptys.iter_mut() {
@@ -274,6 +297,7 @@ impl ShellView {
         }
         let now = Instant::now();
         let ids: Vec<String> = self.ptys.keys().cloned().collect();
+        let mut changed = spawned || fresh_any;
         for id in ids {
             // Scope the PTY borrow: the merge below touches other fields.
             let (attention, exited, fresh_links) = {
@@ -305,16 +329,33 @@ impl ShellView {
             // not full scrollback), so replacing would drop links that
             // scrolled off. Merging keeps every PR URL ever seen per run.
             if let Some(s) = self.app.sessions.iter_mut().find(|s| s.id == id) {
+<<<<<<< HEAD
                 s.status = status;
                 // Cap-not-drop merge (storage cap + truncation flag live
                 // in `push_links`); the panel folds extras behind N more.
                 if let Some((pr, related)) = fresh_links {
                     s.push_links(pr, related);
+=======
+                if s.status != status {
+                    s.status = status;
+                    changed = true;
+                }
+                for link in fresh {
+                    if !s.pr_links.contains(&link) {
+                        s.pr_links.push(link);
+                        changed = true;
+                    }
+>>>>>>> origin/fix-issue-11-dirty-gated-pump
                 }
             }
         }
-        self.app.resort_keep_selection();
-        fresh_any
+        if changed {
+            // Row order derives from status alone (last_active never moves
+            // here), so a changed pump is exactly when rows could have
+            // moved; a clean pump leaves order and selection index alone.
+            self.app.resort_keep_selection();
+        }
+        changed
     }
 
     /// Forward one gpui key event to the active PTY (Terminal focus),
@@ -1285,6 +1326,76 @@ mod headless_tests {
         }
         let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
         assert_eq!(s.status, Status::Idle);
+    }
+
+    #[test]
+    fn tick_gates_repaint_on_dirtiness() {
+        use std::time::Duration;
+
+        // Clean: a live run with no output never requests a repaint, so
+        // the 20 Hz pump idles instead of burning a refresh + repaint.
+        let mut idle = ShellView::new();
+        idle.app.start_new_session();
+        let _ = idle.app.take_pending_spawn();
+        let id = idle.active_id().unwrap();
+        let pty = EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap();
+        idle.ptys.insert(id.clone(), pty);
+        idle.last_output.insert(id, Instant::now());
+        for _ in 0..5 {
+            assert!(!idle.tick(), "idle pump must stay clean (no repaint)");
+        }
+
+        // Dirty: fresh PTY output requests a repaint.
+        let mut live = ShellView::new();
+        live.app.start_new_session();
+        let _ = live.app.take_pending_spawn();
+        let id = live.active_id().unwrap();
+        let pty = EmbeddedPty::spawn("printf", &["hello-dirty\\n".to_string()], 80, 24).unwrap();
+        live.ptys.insert(id.clone(), pty);
+        live.last_output.insert(id.clone(), Instant::now());
+        let mut saw_dirty = false;
+        for _ in 0..100 {
+            if live.tick() {
+                saw_dirty = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(saw_dirty, "fresh PTY output must mark the pump dirty");
+
+        // Settled: once output is drained and the run is idle, the pump
+        // goes clean again (no per-tick repaint at 20 Hz).
+        for _ in 0..100 {
+            live.tick();
+            let s = live.app.sessions.iter().find(|s| s.id == id).unwrap();
+            if s.status == Status::Idle {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let s = live.app.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(s.status, Status::Idle);
+        assert!(!live.tick(), "settled idle pump must stay clean");
+        assert!(!live.tick(), "settled idle pump must stay clean");
+
+        // Dirty without output: a child that exits silently still flips
+        // the pump dirty once (the ended state needs its repaint).
+        let mut quick = ShellView::new();
+        quick.app.start_new_session();
+        let _ = quick.app.take_pending_spawn();
+        let qid = quick.active_id().unwrap();
+        let pty = EmbeddedPty::spawn("true", &[], 80, 24).unwrap();
+        quick.ptys.insert(qid.clone(), pty);
+        quick.last_output.insert(qid, Instant::now());
+        let mut saw_exit_dirty = false;
+        for _ in 0..100 {
+            if quick.tick() {
+                saw_exit_dirty = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(saw_exit_dirty, "silent exit must mark the pump dirty");
     }
 
     #[test]

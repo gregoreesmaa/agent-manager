@@ -36,16 +36,18 @@ fn main() {
         Theme::change(ThemeMode::Dark, None, cx);
         let view: Entity<ShellView> = cx.new(|_cx| ShellView::new());
         let pump_view = view.clone();
-        // Pump loop: poll PTYs at 20 Hz so background runs keep streaming
-        // and the window repaints while anything is alive.
+        // Pump loop: poll PTYs at 20 Hz so background runs keep streaming;
+        // the window repaints only when the pump reports dirtiness (fresh
+        // output, exit, spawn, status/link/row change), so idle costs ~zero.
         cx.spawn(async move |cx| loop {
             cx.background_executor()
                 .timer(gui::shell::PUMP_INTERVAL)
                 .await;
             let alive = cx.update(|cx| {
                 pump_view.update(cx, |view, cx| {
-                    view.tick();
-                    cx.notify();
+                    if view.tick() {
+                        cx.notify();
+                    }
                 })
             });
             if alive.is_err() {
