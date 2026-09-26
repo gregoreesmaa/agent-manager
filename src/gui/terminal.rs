@@ -26,6 +26,37 @@ pub struct TermSpan {
     pub style: CellStyle,
 }
 
+/// Secondary chrome text on dark backgrounds, tuned for WCAG AA
+/// (contrast ≥ 4.5:1 on both [`PANE_BG`] and [`STATUS_BG`]; issue #8).
+/// Replaces the old dim `0x888888`, which sat near the 4.5:1 edge on the
+/// status bar and failed it under slight gamma variation.
+pub const SECONDARY_FG: Rgb8 = Rgb8(0xAA, 0xAA, 0xAA);
+/// Terminal pane background (matches the shell's `0x11111b`).
+pub const PANE_BG: Rgb8 = Rgb8(0x11, 0x11, 0x1B);
+/// Status bar background (matches the shell's `0x1e1e2e`).
+pub const STATUS_BG: Rgb8 = Rgb8(0x1E, 0x1E, 0x2E);
+
+fn lin_channel(c: u8) -> f32 {
+    let v = c as f32 / 255.0;
+    if v <= 0.03928 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn luminance(Rgb8(r, g, b): Rgb8) -> f32 {
+    0.2126 * lin_channel(r) + 0.7152 * lin_channel(g) + 0.0722 * lin_channel(b)
+}
+
+/// WCAG relative-contrast ratio of two colors (1.0 – 21.0). Framework-free
+/// so the AA floor for secondary text is pinned by a unit test (#8).
+pub fn contrast_ratio(a: Rgb8, b: Rgb8) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
 /// Standard xterm 16-color palette as RGB triples.
 const PALETTE_16: [(u8, u8, u8); 16] = [
     (0, 0, 0),
@@ -361,6 +392,17 @@ mod tests {
         assert!(selection_text(parser.screen(), (0, 3), (0, 3)).is_empty());
         // Reversed endpoints select the same text.
         assert_eq!(selection_text(parser.screen(), (0, 5), (0, 0)), "hello");
+    }
+
+    #[test]
+    fn secondary_text_meets_aa_on_both_chrome_backgrounds() {
+        // Issue #8: secondary cues must survive grayscale/low-vision, so
+        // the raised secondary color keeps ≥ 4.5:1 on pane and status bar.
+        assert!(contrast_ratio(SECONDARY_FG, PANE_BG) >= 4.5);
+        assert!(contrast_ratio(SECONDARY_FG, STATUS_BG) >= 4.5);
+        // Sanity: black-on-white is ~21:1, same-color is 1:1.
+        assert!((contrast_ratio(Rgb8(0, 0, 0), Rgb8(255, 255, 255)) - 21.0).abs() < 0.1);
+        assert!((contrast_ratio(PANE_BG, PANE_BG) - 1.0).abs() < 1e-5);
     }
 
     #[test]

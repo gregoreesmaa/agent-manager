@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     div, font, px, rgb, AnyElement, App as GpuiApp, Bounds, ClipboardItem, Context, ElementId,
     FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, SharedString,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, Rgba, SharedString, Size,
     StatefulInteractiveElement, Styled, StyledText, TextRun, UnderlineStyle, Window, WindowOptions,
 };
 use gpui_component::{
@@ -30,7 +30,8 @@ use crate::parsers::github::extract_pr_links;
 
 use super::keys::{keystroke_to_pty, KeyPress};
 use super::terminal::{
-    point_to_cell, screen_rows, selection_rows, selection_text, to_hsla, CellPos, Rgb8,
+    point_to_cell, screen_rows, selection_rows, selection_text, to_hsla, CellPos, Rgb8, PANE_BG,
+    SECONDARY_FG, STATUS_BG,
 };
 
 /// Left runs panel width in pixels.
@@ -47,6 +48,152 @@ const SELECTION_BG: u32 = 0x264f78;
 const DEFAULT_FG: Rgb8 = Rgb8(212, 212, 212);
 /// Caret color for the emulated cursor cell.
 const CURSOR_BG: Rgb8 = Rgb8(180, 180, 180);
+/// Window width (px) below which the runs sidebar auto-collapses (#6).
+pub const NARROW_WIDTH: f32 = 700.0;
+/// Sidebar width (px) while collapsed: a slim rail for the toggle (#6).
+pub const COLLAPSED_WIDTH: f32 = 48.0;
+/// PTY size floors, shared by `fit_pty` clamps and the window minimum (#6).
+pub const MIN_COLS: u16 = 20;
+pub const MIN_ROWS: u16 = 10;
+/// Fallback monospace cell size used for the window minimum, matching the
+/// `mono_metrics` fallbacks (8.0 x 18.0).
+pub const FALLBACK_CHAR_W: f32 = 8.0;
+pub const FALLBACK_LINE_H: f32 = 18.0;
+
+/// Whether the runs sidebar is collapsed for a window width, with an
+/// explicit user toggle (`b`) winning over the narrow auto-collapse (#6).
+pub fn sidebar_collapsed_for_width(width: f32, manual: Option<bool>) -> bool {
+    manual.unwrap_or(width < NARROW_WIDTH)
+}
+
+/// Sidebar width for a collapsed state: full panel or slim rail (#6).
+pub fn sidebar_width(collapsed: bool) -> f32 {
+    if collapsed {
+        COLLAPSED_WIDTH
+    } else {
+        LEFT_WIDTH
+    }
+}
+
+/// Minimum window size in pixels: room for the full sidebar, a
+/// `MIN_COLS` x `MIN_ROWS` PTY at fallback cell metrics, and the status
+/// bar, so the window can never shrink past what `fit_pty` can honor (#6).
+pub fn min_window_size() -> (f32, f32) {
+    (
+        LEFT_WIDTH + f32::from(MIN_COLS) * FALLBACK_CHAR_W,
+        STATUS_HEIGHT + f32::from(MIN_ROWS) * FALLBACK_LINE_H,
+    )
+}
+
+/// Non-blank status marker for a run: attention `!`, idle `·`, working
+/// `>`. The idle marker is deliberately not a blank space, so state stays
+/// readable without color (#8).
+pub fn run_marker(status: Status) -> &'static str {
+    match status {
+        Status::Attention => "!",
+        Status::Idle => "·",
+        Status::Working => ">",
+    }
+}
+
+/// Sidebar row label with a redundant selection cue: the selected row gets
+/// a `▶` prefix on top of the highlight, so selection survives grayscale
+/// and low vision (#8).
+pub fn run_row_label(marker: &str, title: &str, selected: bool) -> String {
+    if selected {
+        format!("▶ {marker} {title}")
+    } else {
+        format!("{marker} {title}")
+    }
+}
+
+/// Terminal pane title with a redundant focus cue: while typing, a
+/// `[typing]` prefix joins the bright color, so focus is not color-only
+/// (#8).
+pub fn terminal_title(brand: &str, state: &str, cmd: &str, note: &str, typing: bool) -> String {
+    let base = format!("{brand} [{state}] — {cmd}{note}");
+    if typing {
+        format!("[typing] {base}")
+    } else {
+        base
+    }
+}
+
+/// Status-bar hints per layout and focus. Narrow variants stay short so
+/// the single-line bar never overflows small windows (#6); every variant
+/// advertises `?` help (#7) and `b` sidebar toggle (#6).
+pub fn hint_text(narrow: bool, terminal_focused: bool, has_sessions: bool) -> &'static str {
+    if terminal_focused {
+        if narrow {
+            "typing · Tab/Esc: sessions · ?: help"
+        } else {
+            "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help"
+        }
+    } else if !has_sessions {
+        if narrow {
+            "n: new · ?: help · q: quit"
+        } else {
+            "n: new muse · ?: help · q: quit"
+        }
+    } else if narrow {
+        "n:new · j/k:move · Tab:type · b:bar · ?:help · q:quit"
+    } else {
+        "n: new · j/k: move · Tab/i: type · drag: select · y: copy · p: paste · b: sidebar · ?: help · q: quit"
+    }
+}
+
+/// Hard truncate for status-bar text to a char budget (the live terminal
+/// width), so a long transient message can never overflow the bar (#6).
+pub fn truncate_hint(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let kept: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+/// gpui colors derived from the contrast-tested [`super::terminal`]
+/// triples, so chrome can never drift from the AA-pinned values (#8).
+fn secondary_text() -> Rgba {
+    // Runtime echo of the AA unit test: fail fast in debug builds if the
+    // secondary ever drops below 4.5:1 on either chrome background (#8).
+    // Also keeps `contrast_ratio` live outside `#[cfg(test)]`.
+    use super::terminal::contrast_ratio;
+    debug_assert!(contrast_ratio(SECONDARY_FG, PANE_BG) >= 4.5);
+    debug_assert!(contrast_ratio(SECONDARY_FG, STATUS_BG) >= 4.5);
+    to_hsla(SECONDARY_FG).into()
+}
+fn pane_bg() -> Rgba {
+    to_hsla(PANE_BG).into()
+}
+fn status_bg() -> Rgba {
+    to_hsla(STATUS_BG).into()
+}
+
+/// In-app help entries: every nav key plus terminal-focus and mouse
+/// bindings, so the full keymap no longer lives only in the README (#7).
+/// Keep in sync with `nav_action` and `on_key`.
+pub fn help_entries() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("n", "new muse session"),
+        ("j / k", "move selection between sessions"),
+        ("Tab", "switch sessions ↔ terminal focus"),
+        ("i / Enter", "type in muse"),
+        ("y", "copy selection (or whole screen)"),
+        ("p", "paste clipboard into muse"),
+        ("r", "retry failed spawn"),
+        ("b", "collapse / expand sidebar"),
+        ("?", "toggle this help"),
+        ("Esc", "back to sessions · quit from sessions"),
+        ("q", "quit"),
+        ("drag", "select terminal text (copy-on-select)"),
+        ("Cmd+C", "copy selection (or screen)"),
+        ("Cmd/Ctrl+V", "paste clipboard"),
+    ]
+}
 
 /// Outcome of a nav-focus keypress: state changes apply immediately,
 /// window/clipboard effects are applied by the caller.
@@ -83,6 +230,14 @@ pub struct ShellView {
     sel_anchor: Option<CellPos>,
     sel_active: Option<CellPos>,
     selecting: bool,
+    /// In-app help panel visibility, toggled by `?` in nav focus (#7).
+    show_help: bool,
+    /// Explicit sidebar collapse toggle (`b`); `None` follows the narrow
+    /// auto-collapse for the live window width (#6).
+    sidebar_collapsed: Option<bool>,
+    /// True while the live window is narrower than [`NARROW_WIDTH`], set
+    /// each frame so status hints can shorten (#6).
+    narrow: bool,
 }
 
 impl ShellView {
@@ -104,7 +259,16 @@ impl ShellView {
             sel_anchor: None,
             sel_active: None,
             selecting: false,
+            show_help: false,
+            sidebar_collapsed: None,
+            narrow: false,
         }
+    }
+
+    /// Resolved sidebar collapse: the explicit `b` toggle wins, otherwise
+    /// the narrow auto-collapse for the live window width (#6).
+    fn is_collapsed(&self) -> bool {
+        self.sidebar_collapsed.unwrap_or(self.narrow)
     }
 
     fn active_id(&self) -> Option<String> {
@@ -410,6 +574,18 @@ impl ShellView {
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
             ("r", false) if self.can_retry() => NavAction::Retry,
+            // `?` toggles the in-app help panel (#7). `/` is an alias for
+            // keyboards/layouts where `?` arrives as shifted `/`.
+            ("?", _) | ("/", false) => {
+                self.show_help = !self.show_help;
+                NavAction::None
+            }
+            // `b` collapses/expands the sidebar; the explicit choice wins
+            // over the narrow auto-collapse until toggled back (#6).
+            ("b", false) => {
+                self.sidebar_collapsed = Some(!self.is_collapsed());
+                NavAction::None
+            }
             _ => NavAction::None,
         }
     }
@@ -511,15 +687,17 @@ impl ShellView {
     }
 
     /// Resize the active PTY to the central pane, measured in monospace cells.
-    fn fit_pty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `side_w` is the live sidebar width, so a collapsed rail gives the
+    /// reclaimed pixels back to the terminal (#6).
+    fn fit_pty(&mut self, window: &mut Window, cx: &mut Context<Self>, side_w: f32) {
         let viewport = window.viewport_size();
-        let avail_w = (f32::from(viewport.width) - LEFT_WIDTH).max(200.0);
+        let avail_w = (f32::from(viewport.width) - side_w).max(200.0);
         let avail_h = (f32::from(viewport.height) - STATUS_HEIGHT).max(120.0);
         let (char_w, line_h) = mono_metrics(cx);
         self.char_w = char_w;
         self.line_h = line_h;
-        let cols = ((avail_w / char_w) as u16).clamp(20, 400);
-        let rows = ((avail_h / line_h) as u16).clamp(10, 200);
+        let cols = ((avail_w / char_w) as u16).clamp(MIN_COLS, 400);
+        let rows = ((avail_h / line_h) as u16).clamp(MIN_ROWS, 200);
         if (cols, rows) != (self.cols, self.rows) {
             self.cols = cols;
             self.rows = rows;
@@ -537,46 +715,59 @@ impl ShellView {
     /// accumulated PR link as a child item that copies its URL on click.
     /// The sidebar scrolls internally, so long link lists never push
     /// sessions off-panel. The terminal pane stays hand-rolled gpui.
-    fn render_runs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_runs(&self, cx: &mut Context<Self>, collapsed: bool) -> AnyElement {
+        // Collapse toggle: keyboard `b` does the same (#6).
+        let toggle = Button::new(ElementId::Name("sidebar-toggle-btn".into()))
+            .label(if collapsed { "»" } else { "«" })
+            .small()
+            .on_click(cx.listener(|this, _ev, _window, _cx| {
+                this.sidebar_collapsed = Some(!this.is_collapsed());
+            }));
         // Header with a real button: sessions start here, not at a key hint.
-        let mut sidebar = Sidebar::left().w(px(LEFT_WIDTH)).header(
-            SidebarHeader::new().child("Sessions".to_string()).child(
-                Button::new(ElementId::Name("new-run-btn".into()))
-                    .label("+ New")
-                    .primary()
-                    .small()
-                    .on_click(cx.listener(|this, _ev, window, _cx| {
-                        this.app.start_new_session();
-                        this.clear_selection();
-                        this.focus_term(window);
-                    })),
-            ),
-        );
+        let header = if collapsed {
+            SidebarHeader::new().child(toggle)
+        } else {
+            SidebarHeader::new()
+                .child("Sessions".to_string())
+                .child(toggle)
+                .child(
+                    Button::new(ElementId::Name("new-run-btn".into()))
+                        .label("+ New")
+                        .primary()
+                        .small()
+                        .on_click(cx.listener(|this, _ev, window, _cx| {
+                            this.app.start_new_session();
+                            this.clear_selection();
+                            this.focus_term(window);
+                        })),
+                )
+        };
+        let mut sidebar = Sidebar::left()
+            .w(px(sidebar_width(collapsed)))
+            .collapsed(collapsed)
+            .header(header);
+        // Collapsed: slim rail only — groups stay mounted in state, just
+        // unrendered, so nothing is dropped (#6, cap-chrome principle).
+        if collapsed {
+            return sidebar.into_any_element();
+        }
         if self.app.sessions.is_empty() {
             return sidebar
                 .footer(
                     div()
-                        .text_color(rgb(0x888888))
+                        .text_color(secondary_text())
                         .text_xs()
-                        .child("No sessions yet.".to_string()),
+                        .child("No sessions yet. Press ? for keys.".to_string()),
                 )
                 .into_any_element();
         }
         for (status, indices) in status_sections(&self.app.sessions) {
-            let marker = match status {
-                Status::Attention => "!",
-                Status::Idle => "·",
-                Status::Working => ">",
-            };
+            let marker = run_marker(status);
             let items: Vec<SidebarMenuItem> = indices
                 .into_iter()
                 .map(|i| {
                     let s = &self.app.sessions[i];
-                    let row_marker = match s.status {
-                        Status::Attention => "!",
-                        Status::Idle => " ",
-                        Status::Working => ">",
-                    };
+                    let row_marker = run_marker(s.status);
                     let row_id = s.id.clone();
                     // PR links as child items: click copies the full URL.
                     let links: Vec<SidebarMenuItem> = s
@@ -597,18 +788,21 @@ impl ShellView {
                             ))
                         })
                         .collect();
-                    SidebarMenuItem::new(format!("{row_marker} {}", s.title))
-                        .active(i == self.app.selected)
-                        .default_open(true)
-                        .on_click(cx.listener(move |this, _ev, window, _cx| {
-                            if let Some(pos) = this.app.sessions.iter().position(|s| s.id == row_id)
-                            {
-                                this.app.selected = pos;
-                            }
-                            this.clear_selection();
-                            this.focus_list(window);
-                        }))
-                        .children(links)
+                    SidebarMenuItem::new(run_row_label(
+                        row_marker,
+                        &s.title,
+                        i == self.app.selected,
+                    ))
+                    .active(i == self.app.selected)
+                    .default_open(true)
+                    .on_click(cx.listener(move |this, _ev, window, _cx| {
+                        if let Some(pos) = this.app.sessions.iter().position(|s| s.id == row_id) {
+                            this.app.selected = pos;
+                        }
+                        this.clear_selection();
+                        this.focus_list(window);
+                    }))
+                    .children(links)
                 })
                 .collect();
             let group = SidebarGroup::new(format!(
@@ -630,7 +824,7 @@ impl ShellView {
                 .p_4()
                 .child(
                     div()
-                        .text_color(rgb(0x888888))
+                        .text_color(secondary_text())
                         .child(match &self.spawn_error {
                             Some(e) => format!("spawn failed: {e}"),
                             None => "No session yet. Press n to start a new muse.".to_string(),
@@ -681,7 +875,7 @@ impl ShellView {
         div()
             .flex_1()
             .h_full()
-            .bg(rgb(0x11111b))
+            .bg(pane_bg())
             .p_2()
             .font_family("Menlo")
             .text_size(px(TERM_FONT_SIZE))
@@ -716,22 +910,62 @@ impl ShellView {
             )
     }
 
+    /// Char budget for the single-line status bar: the live terminal width
+    /// (never below the PTY floor), so hints truncate instead of
+    /// overflowing narrow windows (#6).
+    fn hint_cap(&self) -> usize {
+        usize::from(self.cols.max(MIN_COLS))
+    }
+
     fn status_text(&self) -> String {
         if let Some(msg) = self.app.status_text() {
-            return msg.to_string();
+            return truncate_hint(msg, self.hint_cap());
         }
         if self.can_retry() {
-            return "spawn failed · r: retry · n: new · q: quit".to_string();
+            return truncate_hint(
+                "spawn failed · r: retry · n: new · q: quit",
+                self.hint_cap(),
+            );
         }
-        if self.app.is_terminal_focused() {
-            "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
-                .to_string()
-        } else if self.app.sessions.is_empty() {
-            "n: new muse · q: quit".to_string()
-        } else {
-            "n: new · j/k: move · Tab/i: type · drag: select · y: copy · p: paste · q: quit"
-                .to_string()
+        truncate_hint(
+            hint_text(
+                self.narrow,
+                self.app.is_terminal_focused(),
+                !self.app.sessions.is_empty(),
+            ),
+            self.hint_cap(),
+        )
+    }
+
+    /// In-app help panel: the full keymap as text rows plus a Close button,
+    /// dismissed by `?` — the keymap no longer lives only in the README
+    /// (#7).
+    fn render_help(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .bg(status_bg())
+            .text_color(to_hsla(DEFAULT_FG))
+            .text_sm()
+            .child(
+                div()
+                    .text_color(secondary_text())
+                    .child("Keys — press ? to close".to_string()),
+            );
+        for (key, what) in help_entries() {
+            col = col.child(format!("{key}   {what}"));
         }
+        col.child(
+            Button::new(ElementId::Name("help-close-btn".into()))
+                .label("Close (?)")
+                .small()
+                .on_click(cx.listener(|this, _ev, _window, _cx| {
+                    this.show_help = false;
+                })),
+        )
     }
 }
 
@@ -747,8 +981,16 @@ impl Render for ShellView {
                 window.focus(h);
             }
         }
+        // Narrow layout: record the live width for hints, collapse the
+        // sidebar under the threshold, and give the reclaimed pixels to the
+        // PTY sizing (#6).
+        self.narrow = f32::from(window.viewport_size().width) < NARROW_WIDTH;
+        let collapsed = sidebar_collapsed_for_width(
+            f32::from(window.viewport_size().width),
+            self.sidebar_collapsed,
+        );
         self.refresh();
-        self.fit_pty(window, cx);
+        self.fit_pty(window, cx, sidebar_width(collapsed));
 
         let state = if let Some(v) = self.active_view() {
             if v.exited {
@@ -770,17 +1012,23 @@ impl Render for ShellView {
                 )
             })
             .unwrap_or_else(|| ("muse".to_string(), String::new()));
-        let title = format!("Muse [{state}] — {cmd}{note}");
         // Focus indicator: the pane that owns the keyboard gets the bright
-        // title; the other dims. `muse` captures keys iff focus is Terminal.
+        // title plus a `[typing]` text prefix; the other dims. Redundant
+        // color + text cue so focus is not color-only (#8). `muse`
+        // captures keys iff focus is Terminal.
         let typing = self.app.is_terminal_focused() && state != "idle" && state != "ended";
-        let term_title_color = if typing { rgb(0xffd866) } else { rgb(0x888888) };
+        let title = terminal_title("Muse", state, &cmd, &note, typing);
+        let term_title_color = if typing {
+            rgb(0xffd866)
+        } else {
+            secondary_text()
+        };
 
-        div()
+        let mut root = div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x11111b))
+            .bg(pane_bg())
             .track_focus(&self.list_focus.clone().unwrap())
             .id(ElementId::Name("app-root".into()))
             .on_key_down(cx.listener(|this, ev, window, cx| {
@@ -791,7 +1039,7 @@ impl Render for ShellView {
                     .flex()
                     .flex_row()
                     .flex_1()
-                    .child(self.render_runs(cx))
+                    .child(self.render_runs(cx, collapsed))
                     .child(
                         div()
                             .flex()
@@ -846,15 +1094,19 @@ impl Render for ShellView {
                 div()
                     .h(px(STATUS_HEIGHT))
                     .px_2()
-                    .bg(rgb(0x1e1e2e))
-                    .text_color(rgb(0x888888))
+                    .bg(status_bg())
+                    .text_color(secondary_text())
                     .text_sm()
                     .child(self.status_text())
                     .id(ElementId::Name("status-bar".into()))
                     .on_click(cx.listener(|this, _ev, window, _cx| {
                         this.focus_list(window);
                     })),
-            )
+            );
+        if self.show_help {
+            root = root.child(self.render_help(cx));
+        }
+        root
     }
 }
 
@@ -932,12 +1184,19 @@ fn mono_metrics(cx: &mut Context<ShellView>) -> (f32, f32) {
     (char_w.max(4.0), line_h.max(8.0))
 }
 
-/// Window options for the main window.
+/// Window options for the main window. The minimum size fits the full
+/// sidebar, a [`MIN_COLS`] x [`MIN_ROWS`] PTY, and the status bar, so the
+/// window can never shrink past what `fit_pty` can honor (#6).
 pub fn window_options() -> WindowOptions {
+    let (min_w, min_h) = min_window_size();
     WindowOptions {
         titlebar: Some(gpui::TitlebarOptions {
             title: Some(SharedString::from("Agent Manager")),
             ..Default::default()
+        }),
+        window_min_size: Some(Size {
+            width: px(min_w),
+            height: px(min_h),
         }),
         ..Default::default()
     }
@@ -1049,6 +1308,132 @@ mod headless_tests {
         assert_eq!(view.nav_action("p", false), NavAction::Paste);
         assert_eq!(view.nav_action("z", false), NavAction::None);
         assert_eq!(view.nav_action("j", true), NavAction::None);
+    }
+
+    #[test]
+    fn narrow_layout_collapses_sidebar_and_floors_window() {
+        // Issue #6: auto-collapse under ~700px, manual toggle wins, widths
+        // match, and the window minimum honors the PTY floors (20x10).
+        assert!(sidebar_collapsed_for_width(699.0, None));
+        assert!(!sidebar_collapsed_for_width(700.0, None));
+        assert!(!sidebar_collapsed_for_width(1200.0, None));
+        assert!(!sidebar_collapsed_for_width(100.0, Some(false)));
+        assert!(sidebar_collapsed_for_width(1200.0, Some(true)));
+        assert_eq!(sidebar_width(false), LEFT_WIDTH);
+        assert_eq!(sidebar_width(true), COLLAPSED_WIDTH);
+        assert_eq!(MIN_COLS, 20);
+        assert_eq!(MIN_ROWS, 10);
+        assert_eq!(min_window_size(), (424.0, 208.0));
+        let opts = super::window_options();
+        let min = opts.window_min_size.expect("window minimum is set");
+        assert_eq!(min.width, px(424.0));
+        assert_eq!(min.height, px(208.0));
+    }
+
+    #[test]
+    fn status_hints_shorten_narrow_and_truncate_to_budget() {
+        // Issue #6: narrow hints stay short; every variant advertises `?`
+        // help (#7) and `b` sidebar toggle where sessions exist.
+        for narrow in [false, true] {
+            for (term, sessions) in [(false, false), (false, true), (true, true)] {
+                let hints = super::hint_text(narrow, term, sessions);
+                assert!(hints.contains('?'), "hints advertise help: {hints}");
+            }
+        }
+        let wide = super::hint_text(false, false, true);
+        let narrow = super::hint_text(true, false, true);
+        assert!(narrow.chars().count() < wide.chars().count());
+        assert!(wide.contains('b'), "wide hints advertise sidebar toggle");
+        // Hard truncation keeps single-line budget with an ellipsis.
+        assert_eq!(super::truncate_hint("abcdef", 5), "abcd…");
+        assert_eq!(super::truncate_hint("abc", 5), "abc");
+        assert_eq!(super::truncate_hint("abc", 0), "");
+        // Retry line survives the default (100-col) budget untouched.
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        view.spawn_error = Some("boom".to_string());
+        assert_eq!(
+            view.status_text(),
+            "spawn failed · r: retry · n: new · q: quit"
+        );
+        // Narrow flag shortens the live nav hints.
+        view.spawn_error = None;
+        view.app.focus_nav();
+        let wide_text = view.status_text();
+        view.narrow = true;
+        let narrow_text = view.status_text();
+        assert!(narrow_text.chars().count() < wide_text.chars().count());
+    }
+
+    #[test]
+    fn help_toggle_and_keymap_coverage() {
+        // Issue #7: `?` (and `/` alias) toggles help in nav focus; the
+        // panel documents every nav key plus terminal/mouse bindings.
+        let mut view = ShellView::new();
+        assert!(!view.show_help);
+        assert_eq!(view.nav_action("?", false), NavAction::None);
+        assert!(view.show_help);
+        assert_eq!(view.nav_action("?", false), NavAction::None);
+        assert!(!view.show_help);
+        assert_eq!(view.nav_action("/", false), NavAction::None);
+        assert!(view.show_help);
+        let entries = super::help_entries();
+        assert!(entries.len() >= 10);
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| *k).collect();
+        for needed in [
+            "n",
+            "j / k",
+            "Tab",
+            "i / Enter",
+            "y",
+            "p",
+            "r",
+            "b",
+            "?",
+            "q",
+            "Esc",
+        ] {
+            assert!(keys.contains(&needed), "help documents {needed}");
+        }
+        for (k, what) in &entries {
+            assert!(!k.is_empty() && !what.is_empty());
+        }
+    }
+
+    #[test]
+    fn sidebar_toggle_binding_flips_manual_override() {
+        // Issue #6: `b` is keyboard-reachable and wins over auto-collapse.
+        let mut view = ShellView::new();
+        assert!(!view.is_collapsed());
+        assert_eq!(view.nav_action("b", false), NavAction::None);
+        assert_eq!(view.sidebar_collapsed, Some(true));
+        assert!(view.is_collapsed());
+        assert_eq!(view.nav_action("b", false), NavAction::None);
+        assert_eq!(view.sidebar_collapsed, Some(false));
+        // Narrow auto-collapse still applies with no manual override.
+        view.sidebar_collapsed = None;
+        view.narrow = true;
+        assert!(view.is_collapsed());
+    }
+
+    #[test]
+    fn non_color_cues_for_selection_focus_and_state() {
+        // Issue #8: selection gets a `▶` prefix (not highlight-only),
+        // typing focus gets a `[typing]` prefix (not bright-only), and the
+        // idle marker is non-blank.
+        assert_eq!(super::run_marker(Status::Idle), "·");
+        assert!(!super::run_marker(Status::Idle).trim().is_empty());
+        assert_eq!(super::run_marker(Status::Attention), "!");
+        assert_eq!(super::run_marker(Status::Working), ">");
+        assert_eq!(super::run_row_label("·", "otter", false), "· otter");
+        assert_eq!(super::run_row_label("·", "otter", true), "▶ · otter");
+        let typing = super::terminal_title("Muse", "typing", "muse", "", true);
+        assert!(typing.starts_with("[typing] "));
+        assert!(typing.contains("Muse [typing]"));
+        let live = super::terminal_title("Muse", "live", "muse", "", false);
+        assert!(!live.contains("[typing]"));
+        assert_eq!(live, "Muse [live] — muse");
     }
 
     #[test]
