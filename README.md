@@ -22,9 +22,39 @@ cargo build
 ./target/debug/agent-manager
 ```
 
-`cargo test` runs the suite (73 tests); `cargo fmt --check` must stay clean.
+`cargo test` runs the suite; `cargo fmt --check` must stay clean.
+
+## Free and open source
+
+agent-manager is free software under the MIT license ([LICENSE-MIT](LICENSE-MIT),
+also recorded as `license = "MIT"` in `Cargo.toml`). No account, no paywall,
+no telemetry, no paid tiers: every run, parser, and provider ships free.
+Local state (preferences, persisted runs) stays in plain JSON files on your
+machine and never leaves it.
 
 ## Using it
+
+### Keyboard
+
+Sessions-first flow: a new user can spawn, switch, copy, and paste without
+reading source. `Tab` toggles which pane owns the keyboard.
+
+| Key | List focus | Terminal focus |
+| --- | --- | --- |
+| `n` | new `muse` run (takes the keyboard) | types into `muse` |
+| `j`/`k`, `↓`/`↑` | move selection | types into `muse` |
+| `PgDn`/`PgUp` | page the list | types into `muse` |
+| `o` | cycle link focus across the selected run's links | types into `muse` |
+| `Enter` | copy the focused link, or type into `muse` when none | newline to `muse` (first line titles the run) |
+| `i` | type into `muse` | types into `muse` |
+| `Tab` | type into `muse` | back to the list |
+| `y`, `Cmd+C` | copy selection (or whole screen) | copy selection (or whole screen) |
+| `p`, `Cmd`/`Ctrl+V` | paste clipboard into `muse` | paste clipboard into `muse` |
+| `r` | restart ended run / retry failed spawn | same, on a dead pane |
+| `x` | close (kill) the selected run | — (types `x`) |
+| `d` | dismiss the sticky error | — (types `d`) |
+| `q`, `Esc` | quit (confirms first with live runs) | back to the list |
+| drag | highlight terminal text (copy-on-select) | highlight terminal text |
 
 - The sessions list starts empty. Press `n` or the **+ New** button for a
   new `muse` run. Runs start with animal placeholder titles (`otter`,
