@@ -151,18 +151,26 @@ impl ShellView {
     }
 
     pub(crate) fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut GpuiApp) {
-        if ev.is_held {
-            // Held-key repeats still type into the terminal; nav ignores them.
-            if !self.app.is_terminal_focused() {
-                return;
-            }
-        }
         let ks = &ev.keystroke;
         let key = ks.key.as_str();
         let key_char = ks.key_char.as_deref();
         let ctrl = ks.modifiers.control;
         let alt = ks.modifiers.alt;
         let platform = ks.modifiers.platform;
+        let shift = ks.modifiers.shift;
+        if shift && !ctrl && !platform && (key == "pageup" || key == "pagedown") {
+            // Scrollback pager (issue #25) in either focus: Shift+PgUp /
+            // Shift+PgDn never types into `muse`. Repeats keep paging.
+            self.page_scrollback(key == "pageup");
+            window.refresh();
+            return;
+        }
+        if ev.is_held {
+            // Held-key repeats still type into the terminal; nav ignores them.
+            if !self.app.is_terminal_focused() {
+                return;
+            }
+        }
         if key == "tab" {
             self.app.toggle_focus();
             if self.app.is_terminal_focused() {

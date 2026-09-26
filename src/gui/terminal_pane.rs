@@ -148,7 +148,8 @@ impl ShellView {
         if let Some(cell) = self.mouse_cell(pos) {
             self.sel_active = Some(cell);
         }
-        if let Some(text) = self.selected_text() {
+        // A paged run copies from the visible pager slice (issue #25).
+        if let Some(text) = self.selected_pager_text().or_else(|| self.selected_text()) {
             let chars = text.chars().count();
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             self.app
@@ -159,6 +160,18 @@ impl ShellView {
     }
 
     pub(crate) fn render_terminal(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        // Pager (issue #25): a scrolled-up run shows its retained slice
+        // instead of the live grid. The offset moves with no screen
+        // change, so this bypasses the fingerprint cache below.
+        if let Some(spans) = self.pager_spans() {
+            let cols = self
+                .active_view()
+                .map(|v| v.screen.size().1)
+                .unwrap_or(self.cols);
+            let term_font = terminal_font(self.app.terminal_config());
+            let (full, runs) = layout_text(&spans, &term_font);
+            return self.assemble_live_terminal(full, runs, cols);
+        }
         // Cache the flattened frame per (run, screen fingerprint): an
         // unchanged screen skips the `screen_rows` + `layout_text` rebuild
         // (thousands of allocations) on every repaint and reuses the

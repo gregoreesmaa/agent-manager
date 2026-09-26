@@ -46,6 +46,7 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | `n` | new `muse` run (takes the keyboard) | types into `muse` |
 | `j`/`k`, `↓`/`↑` | move selection | types into `muse` |
 | `PgDn`/`PgUp` | page the list | types into `muse` |
+| `Shift+PgDn`/`Shift+PgUp` | scroll the run's retained output (pager) | scroll the run's retained output (pager) |
 | `o` | cycle link focus across the selected run's links | types into `muse` |
 | `Enter` | copy the focused link, or type into `muse` when none | newline to `muse` (first line titles the run) |
 | `i` | type into `muse` | types into `muse` |

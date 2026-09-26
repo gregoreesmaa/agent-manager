@@ -43,6 +43,10 @@ impl ShellView {
             if run.pump() {
                 fresh_any = true;
                 rescanned.push(id.clone());
+                // Fresh output snaps a paged run back to the live bottom
+                // (issue #25): the offset points at history the new bytes
+                // just pushed further down.
+                run.scroll_offset = 0;
             } else if run.exited() != exited_before {
                 // No new bytes, but the child just exited: the run's
                 // status and links are stale, so rescan it as dirt.

@@ -5,12 +5,14 @@
 //! focused modules — [`runs`] (the single live-run struct), [`spawn`]
 //! (spawn/key paths), [`lifecycle`] (restart/close/quit), [`pump`]
 //! (dirty-gated pump), [`nav`] (key dispatch), [`runs_panel`] (sessions
-//! panel), [`terminal_pane`] (terminal render, selection, clipboard).
+//! panel), [`terminal_pane`] (terminal render, selection, clipboard),
+//! [`pager`] (scrollback pager over the retained output buffer).
 
 pub mod keys;
 pub mod layout;
 pub mod lifecycle;
 pub mod nav;
+pub mod pager;
 pub mod pump;
 pub mod runs;
 pub mod runs_panel;
