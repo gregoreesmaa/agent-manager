@@ -1,66 +1,65 @@
-//! agent-manager: native Rust CLI harness listing agent chat sessions.
+//! agent-manager: native GUI harness for live `muse` runs (gpui, no webview).
 //!
-//! Left pane: top-down chat list (attention > idle > working).
-//! Right pane: selected project detail incl. per-chat GitHub PR links.
-//! Keys: j/k or Up/Down to move, q/Esc to quit.
+//! Left panel: live runs started in-app (`n` or the New button); starts
+//! empty, shows animal placeholder titles until the first submitted prompt
+//! renames a run, groups by Needs input / Idle / Active with counts, and
+//! lists every GitHub PR link ever seen in each run (accumulated, not just
+//! the visible screen). Central pane: the embedded interactive `muse`
+//! terminal, rendered from the vt100 emulator grid; drag to highlight text
+//! (copy-on-select), Cmd+C copies, Cmd/Ctrl+V pastes.
+//! Keys (nav focus): j/k move, n new, y copy selection-or-screen, p paste,
+//! Tab/i type, q quit. Typing focus: keys go to `muse`; Tab/Esc back to
+//! the list.
 
 mod app;
+mod embedded;
+mod gui;
+// Parked for the modular future (alternate providers, link-parser families,
+// historic transcript attach): kept compiled and unit-tested.
+#[allow(dead_code, unused_imports)]
 mod parsers;
+#[allow(dead_code, unused_imports)]
 mod providers;
-mod ui;
+#[allow(dead_code, unused_imports)]
+mod transcript;
 
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
+use std::time::Duration;
 
-use crate::app::App;
-use crate::parsers::registry::RegistryParser;
-use crate::providers::{MuseCliProvider, Provider};
+use gpui::{AppContext, Application, Entity};
+use gpui_component::{Root, Theme, ThemeMode};
 
-fn main() -> Result<()> {
-    let provider = MuseCliProvider::new(
-        MuseCliProvider::default_store_root(),
-        Box::new(RegistryParser::default()),
-    );
-    let sessions = provider.discover_sessions().unwrap_or_default();
-    let mut app = App::new(sessions);
+use gui::shell::ShellView;
 
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = run_loop(&mut terminal, &mut app);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    result
-}
-
-fn run_loop(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    app: &mut App,
-) -> Result<()> {
-    loop {
-        terminal.draw(|f| ui::render(f, app))?;
-        if !event::poll(std::time::Duration::from_millis(250))? {
-            continue;
-        }
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-                KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
-                _ => {}
+fn main() {
+    Application::new().run(|cx| {
+        // Native chrome components (sidebar, buttons): init once, dark to
+        // match the terminal pane.
+        gpui_component::init(cx);
+        Theme::change(ThemeMode::Dark, None, cx);
+        let view: Entity<ShellView> = cx.new(|_cx| ShellView::new());
+        let pump_view = view.clone();
+        // Pump loop: poll PTYs at 20 Hz so background runs keep streaming
+        // and the window repaints while anything is alive.
+        cx.spawn(async move |cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let alive = cx.update(|cx| {
+                pump_view.update(cx, |view, cx| {
+                    view.tick();
+                    cx.notify();
+                })
+            });
+            if alive.is_err() {
+                break;
             }
-        }
-    }
-    Ok(())
+        })
+        .detach();
+        // Root must be the window's first view: it provides the theme
+        // context the sidebar/buttons read, plus dialog/notification layers.
+        cx.open_window(gui::shell::window_options(), |window, cx| {
+            cx.new(|cx| Root::new(view.clone(), window, cx))
+        })
+        .unwrap();
+    });
 }

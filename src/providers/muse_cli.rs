@@ -19,6 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app::{ChatSession, Status};
 use crate::parsers::Parser;
 use crate::providers::traits::{Provider, ProviderError};
+use crate::transcript::{
+    derive_title, extract_project, extract_session_name, parse_transcript, MAX_TAIL_BYTES,
+};
 
 /// Discovers sessions from the on-disk Muse CLI store.
 pub struct MuseCliProvider {
@@ -42,12 +45,16 @@ impl MuseCliProvider {
         }
     }
 
-    fn read_tail(path: &std::path::Path, max_bytes: u64) -> String {
+    /// Read up to `max_bytes` from the end of the log. Returns the tail plus
+    /// whether the head was cut (in which case the first, partial line is
+    /// dropped so only whole records are parsed).
+    fn read_tail(path: &std::path::Path, max_bytes: u64) -> (String, bool) {
         let Ok(meta) = std::fs::metadata(path) else {
-            return String::new();
+            return (String::new(), false);
         };
+        let was_cut = meta.len() > max_bytes;
         let Ok(mut f) = std::fs::File::open(path) else {
-            return String::new();
+            return (String::new(), false);
         };
         use std::io::{Read, Seek, SeekFrom};
         let start = meta.len().saturating_sub(max_bytes);
@@ -55,7 +62,14 @@ impl MuseCliProvider {
         if f.seek(SeekFrom::Start(start)).is_ok() {
             let _ = f.read_to_string(&mut buf);
         }
-        buf
+        if was_cut {
+            if let Some(i) = buf.find('\n') {
+                buf = buf[i + 1..].to_string();
+            } else {
+                buf.clear();
+            }
+        }
+        (buf, was_cut)
     }
 
     fn classify(&self, dir: &std::path::Path, tail: &str) -> Status {
@@ -113,15 +127,17 @@ impl Provider for MuseCliProvider {
                 let Some(id) = dir.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                let tail = Self::read_tail(&log, 64 * 1024);
-                let text = if tail.is_empty() {
-                    // Fall back to the peer log name so empty sessions still
-                    // get a title; status stays Idle.
-                    String::new()
+                let (tail, tail_cut) = Self::read_tail(&log, MAX_TAIL_BYTES);
+                let parsed = self.parser.parse(&tail);
+                let transcript = parse_transcript(&tail);
+                let auto_name = extract_session_name(&tail);
+                // Single-line summary title: transcript first, then the
+                // session auto-name / parser title, then the id.
+                let raw_title = if transcript.messages.is_empty() {
+                    auto_name.or(parsed.title).unwrap_or_else(|| id.to_string())
                 } else {
-                    tail.clone()
+                    derive_title(&transcript.messages, auto_name.as_deref().unwrap_or(id))
                 };
-                let parsed = self.parser.parse(&text);
                 let mtime = std::fs::metadata(&log)
                     .and_then(|m| m.modified())
                     .ok()
@@ -130,11 +146,16 @@ impl Provider for MuseCliProvider {
                     .unwrap_or(now);
                 out.push(ChatSession {
                     id: id.to_string(),
-                    title: shorten(&parsed.title.unwrap_or_else(|| id.to_string())),
-                    project: parsed.project.unwrap_or_else(|| "muse".to_string()),
+                    title: shorten(&raw_title),
+                    project: extract_project(&tail)
+                        .or(parsed.project)
+                        .unwrap_or_else(|| "muse".to_string()),
                     status: self.classify(&dir, &tail),
                     last_active: mtime,
                     pr_links: parsed.pr_links,
+                    transcript: transcript.messages,
+                    transcript_truncated: transcript.truncated || tail_cut,
+                    title_locked: true,
                 });
             }
         }
@@ -173,10 +194,10 @@ fn collect_date_dirs(root: &std::path::Path) -> std::io::Result<Vec<PathBuf>> {
 
 fn shorten(s: &str) -> String {
     const MAX: usize = 60;
-    if s.len() <= MAX {
+    if s.chars().count() <= MAX {
         return s.to_string();
     }
-    format!("{}…", &s[..MAX])
+    format!("{}…", s.chars().take(MAX).collect::<String>())
 }
 
 #[cfg(test)]
@@ -221,6 +242,58 @@ mod tests {
             sessions[0].pr_links,
             vec!["https://github.com/acme/repo/pull/42"]
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn populates_transcript_and_single_line_title() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-manager-transcript-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let leaf = root.join("2026/09/26/transcript-session");
+        std::fs::create_dir_all(&leaf).unwrap();
+        let log = leaf.join("session.jsonl");
+        let lines = vec![
+            serde_json::json!({
+                "payload_type": "runtime.session.metadata",
+                "payload": {"kind": "metadata", "record": {"workspace_root": "/tmp/work/myproj"}}
+            })
+            .to_string(),
+            serde_json::json!({
+                "payload_type": "runtime.user_intent.accepted",
+                "payload": {"model_messages": [
+                    {"content": [{"kind": "text", "text": "Fix login\nsecond line"}]}
+                ]}
+            })
+            .to_string(),
+            serde_json::json!({
+                "payload_type": "runtime.session",
+                "payload": {"kind": "run", "run_id": "r1", "event": {
+                    "kind": "assistant_message_committed",
+                    "message_id": "m", "response_id": "x",
+                    "text": "Done, see https://github.com/acme/repo/pull/7"
+                }}
+            })
+            .to_string(),
+        ];
+        std::fs::write(&log, lines.join("\n")).unwrap();
+        let p = MuseCliProvider::new(root.clone(), Box::new(RegistryParser::default()));
+        let sessions = p.discover_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        let s = &sessions[0];
+        assert_eq!(s.project, "myproj");
+        assert!(!s.title.contains('\n'), "title must be single-line");
+        assert_eq!(s.title, "Fix login second line");
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(
+            s.transcript[0].text, "Fix login\nsecond line",
+            "transcript keeps full text"
+        );
+        assert_eq!(s.pr_links, vec!["https://github.com/acme/repo/pull/7"]);
         std::fs::remove_dir_all(&root).ok();
     }
 }
