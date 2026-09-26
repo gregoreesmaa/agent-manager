@@ -57,6 +57,7 @@ enum NavAction {
     Copy,
     Paste,
     Retry,
+    Dismiss,
     None,
 }
 
@@ -65,7 +66,6 @@ pub struct ShellView {
     ptys: HashMap<String, EmbeddedPty>,
     last_output: HashMap<String, Instant>,
     pending_inputs: HashMap<String, String>,
-    spawn_error: Option<String>,
     list_focus: Option<FocusHandle>,
     term_focus: Option<FocusHandle>,
     cols: u16,
@@ -92,7 +92,6 @@ impl ShellView {
             ptys: HashMap::new(),
             last_output: HashMap::new(),
             pending_inputs: HashMap::new(),
-            spawn_error: None,
             list_focus: None,
             term_focus: None,
             cols: 100,
@@ -125,14 +124,20 @@ impl ShellView {
             match EmbeddedPty::spawn_kind(&kind, self.cols, self.rows) {
                 Ok(pty) => {
                     self.ptys.insert(run_id.clone(), pty);
-                    self.last_output.insert(run_id, Instant::now());
-                    self.spawn_error = None;
+                    self.note_spawn_success(&run_id);
                 }
                 Err(e) => {
-                    self.spawn_error = Some(e.to_string());
+                    self.app.set_error(e.to_string());
                 }
             }
         }
+    }
+
+    /// Success bookkeeping for a fresh spawn: track output recency and
+    /// clear any sticky error (errors stay until dismissed/next success).
+    fn note_spawn_success(&mut self, run_id: &str) {
+        self.last_output.insert(run_id.to_string(), Instant::now());
+        self.app.clear_error();
     }
 
     /// Retry is offered when a spawn actually failed and the selected run
@@ -140,7 +145,7 @@ impl ShellView {
     /// missing PTY) keeps a fast-typed `r` reaching a still-starting child
     /// instead of queueing a duplicate spawn.
     fn can_retry(&self) -> bool {
-        if self.spawn_error.is_none() {
+        if self.app.error_text().is_none() {
             return false;
         }
         match self.active_id() {
@@ -247,7 +252,7 @@ impl ShellView {
         if let Some(bytes) = keystroke_to_pty(&press) {
             if let Some(pty) = self.ptys.get_mut(&id) {
                 if let Err(e) = pty.write_input(&bytes) {
-                    self.spawn_error = Some(e.to_string());
+                    self.app.set_error(e.to_string());
                 }
             }
         }
@@ -376,7 +381,7 @@ impl ShellView {
         };
         if let Some(pty) = self.ptys.get_mut(&id) {
             if let Err(e) = pty.write_input(text.as_bytes()) {
-                self.spawn_error = Some(e.to_string());
+                self.app.set_error(e.to_string());
             } else {
                 let chars = text.chars().count();
                 self.app.set_status(format!("pasted {chars} chars"));
@@ -410,6 +415,7 @@ impl ShellView {
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
             ("r", false) if self.can_retry() => NavAction::Retry,
+            ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
             _ => NavAction::None,
         }
     }
@@ -504,6 +510,9 @@ impl ShellView {
             NavAction::Retry => {
                 self.retry_spawn();
                 self.focus_term(window);
+            }
+            NavAction::Dismiss => {
+                self.app.clear_error();
             }
             NavAction::None => {}
         }
@@ -631,7 +640,7 @@ impl ShellView {
                 .child(
                     div()
                         .text_color(rgb(0x888888))
-                        .child(match &self.spawn_error {
+                        .child(match self.app.error_text() {
                             Some(e) => format!("spawn failed: {e}"),
                             None => "No session yet. Press n to start a new muse.".to_string(),
                         }),
@@ -688,14 +697,17 @@ impl ShellView {
             .child(inner)
     }
 
-    /// Spawn-failure banner above the terminal pane: the error stays
-    /// visible with a one-click Retry (keyboard `r`), instead of a passive
-    /// line in the empty pane. Empty (zero-size) when no spawn failed.
+    /// Sticky-error banner above the terminal pane: spawn and PTY-write
+    /// failures stay visible here (mirroring the status bar) until
+    /// dismissed or superseded by a success. Retry appears only when the
+    /// selected run owns no live PTY; Dismiss (`d`) always does.
+    /// Empty (zero-size) when no error is sticky.
     fn render_error_banner(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let Some(err) = self.spawn_error.clone() else {
+        let Some(err) = self.app.error_text().map(str::to_string) else {
             return div();
         };
-        div()
+        let retry = self.can_retry();
+        let mut row = div()
             .flex()
             .flex_row()
             .px_2()
@@ -703,8 +715,9 @@ impl ShellView {
             .bg(rgb(0x3a1d1d))
             .text_color(rgb(0xff9999))
             .text_sm()
-            .child(format!("spawn failed: {err}"))
-            .child(
+            .child(err);
+        if retry {
+            row = row.child(
                 Button::new(ElementId::Name("retry-spawn-btn".into()))
                     .label("Retry (r)")
                     .primary()
@@ -713,15 +726,25 @@ impl ShellView {
                         this.retry_spawn();
                         this.focus_term(window);
                     })),
-            )
+            );
+        }
+        row.child(
+            Button::new(ElementId::Name("dismiss-error-btn".into()))
+                .label("Dismiss (d)")
+                .small()
+                .on_click(cx.listener(|this, _ev, _window, _cx| {
+                    this.app.clear_error();
+                })),
+        )
     }
 
     fn status_text(&self) -> String {
         if let Some(msg) = self.app.status_text() {
+            // Sticky errors keep their recovery hint while Retry applies.
+            if self.app.error_text().is_some() && self.can_retry() {
+                return format!("{msg} · r: retry");
+            }
             return msg.to_string();
-        }
-        if self.can_retry() {
-            return "spawn failed · r: retry · n: new · q: quit".to_string();
         }
         if self.app.is_terminal_focused() {
             "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
@@ -1068,7 +1091,8 @@ mod headless_tests {
 
         // Simulate the pump consuming the spawn and failing.
         let _ = view.app.take_pending_spawn();
-        view.spawn_error = Some("failed to spawn `muse`: missing binary".to_string());
+        view.app
+            .set_error("failed to spawn `muse`: missing binary".to_string());
         assert!(view.can_retry());
         assert_eq!(view.nav_action("r", false), NavAction::Retry);
         view.retry_spawn();
@@ -1078,7 +1102,7 @@ mod headless_tests {
         );
         assert_eq!(
             view.status_text(),
-            "spawn failed · r: retry · n: new · q: quit"
+            "failed to spawn `muse`: missing binary · r: retry"
         );
 
         // A live PTY disables retry: the run is already up.
@@ -1088,6 +1112,49 @@ mod headless_tests {
         view.ptys.insert(id, pty);
         assert!(!view.can_retry());
         assert_eq!(view.nav_action("r", false), NavAction::None);
+    }
+
+    #[test]
+    fn write_failure_with_live_pty_stays_sticky_in_status_bar() {
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        let pty = EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap();
+        view.ptys.insert(id, pty);
+        // A PTY write failure with a live session used to vanish past a
+        // repaint (placeholder-only error slot). Now it sticks in the
+        // status bar, with no Retry (the run already owns a live PTY).
+        view.app.set_error("pty write failed: broken pipe");
+        assert!(!view.can_retry());
+        assert_eq!(view.status_text(), "pty write failed: broken pipe");
+        // Info flashes never supersede it; repeated repaints keep it.
+        view.app.set_status("copied selection (4 chars)");
+        assert_eq!(view.status_text(), "pty write failed: broken pipe");
+        view.refresh();
+        assert_eq!(view.status_text(), "pty write failed: broken pipe");
+        // Explicit dismissal (`d`) restores the transient info line.
+        assert_eq!(view.nav_action("d", false), NavAction::Dismiss);
+        view.app.clear_error();
+        assert_eq!(view.status_text(), "copied selection (4 chars)");
+        assert_eq!(view.nav_action("d", false), NavAction::None);
+    }
+
+    #[test]
+    fn next_spawn_success_clears_the_sticky_error() {
+        let mut view = ShellView::new();
+        view.app.start_new_session();
+        let id = view.active_id().unwrap();
+        view.app.set_error("failed to spawn `muse`: missing binary");
+        assert_eq!(
+            view.status_text(),
+            "failed to spawn `muse`: missing binary · r: retry"
+        );
+        // A later successful spawn (same policy `spawn_queued` runs on its
+        // Ok branch) supersedes the error without any dismissal click.
+        view.note_spawn_success(&id);
+        assert_eq!(view.app.error_text(), None);
+        assert!(!view.can_retry());
     }
 
     #[test]

@@ -1,1 +1,5 @@
 /target
+.DS_Store
+*.pdb
+agent-manager-state.json
+agent-manager-prefs.json

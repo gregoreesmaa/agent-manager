@@ -152,6 +152,7 @@ pub struct App {
     pending_spawn: Option<SpawnKind>,
     next_run: usize,
     status_msg: Option<(String, std::time::Instant)>,
+    sticky_error: Option<String>,
 }
 
 /// How long a transient status-bar message stays visible.
@@ -167,6 +168,7 @@ impl App {
             pending_spawn: None,
             next_run: 0,
             status_msg: None,
+            sticky_error: None,
         }
     }
 
@@ -175,8 +177,30 @@ impl App {
         self.status_msg = Some((msg.into(), std::time::Instant::now()));
     }
 
-    /// Current status-bar message, if it has not expired.
+    /// Record a sticky error (spawn/PTY-write failure). It stays until an
+    /// explicit [`App::clear_error`] or the next success — repaints and the
+    /// transient TTL never clear it.
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.sticky_error = Some(msg.into());
+    }
+
+    /// Dismiss the sticky error, if any.
+    pub fn clear_error(&mut self) {
+        self.sticky_error = None;
+    }
+
+    /// The sticky error, if one is being shown.
+    pub fn error_text(&self) -> Option<&str> {
+        self.sticky_error.as_deref()
+    }
+
+    /// Current status-bar message. Split policy: info flashes for
+    /// [`STATUS_TTL`], errors stay until dismissed or superseded by a
+    /// success. A sticky error always wins over transient info.
     pub fn status_text(&self) -> Option<&str> {
+        if let Some(err) = self.sticky_error.as_deref() {
+            return Some(err);
+        }
         self.status_msg.as_ref().and_then(|(msg, at)| {
             if at.elapsed() < STATUS_TTL {
                 Some(msg.as_str())
@@ -448,6 +472,25 @@ mod tests {
         let sections = status_sections(&only_idle);
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].0, Status::Idle);
+    }
+
+    #[test]
+    fn sticky_error_wins_over_transient_until_dismissed() {
+        let mut app = App::new(vec![]);
+        assert_eq!(app.error_text(), None);
+        app.set_status("copied selection (12 chars)");
+        assert_eq!(app.status_text(), Some("copied selection (12 chars)"));
+        // An error supersedes info and survives: later info flashes do not
+        // replace it, and repaints (repeated reads) never clear it.
+        app.set_error("pty write failed");
+        assert_eq!(app.error_text(), Some("pty write failed"));
+        app.set_status("pasted 3 chars");
+        assert_eq!(app.status_text(), Some("pty write failed"));
+        assert_eq!(app.status_text(), Some("pty write failed"));
+        // Explicit dismissal falls back to whatever transient info is live.
+        app.clear_error();
+        assert_eq!(app.error_text(), None);
+        assert_eq!(app.status_text(), Some("pasted 3 chars"));
     }
 
     #[test]
