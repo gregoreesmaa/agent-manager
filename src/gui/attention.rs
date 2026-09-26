@@ -1,0 +1,212 @@
+//! Background attention signal: needs-input count + bell.
+//!
+//! The status bar and the terminal header both carry the count of runs in
+//! [`crate::app::Status::Attention`], and a non-selected run flipping to
+//! Attention rings the terminal bell once (issue #24). The flip detector
+//! is transition-triggered, so the 20 Hz pump and per-frame refreshes can
+//! both call it without double-ringing: only the tick that observes the
+//! flip counts.
+
+use crate::app::Status;
+
+use super::layout::NARROW_BREAKPOINT;
+use super::shell::ShellView;
+
+/// Audible bell on the launching terminal (best effort: no terminal, no
+/// sound, no error). Gated by `bell_enabled` so headless tests stay quiet.
+pub(crate) fn ring_bell() {
+    use std::io::Write as _;
+    let _ = write!(std::io::stdout(), "\x07");
+    let _ = std::io::stdout().flush();
+}
+
+impl ShellView {
+    /// Runs currently needing input (any selection). The badge derives
+    /// from live status every frame, so it clears itself as runs settle.
+    pub(crate) fn attention_count(&self) -> usize {
+        crate::app::attention_count(&self.app.sessions)
+    }
+
+    /// Suffix carrying the badge, or empty when nothing needs input.
+    fn attention_suffix(&self) -> String {
+        let n = self.attention_count();
+        if n == 0 {
+            String::new()
+        } else {
+            format!(" · {n} need input")
+        }
+    }
+
+    /// Transition-triggered bell: call with a run's status before/after a
+    /// pump merge. Rings (and counts) exactly when a *background* run —
+    /// anything but the selected one — newly needs input. The selected
+    /// run is already on screen, so its flips stay silent.
+    pub(crate) fn note_attention_flip(
+        &mut self,
+        run_id: &str,
+        old: Status,
+        new: Status,
+        selected_id: Option<&str>,
+    ) {
+        if old == Status::Attention || new != Status::Attention {
+            return;
+        }
+        if Some(run_id) == selected_id {
+            return;
+        }
+        self.bells_rung += 1;
+        if self.bell_enabled {
+            ring_bell();
+        }
+    }
+
+    /// Terminal-pane header with the needs-input badge. The header is the
+    /// in-app window title (gpui 0.2.2 sets the OS title once at window
+    /// creation), so the badge here is the visible title signal.
+    pub(crate) fn header_title(&self, state: &str, cmd: &str, note: &str) -> String {
+        format!("Muse [{state}] — {cmd}{note}{}", self.attention_suffix())
+    }
+
+    /// Wide (default) status hints. Test-only shorthand: production render
+    /// always goes through [`Self::status_text_for_width`] with the live
+    /// viewport width.
+    #[cfg(test)]
+    pub(crate) fn status_text(&self) -> String {
+        self.status_text_for_width(f32::INFINITY)
+    }
+
+    /// Width-aware status text with the needs-input badge. An armed quit
+    /// outranks everything (the user asked to leave); otherwise the badge
+    /// rides along so a background approval is visible without switching
+    /// runs. Moved here from `shell` so the shell stays under its line
+    /// budget as comfort features land.
+    pub(crate) fn status_text_for_width(&self, viewport_w: f32) -> String {
+        let base = self.base_status_text_for_width(viewport_w);
+        if self.quit_armed {
+            return base;
+        }
+        let suffix = self.attention_suffix();
+        format!("{base}{suffix}")
+    }
+
+    /// Width-aware status text: narrow viewports (<700px) get compact key
+    /// hints that fit beside the collapsed layout; errors, transient
+    /// flashes, quit-arm, and ended-run lines are identical at every width
+    /// (only the default key-hint lines compact — the bar also truncates
+    /// with an ellipsis, so long messages never push the layout).
+    fn base_status_text_for_width(&self, viewport_w: f32) -> String {
+        // An armed quit outranks everything: the user asked to leave.
+        if self.quit_armed {
+            return "Live runs active — q again to quit · any other key cancels".to_string();
+        }
+        if let Some(msg) = self.app.status_text() {
+            // Sticky errors keep their recovery hint while Retry applies.
+            if self.app.error_text().is_some() && self.can_retry() {
+                return format!("{msg} · r: retry");
+            }
+            return msg.to_string();
+        }
+        if self.can_restart() {
+            return "run ended · r: restart · n: new · ?: help · q: quit".to_string();
+        }
+        if self.can_resume() {
+            // Historic provider entries re-attach (`r: resume`); runs that
+            // never started offer a plain start.
+            let historic = self
+                .active_id()
+                .as_ref()
+                .and_then(|id| {
+                    self.app
+                        .sessions
+                        .iter()
+                        .find(|s| &s.id == id)
+                        .and_then(|s| s.provider_session_id.clone())
+                })
+                .is_some();
+            if historic {
+                return "historic run · r: resume · n: new · ?: help · q: quit".to_string();
+            }
+            return "run ready · r: start · n: new · ?: help · q: quit".to_string();
+        }
+        let narrow = viewport_w < NARROW_BREAKPOINT;
+        if self.app.is_terminal_focused() {
+            if narrow {
+                "typing · Tab/Esc: sessions · Cmd+C: copy · Cmd+V: paste · ?: help".to_string()
+            } else {
+                "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help"
+                    .to_string()
+            }
+        } else if self.app.sessions.is_empty() {
+            "n: new muse · ?: help · q: quit".to_string()
+        } else if narrow {
+            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · ?: help · q: quit"
+                .to_string()
+        } else {
+            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · ?: help · q: quit"
+                .to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::runs::test_shell;
+    use super::*;
+
+    fn attention_shell() -> ShellView {
+        let mut view = test_shell();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        // Newest run is selected; index 0 is the background run.
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        view.app.focus_nav();
+        view
+    }
+
+    #[test]
+    fn background_flip_rings_once_selected_flip_stays_silent() {
+        let mut view = attention_shell();
+        view.bell_enabled = false;
+        let bg = view.app.sessions[0].id.clone();
+        let sel = view.app.selected_session().unwrap().id.clone();
+        assert_ne!(bg, sel);
+        // Background run flips to Attention: counted.
+        view.note_attention_flip(&bg, Status::Idle, Status::Attention, Some(&sel));
+        assert_eq!(view.bells_rung, 1);
+        // Same flip again: not a transition, silent.
+        view.note_attention_flip(&bg, Status::Attention, Status::Attention, Some(&sel));
+        assert_eq!(view.bells_rung, 1);
+        // Selected run flips: silent (already on screen).
+        view.note_attention_flip(&sel, Status::Idle, Status::Attention, Some(&sel));
+        assert_eq!(view.bells_rung, 1);
+        // Non-attention landing: silent.
+        view.note_attention_flip(&bg, Status::Working, Status::Idle, Some(&sel));
+        assert_eq!(view.bells_rung, 1);
+    }
+
+    #[test]
+    fn badge_counts_attention_in_status_bar_and_header() {
+        let mut view = attention_shell();
+        assert_eq!(view.attention_count(), 0);
+        assert!(!view.status_text().contains("need input"));
+        view.app.sessions[0].status = Status::Attention;
+        assert_eq!(view.attention_count(), 1);
+        assert!(view.status_text().contains("1 need input"));
+        let title = view.header_title("live", "muse", "");
+        assert!(title.contains("1 need input"), "header badges: {title:?}");
+        // Armed quit still outranks the badge.
+        view.quit_armed = true;
+        assert!(!view.status_text_for_width(1280.0).contains("need input"));
+    }
+
+    #[test]
+    fn badge_clears_when_attention_settles() {
+        let mut view = attention_shell();
+        view.app.sessions[0].status = Status::Attention;
+        assert!(view.status_text().contains("1 need input"));
+        view.app.sessions[0].status = Status::Idle;
+        assert_eq!(view.attention_count(), 0);
+        assert!(!view.status_text().contains("need input"));
+    }
+}

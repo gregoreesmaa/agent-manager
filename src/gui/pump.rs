@@ -56,7 +56,12 @@ impl ShellView {
         }
         let now = Instant::now();
         let ids: Vec<String> = self.runs.keys().cloned().collect();
+        // Selection for the attention flip detector: background flips ring,
+        // the selected run is already on screen so its flips stay silent.
+        let selected_id = self.active_id();
         let mut changed = spawned || fresh_any;
+        // (run id, old status, new status) transitions observed this tick.
+        let mut flips: Vec<(String, crate::app::Status, crate::app::Status)> = Vec::new();
         for id in ids {
             // Scope the run borrow: the merge below touches other fields.
             let (attention, exited, fresh_links) = {
@@ -89,6 +94,7 @@ impl ShellView {
             // scrolled off. Merging keeps every link ever seen per run.
             if let Some(s) = self.app.sessions.iter_mut().find(|s| s.id == id) {
                 if s.status != status {
+                    flips.push((id.clone(), s.status, status));
                     s.status = status;
                     changed = true;
                 }
@@ -110,6 +116,12 @@ impl ShellView {
             // here), so a changed pump is exactly when rows could have
             // moved; a clean pump leaves order and selection index alone.
             self.app.resort_keep_selection();
+        }
+        // Transition-triggered bells, after the borrows end: only the tick
+        // that observes a background flip rings, so 20 Hz polling never
+        // double-rings (issue #24).
+        for (id, old, new) in flips {
+            self.note_attention_flip(&id, old, new, selected_id.as_deref());
         }
         changed
     }

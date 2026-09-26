@@ -90,6 +90,15 @@ impl ChatSession {
     }
 }
 
+/// Runs currently needing user input (issue #24): the status-bar and
+/// header badge counts these, clearing itself as runs settle.
+pub fn attention_count(sessions: &[ChatSession]) -> usize {
+    sessions
+        .iter()
+        .filter(|s| s.status == Status::Attention)
+        .count()
+}
+
 /// Split a retained link list into the rows the panel shows plus the
 /// folded count: the first [`MAX_VISIBLE_LINKS`] stay visible, the rest
 /// collapse into the `N more` disclosure.

@@ -22,7 +22,6 @@ use gpui::{App as GpuiApp, Bounds, ClipboardItem, FocusHandle, KeyDownEvent, Pix
 use crate::app::{App, ChatSession};
 use crate::embedded::LiveView;
 
-use super::layout::NARROW_BREAKPOINT;
 use super::nav::NavAction;
 use super::runs::Run;
 use super::terminal::{CellPos, Rgb8};
@@ -89,6 +88,13 @@ pub struct ShellView {
     pub(crate) sel_anchor: Option<CellPos>,
     pub(crate) sel_active: Option<CellPos>,
     pub(crate) selecting: bool,
+    /// Background attention rings observed (issue #24): incremented by the
+    /// transition-triggered flip detector, so tests count rings without
+    /// needing a terminal bell.
+    pub(crate) bells_rung: u64,
+    /// Audible bell on attention flips. True in production; tests mute it
+    /// and assert on [`Self::bells_rung`] instead.
+    pub(crate) bell_enabled: bool,
 }
 
 impl ShellView {
@@ -122,6 +128,8 @@ impl ShellView {
             sel_anchor: None,
             sel_active: None,
             selecting: false,
+            bells_rung: 0,
+            bell_enabled: true,
         }
     }
 
@@ -282,72 +290,6 @@ impl ShellView {
             NavAction::None => {}
         }
         window.refresh();
-    }
-
-    /// Wide (default) status hints. Test-only shorthand: production render
-    /// always goes through [`Self::status_text_for_width`] with the live
-    /// viewport width.
-    #[cfg(test)]
-    pub(crate) fn status_text(&self) -> String {
-        self.status_text_for_width(f32::INFINITY)
-    }
-
-    /// Width-aware status text: narrow viewports (<700px) get compact key
-    /// hints that fit beside the collapsed layout; errors, transient
-    /// flashes, quit-arm, and ended-run lines are identical at every width
-    /// (only the default key-hint lines compact — the bar also truncates
-    /// with an ellipsis, so long messages never push the layout).
-    pub(crate) fn status_text_for_width(&self, viewport_w: f32) -> String {
-        // An armed quit outranks everything: the user asked to leave.
-        if self.quit_armed {
-            return "Live runs active — q again to quit · any other key cancels".to_string();
-        }
-        if let Some(msg) = self.app.status_text() {
-            // Sticky errors keep their recovery hint while Retry applies.
-            if self.app.error_text().is_some() && self.can_retry() {
-                return format!("{msg} · r: retry");
-            }
-            return msg.to_string();
-        }
-        if self.can_restart() {
-            return "run ended · r: restart · n: new · ?: help · q: quit".to_string();
-        }
-        if self.can_resume() {
-            // Historic provider entries re-attach (`r: resume`); runs that
-            // never started offer a plain start.
-            let historic = self
-                .active_id()
-                .as_ref()
-                .and_then(|id| {
-                    self.app
-                        .sessions
-                        .iter()
-                        .find(|s| &s.id == id)
-                        .and_then(|s| s.provider_session_id.clone())
-                })
-                .is_some();
-            if historic {
-                return "historic run · r: resume · n: new · ?: help · q: quit".to_string();
-            }
-            return "run ready · r: start · n: new · ?: help · q: quit".to_string();
-        }
-        let narrow = viewport_w < NARROW_BREAKPOINT;
-        if self.app.is_terminal_focused() {
-            if narrow {
-                "typing · Tab/Esc: sessions · Cmd+C: copy · Cmd+V: paste · ?: help".to_string()
-            } else {
-                "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help"
-                    .to_string()
-            }
-        } else if self.app.sessions.is_empty() {
-            "n: new muse · ?: help · q: quit".to_string()
-        } else if narrow {
-            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit"
-                .to_string()
-        } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit"
-                .to_string()
-        }
     }
 }
 

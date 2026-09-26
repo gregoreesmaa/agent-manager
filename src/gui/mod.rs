@@ -8,6 +8,7 @@
 //! panel), [`terminal_pane`] (terminal render, selection, clipboard),
 //! [`pager`] (scrollback pager over the retained output buffer).
 
+pub mod attention;
 pub mod keys;
 pub mod layout;
 pub mod lifecycle;
