@@ -102,6 +102,8 @@ impl ShellView {
             self.clear_selection();
             if let Some(title) = self.app.remove_session(&id) {
                 self.app.set_status(format!("closed '{title}'"));
+                // The closed run must not resurrect from the last persist.
+                self.persist_runs();
             }
         }
     }
@@ -115,11 +117,24 @@ impl ShellView {
     /// Two-step quit: returns true when the app should exit now. The
     /// first call with dirty runs only arms (with a hint); the second
     /// quits. Safe states quit on the first call and never arm.
+    /// Best-effort run-state persist (issue #26): a failed save just
+    /// means the next start falls back to historic discovery alone.
+    /// Unit tests only advance the throttle clock: the save/load
+    /// roundtrip is covered in `persist.rs` with temp paths, so `cargo
+    /// test` never rewrites the developer's live runs file.
+    pub(crate) fn persist_runs(&mut self) {
+        self.last_persist = Some(std::time::Instant::now());
+        #[cfg(not(test))]
+        let _ = crate::persist::save_sessions(&self.app.sessions);
+    }
+
     pub(crate) fn request_quit(&mut self) -> bool {
         if !self.confirm_quit_required() {
+            self.persist_runs();
             return true;
         }
         if self.quit_armed {
+            self.persist_runs();
             return true;
         }
         self.quit_armed = true;

@@ -16,6 +16,8 @@ use std::thread::JoinHandle;
 
 use anyhow::{Context, Result};
 
+use crate::scrollback::ScrollbackLog;
+
 /// Command used to start a fresh session: plain interactive `muse`.
 pub fn new_session_command() -> (String, Vec<String>) {
     ("muse".to_string(), Vec::new())
@@ -114,6 +116,9 @@ pub struct EmbeddedPty {
     rx: Receiver<Vec<u8>>,
     _reader_thread: JoinHandle<()>,
     parser: vt100::Parser,
+    /// Retained plain-text mirror of every output byte (issue #25): the
+    /// vt100 0.15 API exposes no scrollback rows, so the pager reads here.
+    scrollback: ScrollbackLog,
     query_carry: Vec<u8>,
     exited: bool,
 }
@@ -174,6 +179,7 @@ impl EmbeddedPty {
             rx,
             _reader_thread: reader_thread,
             parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
+            scrollback: ScrollbackLog::new(),
             query_carry: Vec::new(),
             exited: false,
         })
@@ -199,6 +205,8 @@ impl EmbeddedPty {
                         fresh = true;
                         self.ingest(&chunk);
                     }
+                    // No more chunks will complete a split tail: decode it.
+                    self.scrollback.flush();
                 }
                 Ok(None) => {}
                 Err(_) => {
@@ -228,9 +236,15 @@ impl EmbeddedPty {
         self.parser.set_size(rows, cols);
     }
 
+    /// Retained mirror of all PTY output for the scrollback pager.
+    pub fn scrollback_log(&self) -> &ScrollbackLog {
+        &self.scrollback
+    }
+
     /// Feed one output chunk into the emulator, answering any terminal
     /// queries (currently CPR) the way a real terminal would.
     fn ingest(&mut self, chunk: &[u8]) {
+        self.scrollback.feed(chunk);
         self.parser.process(chunk);
         let cursor = self.parser.screen().cursor_position();
         let (replies, carry) = cpr_replies(chunk, &self.query_carry, cursor);

@@ -31,7 +31,7 @@ pub struct AgentConfig {
 }
 
 /// Whole-file user configuration.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// Per-agent startup flags, keyed by program name.
     #[serde(default)]
@@ -42,6 +42,10 @@ pub struct Config {
     /// Terminal-pane font (issue #35).
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// Sessions-panel width in pixels (issue #29: `[`/`]` keys adjust
+    /// and persist it; narrow viewports still collapse the panel).
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
 }
 
 /// Default terminal-pane font: OFL-licensed, full box-drawing + block
@@ -53,6 +57,11 @@ pub fn default_terminal_font() -> String {
 /// Default terminal font size in points (matches the historic 13.0).
 pub fn default_terminal_font_size() -> f32 {
     13.0
+}
+
+/// Default sessions-panel width in pixels (issue #29: `[`/`]` keys).
+pub fn default_sidebar_width() -> f32 {
+    264.0
 }
 
 /// Default fallback chain behind the primary font (issue #35): emoji,
@@ -161,6 +170,17 @@ impl ThemePreference {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            agents: HashMap::new(),
+            theme: ThemePreference::default(),
+            terminal: TerminalConfig::default(),
+            sidebar_width: default_sidebar_width(),
+        }
+    }
+}
+
 impl Config {
     /// Path of the config file: `$AGENT_MANAGER_CONFIG` when set (tests),
     /// otherwise `~/.config/agent-manager/config.json`.
@@ -229,6 +249,24 @@ mod tests {
         assert!(cfg.extra_args_for("muse").is_empty());
         assert!(cfg.extra_args_for("claude").is_empty());
         assert_eq!(cfg.theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn sidebar_width_defaults_and_survives_json() {
+        // Issue #29: the `[`/`]` panel width persists in the same local
+        // config file as the other comfort settings.
+        assert_eq!(Config::default().sidebar_width, 264.0);
+        let partial: Config = serde_json::from_str(r#"{"theme": "dark"}"#).unwrap();
+        assert_eq!(partial.sidebar_width, 264.0);
+        let mut cfg = Config {
+            sidebar_width: 300.0,
+            ..Default::default()
+        };
+        // A font-size change (the `+`/`-` keys) survives the same trip.
+        cfg.terminal.font_size = 17.0;
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.sidebar_width, 300.0);
+        assert_eq!(back.terminal.font_size, 17.0);
     }
 
     #[test]

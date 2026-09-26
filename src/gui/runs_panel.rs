@@ -17,7 +17,6 @@ use gpui_component::{
 
 use crate::app::{section_title, status_sections};
 
-use super::layout::LEFT_WIDTH;
 use super::shell::ShellView;
 
 impl ShellView {
@@ -32,6 +31,20 @@ impl ShellView {
     /// The empty-state line rides above it while there are no sessions.
     pub(crate) fn sidebar_footer(&self, viewport_w: f32) -> gpui::Div {
         let mut footer = div().flex().flex_col();
+        // Title filter state (issue #29): the panel stays filtered until
+        // `/` then Esc clears it.
+        if !self.app.filter.is_empty() {
+            let shown = self.app.visible_indices().len();
+            footer = footer.child(
+                div()
+                    .text_color(rgb(super::theme::SECONDARY_FG))
+                    .text_xs()
+                    .child(format!(
+                        "filter '{}' · {shown} runs · / then Esc clears",
+                        self.app.filter
+                    )),
+            );
+        }
         if self.app.sessions.is_empty() {
             footer = footer.child(
                 div()
@@ -53,7 +66,8 @@ impl ShellView {
         // Header with a real button: sessions start here, not at a key hint.
         // The footer carries the status line (issue #32), so the app name
         // and hints live in the panel, not in their own bar.
-        let mut sidebar = Sidebar::left().w(px(LEFT_WIDTH)).header(
+        // Width follows the persisted comfort setting (issue #29).
+        let mut sidebar = Sidebar::left().w(px(self.app.sidebar_width())).header(
             SidebarHeader::new().child("Sessions".to_string()).child(
                 Button::new(ElementId::Name("new-run-btn".into()))
                     .label("+ New")
@@ -75,8 +89,11 @@ impl ShellView {
         }
         for (status, indices) in status_sections(&self.app.sessions) {
             let marker = super::theme::group_marker(status);
+            // Title filter (issue #29): non-matching runs hide without
+            // changing sort order; emptied groups drop out entirely.
             let items: Vec<SidebarMenuItem> = indices
                 .into_iter()
+                .filter(|i| self.app.matches_filter(&self.app.sessions[*i]))
                 .map(|i| {
                     let s = &self.app.sessions[i];
                     // Non-blank idle marker: rows stay distinguishable
@@ -143,6 +160,9 @@ impl ShellView {
                         .children(links)
                 })
                 .collect();
+            if items.is_empty() {
+                continue;
+            }
             let group = SidebarGroup::new(format!(
                 "{marker} {} ({})",
                 section_title(status),

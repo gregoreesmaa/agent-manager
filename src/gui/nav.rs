@@ -29,6 +29,8 @@ pub(crate) enum NavAction {
     /// Advance the theme choice (dark → light → system); the caller
     /// applies, persists, and flashes it.
     CycleTheme,
+    /// Export the selected run's visible text plus links to markdown.
+    Export,
     None,
 }
 
@@ -40,15 +42,23 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
         ("j / k", "move selection between sessions"),
         ("↑ / ↓", "move selection between sessions"),
         ("PgUp / PgDn", "page the session list"),
+        (
+            "Shift+PgUp / Shift+PgDn",
+            "scroll the run's retained output (pager)",
+        ),
         ("o", "cycle link focus across the selected run's links"),
         ("Enter", "copy the focused link, or type in muse when none"),
         ("i", "type in muse"),
         ("Tab", "switch sessions ↔ terminal focus"),
         ("y", "copy selection (or whole screen)"),
         ("p", "paste clipboard into muse"),
+        ("e", "export selected run to markdown (local file)"),
         ("r", "restart ended run / retry failed spawn"),
         ("x", "close (kill) the selected run"),
         ("d", "dismiss the sticky error"),
+        ("/", "filter sessions by title substring"),
+        ("+ / -", "terminal font size (saved locally)"),
+        ("[ / ]", "sessions panel width (saved locally)"),
         ("?", "toggle this help"),
         ("Esc", "back to sessions · quit from sessions"),
         ("q", "quit (confirms first with live runs)"),
@@ -146,14 +156,16 @@ impl ShellView {
             ("enter", _) => NavAction::FocusTerm,
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
+            ("e", false) => NavAction::Export,
             ("r", false) if self.can_restart() => NavAction::Restart,
             ("r", false) if self.can_retry() => NavAction::Retry,
             ("r", false) if self.can_resume() => NavAction::Restart,
             ("x", false) => NavAction::Close,
             ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
-            // `?` toggles the in-app help panel. `/` is an alias for
-            // keyboards where `?` needs shift or is hard to discover.
-            ("?", _) | ("/", false) => {
+            // `?` toggles the in-app help panel. (`/` used to be an alias;
+            // since issue #29 it opens title-filter capture instead — the
+            // shell routes it before `nav_action`, so it never reaches here.)
+            ("?", _) => {
                 self.show_help = !self.show_help;
                 NavAction::None
             }
@@ -170,7 +182,9 @@ impl ShellView {
     /// Copy the mouse selection when one exists, else the whole active
     /// screen, to the system clipboard.
     pub(crate) fn copy_screen(&mut self, cx: &mut GpuiApp) {
-        if let Some(text) = self.selected_text() {
+        // A paged run copies from the visible pager slice, not the live
+        // grid underneath (issue #25).
+        if let Some(text) = self.selected_pager_text().or_else(|| self.selected_text()) {
             let chars = text.chars().count();
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             self.app
@@ -236,17 +250,17 @@ mod tests {
 
     #[test]
     fn help_toggle_and_keymap_coverage() {
-        // Issue #7: `?` (and `/` alias) toggles help in nav focus; the
-        // panel documents every nav key plus terminal/mouse bindings, and
-        // every status hint advertises `?`.
+        // Issue #7: `?` toggles help in nav focus; the panel documents
+        // every nav key plus terminal/mouse bindings, and every status
+        // hint advertises `?`. (`/` was the discoverability alias; since
+        // issue #29 it opens title-filter capture, routed in the shell
+        // before `nav_action`, so it must not toggle help here.)
         let mut view = test_shell();
         assert!(!view.show_help);
         assert_eq!(view.nav_action("?", false), NavAction::None);
         assert!(view.show_help);
         assert_eq!(view.nav_action("?", false), NavAction::None);
         assert!(!view.show_help);
-        assert_eq!(view.nav_action("/", false), NavAction::None);
-        assert!(view.show_help);
         assert_eq!(view.nav_action("/", false), NavAction::None);
         assert!(!view.show_help);
         let entries = super::help_entries();

@@ -22,7 +22,6 @@ use gpui::{App as GpuiApp, Bounds, ClipboardItem, FocusHandle, KeyDownEvent, Pix
 use crate::app::{App, ChatSession};
 use crate::embedded::LiveView;
 
-use super::layout::NARROW_BREAKPOINT;
 use super::nav::NavAction;
 use super::runs::Run;
 use super::terminal::{CellPos, Rgb8};
@@ -89,6 +88,20 @@ pub struct ShellView {
     pub(crate) sel_anchor: Option<CellPos>,
     pub(crate) sel_active: Option<CellPos>,
     pub(crate) selecting: bool,
+    /// Background attention rings observed (issue #24): incremented by the
+    /// transition-triggered flip detector, so tests count rings without
+    /// needing a terminal bell.
+    pub(crate) bells_rung: u64,
+    /// Audible bell on attention flips. True in production; tests mute it
+    /// and assert on [`Self::bells_rung`] instead.
+    pub(crate) bell_enabled: bool,
+    /// Title-filter capture (issue #29): while true, printable keys extend
+    /// [`App::filter`] instead of dispatching nav actions.
+    pub(crate) filtering: bool,
+    /// Last run-state persist (issue #26); `None` until the first save.
+    /// Throttles refresh-time saves so a streaming run doesn't rewrite
+    /// the file every 50 ms tick; quitting and closing always save.
+    pub(crate) last_persist: Option<std::time::Instant>,
 }
 
 impl ShellView {
@@ -105,6 +118,8 @@ impl ShellView {
     pub fn new_with_sessions(sessions: Vec<ChatSession>) -> Self {
         Self {
             app: App::new(sessions),
+            filtering: false,
+            last_persist: None,
             runs: HashMap::new(),
             quit_armed: false,
             link_cursor: None,
@@ -122,6 +137,8 @@ impl ShellView {
             sel_anchor: None,
             sel_active: None,
             selecting: false,
+            bells_rung: 0,
+            bell_enabled: true,
         }
     }
 
@@ -151,18 +168,35 @@ impl ShellView {
     }
 
     pub(crate) fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut GpuiApp) {
-        if ev.is_held {
-            // Held-key repeats still type into the terminal; nav ignores them.
-            if !self.app.is_terminal_focused() {
-                return;
-            }
-        }
         let ks = &ev.keystroke;
         let key = ks.key.as_str();
         let key_char = ks.key_char.as_deref();
         let ctrl = ks.modifiers.control;
         let alt = ks.modifiers.alt;
         let platform = ks.modifiers.platform;
+        let shift = ks.modifiers.shift;
+        if shift && !ctrl && !platform && (key == "pageup" || key == "pagedown") {
+            // Scrollback pager (issue #25) in either focus: Shift+PgUp /
+            // Shift+PgDn never types into `muse`. Repeats keep paging.
+            self.page_scrollback(key == "pageup");
+            window.refresh();
+            return;
+        }
+        if self.filtering {
+            // Title-filter capture (issue #29) outranks every other
+            // binding, including Tab-focus and Esc-quit: printable keys
+            // extend the filter, Enter accepts, Esc clears. Repeats type.
+            self.quit_armed = false;
+            self.filter_key(key, key_char, ctrl);
+            window.refresh();
+            return;
+        }
+        if ev.is_held {
+            // Held-key repeats still type into the terminal; nav ignores them.
+            if !self.app.is_terminal_focused() {
+                return;
+            }
+        }
         if key == "tab" {
             self.app.toggle_focus();
             if self.app.is_terminal_focused() {
@@ -227,6 +261,21 @@ impl ShellView {
             window.refresh();
             return;
         }
+        // `/` opens title-filter capture (issue #29); `?` still toggles
+        // help via `nav_action` below.
+        if !ctrl && (key == "/" || key_char == Some("/")) {
+            self.quit_armed = false;
+            self.begin_filter();
+            window.refresh();
+            return;
+        }
+        // Comfort keys (issue #29): nav focus only — in terminal focus
+        // these must type into `muse`, and filter capture owns them.
+        if self.comfort_key(key_char) {
+            self.quit_armed = false;
+            window.refresh();
+            return;
+        }
         match self.nav_action(key, ctrl) {
             NavAction::Quit => {
                 // Dirty shells arm first and quit on the second `q`;
@@ -239,6 +288,9 @@ impl ShellView {
             NavAction::FocusTerm => self.focus_term(window),
             NavAction::Copy => self.copy_screen(cx),
             NavAction::Paste => self.paste_clipboard(cx),
+            NavAction::Export => {
+                self.export_selected_run();
+            }
             NavAction::Retry => {
                 self.retry_spawn();
                 self.focus_term(window);
@@ -274,72 +326,6 @@ impl ShellView {
             NavAction::None => {}
         }
         window.refresh();
-    }
-
-    /// Wide (default) status hints. Test-only shorthand: production render
-    /// always goes through [`Self::status_text_for_width`] with the live
-    /// viewport width.
-    #[cfg(test)]
-    pub(crate) fn status_text(&self) -> String {
-        self.status_text_for_width(f32::INFINITY)
-    }
-
-    /// Width-aware status text: narrow viewports (<700px) get compact key
-    /// hints that fit beside the collapsed layout; errors, transient
-    /// flashes, quit-arm, and ended-run lines are identical at every width
-    /// (only the default key-hint lines compact — the bar also truncates
-    /// with an ellipsis, so long messages never push the layout).
-    pub(crate) fn status_text_for_width(&self, viewport_w: f32) -> String {
-        // An armed quit outranks everything: the user asked to leave.
-        if self.quit_armed {
-            return "Live runs active — q again to quit · any other key cancels".to_string();
-        }
-        if let Some(msg) = self.app.status_text() {
-            // Sticky errors keep their recovery hint while Retry applies.
-            if self.app.error_text().is_some() && self.can_retry() {
-                return format!("{msg} · r: retry");
-            }
-            return msg.to_string();
-        }
-        if self.can_restart() {
-            return "run ended · r: restart · n: new · ?: help · q: quit".to_string();
-        }
-        if self.can_resume() {
-            // Historic provider entries re-attach (`r: resume`); runs that
-            // never started offer a plain start.
-            let historic = self
-                .active_id()
-                .as_ref()
-                .and_then(|id| {
-                    self.app
-                        .sessions
-                        .iter()
-                        .find(|s| &s.id == id)
-                        .and_then(|s| s.provider_session_id.clone())
-                })
-                .is_some();
-            if historic {
-                return "historic run · r: resume · n: new · ?: help · q: quit".to_string();
-            }
-            return "run ready · r: start · n: new · ?: help · q: quit".to_string();
-        }
-        let narrow = viewport_w < NARROW_BREAKPOINT;
-        if self.app.is_terminal_focused() {
-            if narrow {
-                "typing · Tab/Esc: sessions · Cmd+C: copy · Cmd+V: paste · ?: help".to_string()
-            } else {
-                "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help"
-                    .to_string()
-            }
-        } else if self.app.sessions.is_empty() {
-            "n: new muse · ?: help · q: quit".to_string()
-        } else if narrow {
-            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit"
-                .to_string()
-        } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit"
-                .to_string()
-        }
     }
 }
 

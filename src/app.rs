@@ -90,6 +90,15 @@ impl ChatSession {
     }
 }
 
+/// Runs currently needing user input (issue #24): the status-bar and
+/// header badge counts these, clearing itself as runs settle.
+pub fn attention_count(sessions: &[ChatSession]) -> usize {
+    sessions
+        .iter()
+        .filter(|s| s.status == Status::Attention)
+        .count()
+}
+
 /// Split a retained link list into the rows the panel shows plus the
 /// folded count: the first [`MAX_VISIBLE_LINKS`] stay visible, the rest
 /// collapse into the `N more` disclosure.
@@ -250,6 +259,9 @@ pub struct App {
     pub sessions: Vec<ChatSession>,
     pub selected: usize,
     pub focus: Focus,
+    /// Title-substring filter (issue #29): the panel shows only matching
+    /// runs, in unchanged sort order. Empty means unfiltered.
+    pub filter: String,
     pending_spawn: Option<SpawnKind>,
     next_run: usize,
     status_msg: Option<(String, std::time::Instant)>,
@@ -272,6 +284,7 @@ impl App {
             sessions,
             selected: 0,
             focus: Focus::Nav,
+            filter: String::new(),
             pending_spawn: None,
             next_run: 0,
             status_msg: None,
@@ -303,6 +316,31 @@ impl App {
         &self.config.terminal
     }
 
+    /// Sessions-panel width in pixels (issue #29): the comfort-adjusted
+    /// value clamped to the sane range, so a hand-edited config can
+    /// never collapse or explode the panel.
+    pub fn sidebar_width(&self) -> f32 {
+        self.config.sidebar_width.clamp(160.0, 480.0)
+    }
+
+    /// Comfort-key mutation half (issue #29, same split as the `t`-key
+    /// theme cycle): clamp the terminal font size into range and return
+    /// it for the status flash. The caller persists via
+    /// [`App::save_config`].
+    pub fn set_terminal_font_size(&mut self, size: f32) -> f32 {
+        let size = size.clamp(8.0, 32.0);
+        self.config.terminal.font_size = size;
+        size
+    }
+
+    /// Comfort-key mutation half for the panel width: same
+    /// mutate/flash/persist split as [`App::set_terminal_font_size`].
+    pub fn set_sidebar_width(&mut self, width: f32) -> f32 {
+        let width = width.clamp(160.0, 480.0);
+        self.config.sidebar_width = width;
+        width
+    }
+
     /// Spawn command for `kind` with the configured per-agent extra flags
     /// appended (issue #33). The key is the program name, so every
     /// supported agent (`muse`, `claude`, …) can carry its own flags.
@@ -319,6 +357,44 @@ impl App {
             program
         } else {
             format!("{program} {}", args.join(" "))
+        }
+    }
+
+    /// True when `session` passes the title filter (case-insensitive
+    /// substring; everything passes when the filter is empty).
+    pub fn matches_filter(&self, session: &ChatSession) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        session
+            .title
+            .to_lowercase()
+            .contains(&self.filter.to_lowercase())
+    }
+
+    /// Indices of the sessions the panel shows: filter matches in list
+    /// order, so filtering never re-sorts.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| self.matches_filter(s))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Replace the title filter, snapping the selection into the matches
+    /// (first match when the selected run is filtered out).
+    pub fn set_filter(&mut self, text: String) {
+        self.filter = text;
+        if self.filter.is_empty() {
+            return;
+        }
+        let visible = self.visible_indices();
+        if !visible.contains(&self.selected) {
+            if let Some(&first) = visible.first() {
+                self.selected = first;
+            }
         }
     }
 
@@ -442,21 +518,48 @@ impl App {
         self.focus == Focus::Terminal
     }
 
+    /// Position of the selection inside the visible matches (issue #29):
+    /// the snapped index when selected is visible, else the head.
+    fn visible_pos(&self, visible: &[usize]) -> usize {
+        visible
+            .iter()
+            .position(|&i| i == self.selected)
+            .unwrap_or(0)
+    }
+
     pub fn select_next(&mut self) {
         if self.sessions.is_empty() {
             return;
         }
-        self.selected = (self.selected + 1) % self.sessions.len();
+        if self.filter.is_empty() {
+            self.selected = (self.selected + 1) % self.sessions.len();
+            return;
+        }
+        let visible = self.visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = self.visible_pos(&visible);
+        self.selected = visible[(pos + 1) % visible.len()];
     }
 
     pub fn select_prev(&mut self) {
         if self.sessions.is_empty() {
             return;
         }
-        self.selected = self
-            .selected
-            .checked_sub(1)
-            .unwrap_or(self.sessions.len() - 1);
+        if self.filter.is_empty() {
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(self.sessions.len() - 1);
+            return;
+        }
+        let visible = self.visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = self.visible_pos(&visible);
+        self.selected = visible[(pos + visible.len() - 1) % visible.len()];
     }
 
     /// Page down: move selection toward the tail, clamped at the last run.
@@ -464,7 +567,16 @@ impl App {
         if self.sessions.is_empty() {
             return;
         }
-        self.selected = (self.selected + PAGE_STEP).min(self.sessions.len() - 1);
+        if self.filter.is_empty() {
+            self.selected = (self.selected + PAGE_STEP).min(self.sessions.len() - 1);
+            return;
+        }
+        let visible = self.visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = self.visible_pos(&visible);
+        self.selected = visible[(pos + PAGE_STEP).min(visible.len() - 1)];
     }
 
     /// Page up: move selection toward the head, clamped at the first run.
@@ -472,7 +584,16 @@ impl App {
         if self.sessions.is_empty() {
             return;
         }
-        self.selected = self.selected.saturating_sub(PAGE_STEP);
+        if self.filter.is_empty() {
+            self.selected = self.selected.saturating_sub(PAGE_STEP);
+            return;
+        }
+        let visible = self.visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = self.visible_pos(&visible);
+        self.selected = visible[pos.saturating_sub(PAGE_STEP)];
     }
 
     /// Create a new live-run entry, queue a brand-new `muse` session for it,
