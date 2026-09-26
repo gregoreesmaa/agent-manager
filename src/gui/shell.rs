@@ -211,7 +211,6 @@ impl ShellView {
         }
     }
 
-<<<<<<< HEAD
     /// Close (kill) the selected run: drop its live PTY — `Drop` kills
     /// and reaps the child so no zombie survives — and remove its entry.
     /// Immediate and single-step; quitting the whole app is what asks.
@@ -249,10 +248,6 @@ impl ShellView {
         false
     }
 
-    /// One pump iteration for the background task.
-    pub fn tick(&mut self) {
-        self.refresh();
-=======
     /// One pump iteration for the background task. Returns true when the
     /// pump observed anything visible — fresh output, a newly exited child,
     /// a consumed spawn, a status flip, a new PR link, or a moved row — so
@@ -261,23 +256,17 @@ impl ShellView {
     /// (they repaint directly), so the pump only tracks PTY-derived change.
     pub fn tick(&mut self) -> bool {
         self.refresh()
->>>>>>> origin/fix-issue-11-dirty-gated-pump
     }
 
     /// Pump every run, refresh each entry from its live screen (attention
     /// markers, working/idle by recency, PR links), re-sort pinned.
-<<<<<<< HEAD
-    /// Returns true when any run produced fresh output. Text scans
-    /// (attention regex + link extraction) run only for runs whose PTY
-    /// delivered bytes or changed exit state since the last tick;
-    /// unchanged screens reuse the cached attention bit, so an idle tick
-    /// costs no screen allocs at all.
-=======
     /// Returns true when anything visible changed (see [`ShellView::tick`]).
-    /// Re-sorting runs on the same gate: row order only depends on status,
-    /// so an unchanged pump leaves the order (and the selection index)
-    /// untouched instead of re-sorting every tick.
->>>>>>> origin/fix-issue-11-dirty-gated-pump
+    /// Text scans (attention regex + link extraction) run only for runs
+    /// whose PTY delivered bytes or changed exit state since the last tick;
+    /// unchanged screens reuse the cached attention bit, so an idle tick
+    /// costs no screen allocs at all. Re-sorting runs on the same gate: row
+    /// order only depends on status, so an unchanged pump leaves the order
+    /// (and the selection index) untouched instead of re-sorting every tick.
     fn refresh(&mut self) -> bool {
         let spawned = self.spawn_queued();
         let mut fresh_any = false;
@@ -329,23 +318,20 @@ impl ShellView {
             // not full scrollback), so replacing would drop links that
             // scrolled off. Merging keeps every PR URL ever seen per run.
             if let Some(s) = self.app.sessions.iter_mut().find(|s| s.id == id) {
-<<<<<<< HEAD
-                s.status = status;
-                // Cap-not-drop merge (storage cap + truncation flag live
-                // in `push_links`); the panel folds extras behind N more.
-                if let Some((pr, related)) = fresh_links {
-                    s.push_links(pr, related);
-=======
                 if s.status != status {
                     s.status = status;
                     changed = true;
                 }
-                for link in fresh {
-                    if !s.pr_links.contains(&link) {
-                        s.pr_links.push(link);
+                // Cap-not-drop merge (storage cap + truncation flag live
+                // in `push_links`); the panel folds extras behind N more.
+                // Gated on actual growth so a rescan with no new links
+                // stays clean and never repaints.
+                if let Some((pr, related)) = fresh_links {
+                    let before = (s.pr_links.len(), s.related_links.len(), s.links_truncated);
+                    s.push_links(pr, related);
+                    if (s.pr_links.len(), s.related_links.len(), s.links_truncated) != before {
                         changed = true;
                     }
->>>>>>> origin/fix-issue-11-dirty-gated-pump
                 }
             }
         }
