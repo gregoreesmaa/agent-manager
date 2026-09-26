@@ -58,6 +58,7 @@ enum NavAction {
     Copy,
     Paste,
     Retry,
+    Restart,
     Dismiss,
     None,
 }
@@ -159,6 +160,31 @@ impl ShellView {
     /// selected run (same id, no new entry). Never touches a live PTY.
     fn retry_spawn(&mut self) {
         if self.can_retry() {
+            self.app.retry_spawn();
+        }
+    }
+
+    /// Restart is offered exactly when the selected run's child exited:
+    /// the most common lifecycle event, previously a dead end.
+    fn can_restart(&self) -> bool {
+        self.active_view().is_some_and(|v| v.exited)
+    }
+
+    /// Restart the selected ended run: drop the dead PTY (reaping the
+    /// child), forget its output recency and pending input, and queue a
+    /// fresh spawn on the same run id. Title and accumulated links are
+    /// kept — restart resumes the run's story, it does not archive it.
+    /// No-op unless the active child exited (live runs are never killed
+    /// by accident; per-run close is a separate explicit action).
+    fn restart_run(&mut self) {
+        if !self.can_restart() {
+            return;
+        }
+        if let Some(id) = self.active_id() {
+            self.ptys.remove(&id);
+            self.last_output.remove(&id);
+            self.pending_inputs.remove(&id);
+            self.clear_selection();
             self.app.retry_spawn();
         }
     }
@@ -406,6 +432,7 @@ impl ShellView {
             ("i", false) | ("enter", _) => NavAction::FocusTerm,
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
+            ("r", false) if self.can_restart() => NavAction::Restart,
             ("r", false) if self.can_retry() => NavAction::Retry,
             ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
             _ => NavAction::None,
@@ -456,11 +483,20 @@ impl ShellView {
                 window.refresh();
                 return;
             }
-            // Dead pane (spawn failed, no PTY owns the keys): `r` retries
-            // instead of typing into nothing. Gated on a recorded failure
-            // so a fast first `r` still reaches a starting child.
-            if key.eq_ignore_ascii_case("r") && !ctrl && !platform && self.can_retry() {
-                self.retry_spawn();
+            // Dead pane (spawn failed or child exited, no live PTY owns
+            // the keys): `r` retries/restarts instead of typing into
+            // nothing. Retry stays gated on a recorded failure so a fast
+            // first `r` still reaches a starting child.
+            if key.eq_ignore_ascii_case("r")
+                && !ctrl
+                && !platform
+                && (self.can_restart() || self.can_retry())
+            {
+                if self.can_restart() {
+                    self.restart_run();
+                } else {
+                    self.retry_spawn();
+                }
                 window.refresh();
                 return;
             }
@@ -501,6 +537,10 @@ impl ShellView {
             NavAction::Paste => self.paste_clipboard(cx),
             NavAction::Retry => {
                 self.retry_spawn();
+                self.focus_term(window);
+            }
+            NavAction::Restart => {
+                self.restart_run();
                 self.focus_term(window);
             }
             NavAction::Dismiss => {
@@ -738,6 +778,9 @@ impl ShellView {
             }
             return msg.to_string();
         }
+        if self.can_restart() {
+            return "run ended · r: restart · n: new · q: quit".to_string();
+        }
         if self.app.is_terminal_focused() {
             "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste"
                 .to_string()
@@ -812,14 +855,30 @@ impl Render for ShellView {
                             .flex()
                             .flex_col()
                             .flex_1()
-                            .child(
-                                div()
+                            .child({
+                                // Ended-run recovery lives in the header:
+                                // the title names the state, Restart reruns
+                                // the same run id (keyboard `r`).
+                                let mut header = div()
                                     .px_2()
                                     .py_1()
                                     .text_color(term_title_color)
                                     .text_sm()
-                                    .child(title),
-                            )
+                                    .child(title);
+                                if self.can_restart() {
+                                    header = header.child(
+                                        Button::new(ElementId::Name("restart-run-btn".into()))
+                                            .label("Restart (r)")
+                                            .primary()
+                                            .small()
+                                            .on_click(cx.listener(|this, _ev, window, _cx| {
+                                                this.restart_run();
+                                                this.focus_term(window);
+                                            })),
+                                    );
+                                }
+                                header
+                            })
                             .child(self.render_error_banner(cx))
                             .child(self.render_terminal())
                             // Tracked: clicking here must move real keyboard
@@ -1147,6 +1206,60 @@ mod headless_tests {
         view.note_spawn_success(&id);
         assert_eq!(view.app.error_text(), None);
         assert!(!view.can_retry());
+    }
+
+    #[test]
+    fn restart_is_offered_only_for_exited_runs_and_keeps_the_run() {
+        use std::time::Duration;
+
+        let mut view = ShellView::new();
+        assert!(!view.can_restart());
+        assert_eq!(view.nav_action("r", false), NavAction::None);
+        view.restart_run();
+        assert!(view.app.take_pending_spawn().is_none());
+
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        let id = view.active_id().unwrap();
+        // Live child: restart is never offered (no accidental kills).
+        let live = EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap();
+        view.ptys.insert(id.clone(), live);
+        view.last_output.insert(id.clone(), Instant::now());
+        assert!(!view.can_restart());
+        assert_eq!(view.nav_action("r", false), NavAction::None);
+        view.restart_run();
+        assert!(view.ptys.contains_key(&id));
+        assert!(view.app.take_pending_spawn().is_none());
+
+        // An exited child flips the offer on: status hint plus `r`.
+        let dead = EmbeddedPty::spawn("true", &[], 80, 24).unwrap();
+        view.ptys.insert(id.clone(), dead);
+        for _ in 0..100 {
+            view.refresh();
+            if view.can_restart() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(view.can_restart());
+        assert_eq!(view.nav_action("r", false), NavAction::Restart);
+        assert_eq!(
+            view.status_text(),
+            "run ended · r: restart · n: new · q: quit"
+        );
+
+        // Restart drops the dead PTY and re-queues on the same id,
+        // keeping the run's title (no new entry, no archive).
+        let title_before = view.app.selected_session().unwrap().title.clone();
+        view.restart_run();
+        assert!(!view.ptys.contains_key(&id));
+        assert_eq!(
+            view.app.take_pending_spawn(),
+            Some(crate::embedded::SpawnKind::New)
+        );
+        assert_eq!(view.active_id().as_deref(), Some(id.as_str()));
+        assert_eq!(view.app.selected_session().unwrap().title, title_before);
+        assert!(!view.can_restart());
     }
 
     #[test]
