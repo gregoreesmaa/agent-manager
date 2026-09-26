@@ -142,6 +142,7 @@ impl ShellView {
             ("p", false) => NavAction::Paste,
             ("r", false) if self.can_restart() => NavAction::Restart,
             ("r", false) if self.can_retry() => NavAction::Retry,
+            ("r", false) if self.can_resume() => NavAction::Restart,
             ("x", false) => NavAction::Close,
             ("d", false) if self.app.error_text().is_some() => NavAction::Dismiss,
             // `?` toggles the in-app help panel. `/` is an alias for

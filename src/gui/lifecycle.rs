@@ -16,14 +16,26 @@ impl ShellView {
             .is_some_and(|run| run.exited())
     }
 
-    /// Restart the selected ended run: drop the dead PTY (reaping the
-    /// child), forget its output recency, pending input, and cached
-    /// attention, and queue a fresh spawn on the same run id. Title and
-    /// accumulated links are kept — restart resumes the run's story, it
-    /// does not archive it. No-op unless the active child exited (live
-    /// runs are never killed by accident; per-run close is separate).
+    /// Resume is offered for entries with no live run and no queued spawn:
+    /// historic provider sessions seeded at startup, waiting for an
+    /// explicit re-attach. Fresh runs (spawn queued) are excluded.
+    pub(crate) fn can_resume(&self) -> bool {
+        match self.active_id() {
+            Some(id) => !self.runs.contains_key(&id) && !self.app.has_pending_spawn(),
+            None => false,
+        }
+    }
+
+    /// Restart the selected ended run (or resume a historic entry): drop
+    /// the dead PTY if any (reaping the child), forget its output recency,
+    /// pending input, and cached attention, and queue the run's spawn kind
+    /// on the same id — `Resume` for historic entries, `New` for live
+    /// runs. Title, links, and transcript are kept: restart resumes the
+    /// run's story, it does not archive it. No-op unless the active child
+    /// exited or the entry awaits resume (live runs are never killed by
+    /// accident; per-run close is separate).
     pub(crate) fn restart_run(&mut self) {
-        if !self.can_restart() {
+        if !self.can_restart() && !self.can_resume() {
             return;
         }
         if let Some(id) = self.active_id() {
@@ -32,7 +44,8 @@ impl ShellView {
                 s.pending_input.clear();
             }
             self.clear_selection();
-            self.app.retry_spawn();
+            let kind = self.app.respawn_kind(&id);
+            self.app.retry_spawn(kind);
         }
     }
 
@@ -75,6 +88,7 @@ impl ShellView {
 mod tests {
     use super::super::nav::NavAction;
     use super::super::runs::{insert_test_pty, test_shell, Run};
+    use super::super::shell::ShellView;
 
     #[test]
     fn restart_is_offered_only_for_exited_runs_and_keeps_the_run() {
@@ -89,11 +103,21 @@ mod tests {
         view.app.start_new_session();
         let _ = view.app.take_pending_spawn();
         let id = view.active_id().unwrap();
+        // No PTY and no queued spawn: the run awaits (re)start — `r`
+        // offers it instead of staying a dead end.
+        assert!(!view.can_restart());
+        assert!(view.can_resume());
+        assert_eq!(view.nav_action("r", false), NavAction::Restart);
+        assert_eq!(
+            view.status_text(),
+            "run ready · r: start · n: new · ?: help · q: quit"
+        );
         // Live child: restart is never offered (no accidental kills).
         let live =
             crate::embedded::EmbeddedPty::spawn("sleep", &["5".to_string()], 80, 24).unwrap();
         view.runs.insert(id.clone(), Run::new(live));
         assert!(!view.can_restart());
+        assert!(!view.can_resume());
         assert_eq!(view.nav_action("r", false), NavAction::None);
         view.restart_run();
         assert!(view.runs.contains_key(&id));
@@ -128,6 +152,52 @@ mod tests {
         assert_eq!(view.active_id().as_deref(), Some(id.as_str()));
         assert_eq!(view.app.selected_session().unwrap().title, title_before);
         assert!(!view.can_restart());
+    }
+
+    #[test]
+    fn historic_entries_resume_the_provider_session() {
+        use crate::app::{ChatSession, Status};
+        // Seeded entry (as main.rs builds from discover_sessions): title,
+        // links, and transcript present, no live PTY.
+        let historic = ChatSession {
+            id: "hist-1".into(),
+            title: "old work".into(),
+            project: "muse".into(),
+            status: Status::Idle,
+            last_active: 1,
+            pr_links: vec!["https://github.com/acme/app/pull/9".into()],
+            related_links: vec![],
+            links_truncated: false,
+            transcript: vec![],
+            transcript_truncated: false,
+            provider_session_id: Some("sess-abc".into()),
+            title_locked: true,
+            pending_input: String::new(),
+        };
+        let mut view = ShellView::new_with_sessions(vec![historic]);
+        // Visible without any run; resume offered; status names it.
+        assert_eq!(view.app.sessions.len(), 1);
+        assert!(view.runs.is_empty());
+        assert!(!view.can_restart());
+        assert!(!view.can_retry());
+        assert!(view.can_resume());
+        assert_eq!(view.nav_action("r", false), NavAction::Restart);
+        assert_eq!(
+            view.status_text(),
+            "historic run · r: resume · n: new · ?: help · q: quit"
+        );
+        // Restart re-attaches the provider session on the same entry:
+        // title and links kept, only the child is new.
+        view.restart_run();
+        assert_eq!(
+            view.app.take_pending_spawn(),
+            Some(crate::embedded::SpawnKind::Resume {
+                session_id: "sess-abc".to_string()
+            })
+        );
+        assert_eq!(view.active_id().as_deref(), Some("hist-1"));
+        assert_eq!(view.app.selected_session().unwrap().title, "old work");
+        assert_eq!(view.app.selected_session().unwrap().pr_links.len(), 1);
     }
 
     #[test]

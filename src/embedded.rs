@@ -26,12 +26,20 @@ pub fn new_session_command() -> (String, Vec<String>) {
 pub enum SpawnKind {
     /// Start a brand-new `muse` session.
     New,
+    /// Resume a historic provider conversation with `muse --resume <id>`.
+    /// The app routes the spawn to the selected run entry, so no run id
+    /// travels with the request.
+    Resume { session_id: String },
 }
 
 impl SpawnKind {
     pub fn command(&self) -> (String, Vec<String>) {
         match self {
             SpawnKind::New => new_session_command(),
+            SpawnKind::Resume { session_id } => (
+                "muse".to_string(),
+                vec!["--resume".to_string(), session_id.clone()],
+            ),
         }
     }
 }

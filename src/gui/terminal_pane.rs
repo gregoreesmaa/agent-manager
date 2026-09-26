@@ -106,6 +106,7 @@ impl ShellView {
     }
 
     pub(crate) fn render_terminal(&self, cx: &mut Context<Self>) -> gpui::Div {
+        super::theme::debug_assert_contrast();
         let Some(view) = self.active_view() else {
             return self.render_empty_pane(cx);
         };
@@ -159,7 +160,7 @@ impl ShellView {
         div()
             .flex_1()
             .h_full()
-            .bg(rgb(0x11111b))
+            .bg(rgb(super::theme::SURFACE_BG))
             .p_2()
             .font_family("Menlo")
             .text_size(px(TERM_FONT_SIZE))

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use gpui::{App as GpuiApp, Bounds, ClipboardItem, FocusHandle, KeyDownEvent, Pixels, Window};
 
-use crate::app::App;
+use crate::app::{App, ChatSession};
 use crate::embedded::LiveView;
 
 use super::layout::NARROW_BREAKPOINT;
@@ -73,9 +73,17 @@ pub struct ShellView {
 }
 
 impl ShellView {
+    #[allow(dead_code)]
     pub fn new() -> Self {
+        Self::new_with_sessions(vec![])
+    }
+
+    /// Start with provider-discovered entries (historic attach): sessions
+    /// appear in the list with their titles, links, and transcripts before
+    /// any PTY exists; `r` re-attaches the selected one (`Resume`).
+    pub fn new_with_sessions(sessions: Vec<ChatSession>) -> Self {
         Self {
-            app: App::new(vec![]),
+            app: App::new(sessions),
             runs: HashMap::new(),
             quit_armed: false,
             link_cursor: None,
@@ -151,16 +159,17 @@ impl ShellView {
                 window.refresh();
                 return;
             }
-            // Dead pane (spawn failed or child exited, no live PTY owns
-            // the keys): `r` retries/restarts instead of typing into
-            // nothing. Retry stays gated on a recorded failure so a fast
-            // first `r` still reaches a starting child.
+            // Dead pane (spawn failed, child exited, or historic entry with
+            // no live PTY owning the keys): `r` retries/restarts/resumes
+            // instead of typing into nothing. Retry stays gated on a
+            // recorded failure so a fast first `r` still reaches a
+            // starting child.
             if key.eq_ignore_ascii_case("r")
                 && !ctrl
                 && !platform
-                && (self.can_restart() || self.can_retry())
+                && (self.can_restart() || self.can_retry() || self.can_resume())
             {
-                if self.can_restart() {
+                if self.can_restart() || self.can_resume() {
                     self.restart_run();
                 } else {
                     self.retry_spawn();
@@ -260,6 +269,25 @@ impl ShellView {
         if self.can_restart() {
             return "run ended · r: restart · n: new · ?: help · q: quit".to_string();
         }
+        if self.can_resume() {
+            // Historic provider entries re-attach (`r: resume`); runs that
+            // never started offer a plain start.
+            let historic = self
+                .active_id()
+                .as_ref()
+                .and_then(|id| {
+                    self.app
+                        .sessions
+                        .iter()
+                        .find(|s| &s.id == id)
+                        .and_then(|s| s.provider_session_id.clone())
+                })
+                .is_some();
+            if historic {
+                return "historic run · r: resume · n: new · ?: help · q: quit".to_string();
+            }
+            return "run ready · r: start · n: new · ?: help · q: quit".to_string();
+        }
         let narrow = viewport_w < NARROW_BREAKPOINT;
         if self.app.is_terminal_focused() {
             if narrow {
@@ -311,10 +339,11 @@ mod tests {
     #[test]
     fn narrow_status_hints_stay_compact_but_complete() {
         // Issue #6: long key-hint lines break below ~700px; narrow widths
-        // get compact hints that still name every essential key.
+        // get compact hints that still name every essential key. A live
+        // run keeps the view on the key-hint lines (the ready/resume and
+        // empty states are width-invariant by design).
         let mut view = ShellView::new();
-        view.app.start_new_session();
-        let _ = view.app.take_pending_spawn();
+        crate::gui::runs::insert_test_pty(&mut view, "sleep", &["5"]);
         view.app.focus_nav();
         let full = view.status_text_for_width(1280.0);
         let narrow = view.status_text_for_width(600.0);

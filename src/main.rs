@@ -14,27 +14,32 @@
 mod app;
 mod embedded;
 mod gui;
-// Parked for the modular future (alternate providers, link-parser families,
-// historic transcript attach): kept compiled and unit-tested.
-#[allow(dead_code, unused_imports)]
 mod parsers;
-#[allow(dead_code, unused_imports)]
 mod providers;
-#[allow(dead_code, unused_imports)]
 mod transcript;
 
 use gpui::{AppContext, Application, Entity};
 use gpui_component::{Root, Theme, ThemeMode};
 
 use gui::shell::ShellView;
+use providers::{MuseCliProvider, Provider};
 
 fn main() {
-    Application::new().run(|cx| {
+    // Historic attach: provider-discovered sessions seed the list before
+    // any PTY exists (unreachable store degrades to an empty list, never
+    // a startup failure). `r` on a seeded entry re-attaches it.
+    let seeded = MuseCliProvider::new(
+        MuseCliProvider::default_store_root(),
+        Box::new(parsers::registry::RegistryParser::default()),
+    )
+    .discover_sessions()
+    .unwrap_or_default();
+    Application::new().run(move |cx| {
         // Native chrome components (sidebar, buttons): init once, dark to
         // match the terminal pane.
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
-        let view: Entity<ShellView> = cx.new(|_cx| ShellView::new());
+        let view: Entity<ShellView> = cx.new(|_cx| ShellView::new_with_sessions(seeded.clone()));
         let pump_view = view.clone();
         // Pump loop: poll PTYs at 20 Hz so background runs keep streaming;
         // the window repaints only when the pump reports dirtiness (fresh

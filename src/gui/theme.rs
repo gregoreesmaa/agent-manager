@@ -36,6 +36,21 @@ pub(crate) fn group_marker(status: Status) -> &'static str {
 /// WCAG 2.x contrast ratio of two 0xRRGGBB colors (1.0 – 21.0).
 /// Test-only until the theme module grows runtime contrast checks (#34).
 #[cfg(test)]
+/// Debug-gate the palette floor at render time: dim secondary text must
+/// keep ratio >= 4.5 on both dark surfaces. Called from the render paths
+/// that paint those surfaces, so a palette regression fails fast in
+/// debug/test builds (release strips the check, the colors stay).
+pub(crate) fn debug_assert_contrast() {
+    debug_assert!(
+        contrast_ratio(SECONDARY_FG, SURFACE_BG) >= 4.5,
+        "secondary text below contrast floor on surface"
+    );
+    debug_assert!(
+        contrast_ratio(SECONDARY_FG, BAR_BG) >= 4.5,
+        "secondary text below contrast floor on bars"
+    );
+}
+
 pub(crate) fn contrast_ratio(fg: u32, bg: u32) -> f64 {
     fn luminance(c: u32) -> f64 {
         let channel = |v: u32| {

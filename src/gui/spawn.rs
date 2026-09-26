@@ -56,11 +56,16 @@ impl ShellView {
         }
     }
 
-    /// Retry action for a failed spawn: re-queue a fresh `muse` for the
-    /// selected run (same id, no new entry). Never touches a live PTY.
+    /// Retry action for a failed spawn: re-queue the run's spawn kind for
+    /// the selected run (same id, no new entry) — `New` for live runs,
+    /// `Resume` for historic entries so a failed re-attach retries the
+    /// same provider session. Never touches a live PTY.
     pub(crate) fn retry_spawn(&mut self) {
         if self.can_retry() {
-            self.app.retry_spawn();
+            if let Some(id) = self.active_id() {
+                let kind = self.app.respawn_kind(&id);
+                self.app.retry_spawn(kind);
+            }
         }
     }
 

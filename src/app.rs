@@ -56,6 +56,10 @@ pub struct ChatSession {
     /// child spawns and after it exits. Cleared on submit and restart.
     #[serde(default)]
     pub pending_input: String,
+    /// Provider-side conversation id for `--resume` (empty for live/new
+    /// runs). Survives save/load so restarts resume the same transcript.
+    #[serde(default)]
+    pub provider_session_id: Option<String>,
 }
 
 impl ChatSession {
@@ -318,10 +322,27 @@ impl App {
 
     /// Re-queue a spawn for the selected run (Retry after a spawn failure).
     /// Creates no new run entry: the failed run keeps its id and title.
-    /// No-op when no run is selected.
-    pub fn retry_spawn(&mut self) {
+    /// `kind` preserves the origin: historic/retry selections resume,
+    /// live ones relaunch fresh. No-op when no run is selected.
+    pub fn retry_spawn(&mut self, kind: SpawnKind) {
         if self.selected_session().is_some() {
-            self.pending_spawn = Some(SpawnKind::New);
+            self.pending_spawn = Some(kind);
+        }
+    }
+
+    /// Whether a spawn is queued and not yet consumed by the main loop.
+    pub fn has_pending_spawn(&self) -> bool {
+        self.pending_spawn.is_some()
+    }
+
+    /// Spawn kind for a sidebar selection: historic entries resume,
+    /// live entries relaunch fresh.
+    pub fn respawn_kind(&self, run_id: &str) -> SpawnKind {
+        match self.sessions.iter().find(|s| s.id == run_id) {
+            Some(s) if s.provider_session_id.is_some() => SpawnKind::Resume {
+                session_id: s.provider_session_id.clone().unwrap_or_default(),
+            },
+            _ => SpawnKind::New,
         }
     }
 
@@ -426,6 +447,7 @@ impl App {
             links_truncated: false,
             transcript: vec![],
             transcript_truncated: false,
+            provider_session_id: None,
             title_locked: false,
             pending_input: String::new(),
         });
@@ -492,6 +514,7 @@ mod tests {
             links_truncated: false,
             transcript: vec![],
             transcript_truncated: false,
+            provider_session_id: None,
             title_locked: true,
             pending_input: String::new(),
         }
@@ -816,16 +839,33 @@ mod tests {
     }
 
     #[test]
+    fn respawn_kind_resumes_historic_and_renews_live() {
+        let mut app = App::new(vec![sess("a", Status::Idle, 1)]);
+        assert_eq!(app.respawn_kind("a"), SpawnKind::New);
+        assert!(!app.has_pending_spawn());
+        app.sessions[0].provider_session_id = Some("s-1".into());
+        assert_eq!(
+            app.respawn_kind("a"),
+            SpawnKind::Resume {
+                session_id: "s-1".into()
+            }
+        );
+        assert_eq!(app.respawn_kind("missing"), SpawnKind::New);
+        app.retry_spawn(SpawnKind::New);
+        assert!(app.has_pending_spawn());
+    }
+
+    #[test]
     fn retry_requeues_spawn_without_new_run_entry() {
         let mut app = App::new(vec![]);
         // No selection: no-op, never spawns.
-        app.retry_spawn();
+        app.retry_spawn(SpawnKind::New);
         assert!(app.take_pending_spawn().is_none());
         app.start_new_session();
         assert_eq!(app.sessions.len(), 1);
         // Simulate the main loop consuming the spawn, then failing.
         assert_eq!(app.take_pending_spawn(), Some(SpawnKind::New));
-        app.retry_spawn();
+        app.retry_spawn(SpawnKind::New);
         assert_eq!(app.take_pending_spawn(), Some(SpawnKind::New));
         // Retry reuses the same run id: no extra entry.
         assert_eq!(app.sessions.len(), 1);

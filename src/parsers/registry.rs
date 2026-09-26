@@ -17,6 +17,7 @@ impl Default for RegistryParser {
 }
 
 impl RegistryParser {
+    #[allow(dead_code)]
     pub fn with_strategies(strategies: Vec<Box<dyn Parser>>) -> Self {
         Self { strategies }
     }

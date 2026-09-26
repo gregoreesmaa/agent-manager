@@ -4,11 +4,13 @@ use crate::app::ChatSession;
 
 /// A source of chat sessions (Muse CLI store, mock, future providers).
 pub trait Provider {
+    #[allow(dead_code)]
     fn name(&self) -> &'static str;
     fn discover_sessions(&self) -> Result<Vec<ChatSession>, ProviderError>;
 }
 
 /// Provider failure modes.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ProviderError {
     /// Backing store unreachable (missing dir, permission denied, ...).
