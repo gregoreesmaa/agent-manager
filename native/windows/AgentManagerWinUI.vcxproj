@@ -36,7 +36,11 @@
     <WindowsPackageType>None</WindowsPackageType>
     <EnableMsixTooling>false</EnableMsixTooling>
     <AppxPackage>false</AppxPackage>
-    <CppWinRTEnabled>true</CppWinRTEnabled>
+    <!-- Do NOT set CppWinRTEnabled: 'true' flips the CppWinRT NuGet targets to
+      VS-inbox mode (CppWinRTPackage=false), which runs cppwinrt from the package's
+      build/native dir instead of bin and fails CppWinRTMakePlatformProjection
+      with MSB3073 (cppwinrt not recognized, exit 9009; run 36329571683).
+      Left unset, the NuGet layout (CppWinRTPath = package bin) is used. -->
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
