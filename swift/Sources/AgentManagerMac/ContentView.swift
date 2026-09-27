@@ -12,6 +12,9 @@ import SwiftUI
 ///   they survive relaunches.
 /// - Theme: System/Dark/Light picker persisted in UserDefaults.
 /// - Persistence: Save writes the core config; it also runs on quit.
+/// - Sidebar: Finder-style glass (`.listStyle(.sidebar)` sections over
+///   AppKit sidebar vibrancy); row/header text keeps the default
+///   primary/secondary styles for 4.5:1 contrast over the material.
 struct ContentView: View {
     @ObservedObject var state: AppState
     @AppStorage("appearance") private var appearance = "system"
@@ -26,20 +29,30 @@ struct ContentView: View {
                     }
                     ForEach(statusSections, id: \.status) { section in
                         if !section.rows.isEmpty {
-                            Section("\(section.title) (\(section.rows.count))") {
+                            Section {
                                 ForEach(section.rows) { row in
                                     rowLabel(row)
                                         .tag(row.id)
                                         .badge(state.hasLivePty(row.id) ? "live" : nil)
                                 }
+                            } header: {
+                                HStack {
+                                    Text(section.title)
+                                    Spacer()
+                                    Text("\(section.rows.count)")
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
                 }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
                 .searchable(text: $state.filter, prompt: "Filter sessions")
                 Divider()
                 sidebarFooter
             }
+            .background(SidebarVibrancy())
             .navigationTitle(title)
         } detail: {
             detailView
@@ -185,4 +198,20 @@ struct ContentView: View {
             set: { if !$0 { state.pendingError = nil } }
         )
     }
+}
+
+/// Finder-style glass behind the roster sidebar: AppKit vibrancy pinned to
+/// the `.sidebar` material so the desktop tint shows through like Finder.
+/// `NavigationSplitView` already prefers a translucent sidebar; this makes
+/// the material explicit rather than relying on the default.
+private struct SidebarVibrancy: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
