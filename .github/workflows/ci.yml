@@ -165,8 +165,16 @@ jobs:
           -Smoke ./native/windows/build/Release/am-win-smoke.exe
       - name: WinUI build (unpackaged exe, no MSIX)
         shell: pwsh
+        # Restore MUST evaluate the same Configuration/Platform as the build
+        # (run 36331814809, refs #64): bare `msbuild -t:restore` evaluates the
+        # vcxproj without Configuration/Platform, so the recorded
+        # project.assets.json frameworks drift from the Release|x64 build's
+        # UAP expectation and ResolveNuGetPackageAssets fails with
+        # `does not reference "UAP,Version=v10.0"`. MS's own WinUI CI doc runs
+        # `/t:Restore /p:Configuration=...` for the same reason.
         run: |
-          msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
+          msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj `
+            /p:Configuration=Release /p:Platform=x64
           msbuild native/windows/AgentManagerWinUI.vcxproj `
             /p:Configuration=Release /p:Platform=x64 `
             "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/debug"

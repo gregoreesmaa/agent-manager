@@ -51,6 +51,11 @@
     <WindowsPackageType>None</WindowsPackageType>
     <EnableMsixTooling>false</EnableMsixTooling>
     <AppxPackage>false</AppxPackage>
+    <!-- Tell NuGet this is PackageReference style (run 36331814809, refs #64):
+      without it, restore-style auto-detection can drift from the build-time
+      ResolveNuGetPackageAssets UAP check. Same line ships in PowerToys'
+      unpackaged WinUI 3 C++ projects, which build green on hosted runners. -->
+    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
     <!-- Do NOT set CppWinRTEnabled: 'true' flips the CppWinRT NuGet targets to
       VS-inbox mode (CppWinRTPackage=false), which runs cppwinrt from the package's
       build/native dir instead of bin and fails CppWinRTMakePlatformProjection
