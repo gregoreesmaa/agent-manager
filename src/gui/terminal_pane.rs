@@ -305,6 +305,11 @@ impl ShellView {
             .p_2()
             .font(term_font)
             .text_size(px(self.term_font_size()))
+            // Rendered row pitch == mapped cell pitch (issue #59):
+            // without this the text inherits gpui's default phi (1.618x)
+            // line height, so every glyph row below row 0 lands lower
+            // than `mouse_cell`/highlight assume and drags snap to void.
+            .line_height(px(self.line_h))
             .child(inner)
     }
 
@@ -1057,5 +1062,103 @@ mod tests {
         view.begin_selection(gpui::point(px(4.0), px(99.0)));
         assert!(view.selection_pair().is_none());
         assert!(!view.selecting);
+    }
+
+    #[test]
+    fn drag_selects_hello_on_a_lower_row_at_render_pitch() {
+        // Issue #59: mouse selection was dead in normal use. The pane
+        // rendered glyph rows at gpui's inherited default text line
+        // height (`phi`, 1.618034 x font size) while `mouse_cell` and
+        // the highlight mapped with the measured cell (`line_h` =
+        // ascent + descent): row 0 survived (both pitches start at the
+        // text origin) but lower rows drifted, so a press centered on
+        // a rendered glyph row mapped to the wrong grid row,
+        // snap-to-content found no content, and `begin_selection`
+        // cleared. The pane now renders at `line_h`, so glyph rows
+        // land exactly on the mapped grid. This drives the real
+        // window-space path: production-structured bounds (sidebar +
+        // border + pane padding origin, as captured by
+        // `on_children_prepainted`) with press positions where the
+        // pane renders the glyphs (the `line_h` render pitch, which
+        // must track `assemble_live_terminal`'s `.line_height`),
+        // through begin/update_selection: the highlight must cover
+        // exactly `hello` and the copy payload must be `hello`.
+        let mut view = test_shell();
+        let _ = insert_test_pty(&mut view, "printf", &["a\\nb\\nc\\nd\\nhello"]);
+        for _ in 0..100 {
+            view.refresh();
+            if let Some(v) = view.active_view() {
+                if v.screen.contents().contains("hello") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // Production-captured bounds shape: the text origin sits past
+        // the 264px sidebar, the 1px focus border, and the 8px pane
+        // padding — window-space, like the mouse events.
+        let origin_x = super::super::layout::LEFT_WIDTH + 1.0 + 8.0;
+        let origin_y = 40.0;
+        *view.term_text_bounds.borrow_mut() = Some(gpui::Bounds {
+            origin: gpui::point(px(origin_x), px(origin_y)),
+            size: gpui::size(px(800.0), px(600.0)),
+        });
+        // Where the pane renders glyph rows: the `line_h` pitch from
+        // `assemble_live_terminal`'s `.line_height` (same pitch
+        // `mouse_cell` maps with). Must track that override: if the
+        // render pitch ever diverges again, presses modeled here stop
+        // matching the glyphs, exactly the issue #59 failure.
+        let render_pitch = view.line_h;
+        let char_w = view.char_w;
+        let press = |col_cells: f32, row: f32| {
+            gpui::point(
+                px(origin_x + col_cells * char_w),
+                px(origin_y + (row + 0.5) * render_pitch),
+            )
+        };
+        // Sanity: `hello` really is on grid row 4, span 0..5.
+        {
+            let live = view.active_view().expect("live pty");
+            assert_eq!(
+                super::super::terminal::row_content_range(live.screen, 4),
+                Some((0, 5)),
+                "fixture row"
+            );
+        }
+        // Drag across `hello`: press on `h`, release just past `o`.
+        view.begin_selection(press(0.25, 4.0));
+        assert!(view.selecting, "press on rendered hello arms a selection");
+        assert_eq!(view.sel_anchor, Some((4, 0)));
+        view.update_selection(press(5.25, 4.0));
+        assert_eq!(view.selection_pair(), Some(((4, 0), (4, 5))));
+        // Highlight covers exactly hello; the copy payload is hello
+        // (`end_selection` writes `selected_text()` verbatim to the
+        // clipboard, which needs a gpui `App` and is covered by that
+        // straight-line path plus this payload assertion).
+        assert_eq!(view.live_highlight(), vec![(4, 0, 5)]);
+        assert_eq!(view.selected_text().as_deref(), Some("hello"));
+        // Structural pin: the built terminal element itself carries
+        // the `line_h` pitch, so reverting the `.line_height`
+        // override fails here even though mapping-pitch presses still
+        // map. Read back through the public `Styled::style` surface.
+        let (full, runs) = {
+            let live = view.active_view().expect("live pty");
+            let theme = term_theme(false);
+            let grid = screen_rows(live.screen, None, theme.cursor, false);
+            layout_text(&grid, &view.term_font(), theme.fg)
+        };
+        let theme = term_theme(false);
+        let mut el = view.assemble_live_terminal(full, runs, vec![], &theme);
+        let rendered = el
+            .style()
+            .text_style()
+            .clone()
+            .and_then(|t| t.line_height)
+            .expect("terminal element sets an explicit line height");
+        assert_eq!(
+            rendered,
+            gpui::DefiniteLength::from(px(view.line_h)),
+            "render pitch == mapping pitch"
+        );
     }
 }
