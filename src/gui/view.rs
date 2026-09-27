@@ -10,7 +10,7 @@
 use gpui::{
     div, px, rgb, Context, ElementId, Font, InteractiveElement, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, Size,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, WindowOptions,
+    StatefulInteractiveElement, Styled, TitlebarOptions, Window, WindowControlArea, WindowOptions,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::Sizable as _;
@@ -307,35 +307,46 @@ impl ShellView {
     }
 }
 
+/// Native traffic-light anchor (issue #51): close-button origin at
+/// 20pt leading (the macOS standard inset) and 14pt from the window
+/// top. The position is window-relative, so wide mode (lights over the
+/// sidebar header strip) and narrow mode (lights over the terminal
+/// corner) share it — no per-width code, one assertion covers both.
+pub(crate) const TRAFFIC_LIGHT_POS_X: f32 = 20.0;
+pub(crate) const TRAFFIC_LIGHT_POS_Y: f32 = 14.0;
+/// Traffic-light button diameter on macOS (12pt).
+pub(crate) const TRAFFIC_LIGHT_DIAMETER: f32 = 12.0;
+/// Bottom edge of the native traffic lights (`POS_Y + DIAMETER`,
+/// 26pt): panel chrome starts below this (see
+/// [`super::runs_panel::SIDEBAR_HEADER_TOP_PAD`]).
+pub(crate) const TRAFFIC_LIGHT_BOTTOM: f32 = TRAFFIC_LIGHT_POS_Y + TRAFFIC_LIGHT_DIAMETER;
+
 /// Window options for the main window. The minimum size is derived from
 /// the PTY floors (see [`MIN_WINDOW_WIDTH`]/[`MIN_WINDOW_HEIGHT`]) so the
 /// OS never shrinks the window past what the terminal grid can display.
 ///
-/// Issue #44: no OS title bar — the content runs edge-to-edge behind a
-/// transparent titlebar (traffic lights float over the content at the OS
-/// position), so the terminal owns the title-bar row's pixels too.
-/// Window dragging works through the custom drag regions (sidebar header
-/// in wide mode, slim status bar in narrow mode). Nothing in-window is
-/// taller than before: wide mode gains a row, narrow mode keeps exactly
-/// its slim bar.
-///
-/// Issue #58: the hidden titlebar must stay `Some` + `appears_transparent`
-/// (the same shape as `gpui_component::TitleBar::title_bar_options()`),
-/// never `titlebar: None` — on macOS gpui maps `None` to a style mask
-/// without `NSResizableWindowMask`, which silently kills all
-/// edge/corner resizing (plus close/miniaturize). `Some`-transparent
-/// keeps Titled|Closable|Resizable|Miniaturizable with full-size content,
-/// so every edge and corner resizes natively. The custom drag regions
-/// cannot swallow those resize handles: on macOS gpui leaves
+/// Issues #44/#51/#58: no OS title bar, but the native traffic lights
+/// stay. `titlebar: None` was wrong — on macOS it maps to a style mask
+/// without `NSResizableWindowMask`, killing edge/corner resize (plus
+/// close/minimize/zoom). `Some` + `appears_transparent` (the same shape
+/// as `gpui_component::TitleBar::title_bar_options()`) keeps
+/// Titled|Closable|Resizable|Miniaturizable with full-size content and
+/// native, working lights at the explicit anchor above; dragging still
+/// works through the custom drag regions (sidebar header strip in wide
+/// mode, slim status bar in narrow mode). The custom drag regions cannot
+/// swallow resize handles: on macOS gpui leaves
 /// `on_hit_test_window_control` unimplemented, so window-control
-/// hitboxes never divert edge hits from the OS resize handling.
+/// hitboxes never divert edge hits from OS resize handling.
 /// `is_resizable` stays explicit so a future edit cannot silently drop it.
 pub fn window_options() -> WindowOptions {
     WindowOptions {
-        titlebar: Some(gpui::TitlebarOptions {
+        titlebar: Some(TitlebarOptions {
             title: Some(SharedString::from("Agent Manager")),
             appears_transparent: true,
-            ..Default::default()
+            traffic_light_position: Some(gpui::Point {
+                x: px(TRAFFIC_LIGHT_POS_X),
+                y: px(TRAFFIC_LIGHT_POS_Y),
+            }),
         }),
         is_resizable: true,
         window_min_size: Some(Size {
@@ -356,13 +367,14 @@ mod tests {
 
     #[test]
     fn hidden_titlebar_frees_the_os_row_without_touching_the_minimum() {
-        // Issue #44: no OS title bar — the content runs edge-to-edge
-        // behind a transparent titlebar (traffic lights float over it),
-        // so the terminal gains the title-bar row's pixels. The minimum
-        // geometry is unchanged (narrow mode keeps its slim bar).
-        // Issue #58: the hidden titlebar is `Some`-transparent, never
+        // Issues #44/#51/#58: no OS title bar — the content runs
+        // edge-to-edge behind a transparent titlebar (traffic lights
+        // float over it), so the terminal gains the title-bar row's
+        // pixels. The hidden titlebar is `Some`-transparent, never
         // `None` — `None` drops `NSResizableWindowMask` on macOS and the
-        // window stops resizing entirely.
+        // window stops resizing entirely (plus close/miniaturize). The
+        // native lights sit at the explicit window-relative anchor, so
+        // wide and narrow mode share it.
         let opts = super::window_options();
         let titlebar = opts
             .titlebar
@@ -375,6 +387,15 @@ mod tests {
         assert!(
             opts.is_resizable,
             "main window must stay user-resizable (issue #58)"
+        );
+        let pos = titlebar
+            .traffic_light_position
+            .expect("explicit traffic-light anchor (issue #51)");
+        assert_eq!(f32::from(pos.x), super::TRAFFIC_LIGHT_POS_X);
+        assert_eq!(f32::from(pos.y), super::TRAFFIC_LIGHT_POS_Y);
+        assert!(
+            opts.is_resizable && opts.is_minimizable && opts.is_movable,
+            "zoom + minimize + drag must stay enabled (issue #51)"
         );
         let min = opts
             .window_min_size

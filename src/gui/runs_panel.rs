@@ -1,7 +1,8 @@
 //! Sessions-panel render for [`super::shell::ShellView`].
 //!
 //! Plain-gpui chrome: a pinned header (`Sessions` + `+ New` + the visible
-//! search field), one group per live status section (Needs input / Idle /
+//! search field) with a Finder-style traffic-light strip on top (issue
+//! #51), one group per live status section (Needs input / Idle /
 //! Active) plus a collapsible History group, session rows (each with its
 //! folder tail when the session picked one, issue #48), and every
 //! accumulated parsed link as a child row — display-capped with an
@@ -11,7 +12,7 @@
 //! focused row via `active`. The header doubles as the window drag
 //! region now that the OS title bar is hidden (issue #44).
 //!
-//! Layout contract (issues #39/#40/#45/#50):
+//! Layout contract (issues #39/#40/#45/#50/#51/#52/#55):
 //!
 //! - The list column owns its scroll container (`overflow_y_scroll` over
 //!   a natural-height child, so overflow always scrolls) with a drag
@@ -19,8 +20,10 @@
 //!   footer are siblings of the scroller, so both stay pinned while
 //!   the list moves. Wheel/trackpad scroll needs no handle at all.
 //! - History holds exited live runs plus historic provider entries with
-//!   no live PTY ([`ShellView::is_history`]); it renders collapsed by
-//!   default with its own count, toggled by click or `h`.
+//!   no live PTY ([`ShellView::is_history`]); its header row is the
+//!   expand affordance (click, `h`, or Enter on a hidden history
+//!   selection), with its own count and a state chevron, persisted
+//!   across restarts (issue #55).
 //! - The search field (issue #45) is a clickable row wired to the
 //!   existing `App::filter`/`matches_filter` capture: `/` focuses it,
 //!   typing filters live, the row shows the match count plus a clear
@@ -29,28 +32,33 @@
 //!   affordance, while `+ New` and the rows keep their own hover.
 //! - Every row starts with its harness badge (issue #46), ahead of the
 //!   status row marker.
+//! - Section headers are hand-rolled divs in explicit sidebar colors
+//!   (issue #52), never the component theme's 70%-opacity label — the
+//!   panel stays dark in both modes, so one palette clears 4.5 twice.
 
 use gpui::{
-    div, px, rgb, AnyElement, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, ScrollHandle, StatefulInteractiveElement, Styled, WindowControlArea,
+    div, px, rgb, rgba, AnyElement, ClickEvent, Context, ElementId, InteractiveElement,
+    IntoElement, ParentElement, ScrollHandle, StatefulInteractiveElement, Styled,
+    WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     scroll::Scrollbar,
-    sidebar::{SidebarGroup, SidebarMenu, SidebarMenuItem},
-    Sizable as _,
+    sidebar::{SidebarMenu, SidebarMenuItem},
+    ActiveTheme as _, Sizable as _, StyledExt as _,
 };
 
 use crate::app::{section_title, status_sections};
 
 use super::shell::ShellView;
 
-/// Panel chrome surface: the window root is hardcoded dark (see `view`),
-/// so the panel matches with the same bar surface instead of resolving
-/// the component theme per frame.
-const PANEL_BG: u32 = 0x1e1e2e;
-/// Primary panel text (the default foreground the terminal pane uses).
-const PANEL_FG: u32 = 0xd4d4d4;
+/// Sidebar header top clearance (issue #51): the native traffic
+/// lights' bottom edge plus breathing room, so the `Sessions` row
+/// starts below the buttons — the strip reads like a Finder sidebar
+/// header and doubles as the window drag region. Derived, not magic:
+/// moving the lights moves the pad. Pinned by test to never slip back
+/// under the buttons.
+pub(crate) const SIDEBAR_HEADER_TOP_PAD: f32 = super::view::TRAFFIC_LIGHT_BOTTOM + 6.0;
 
 /// Scroll state for the session list (issue #40): the process owns one
 /// main window, so one shared handle binds the list viewport to its
@@ -141,35 +149,41 @@ impl ShellView {
     /// real `+ New` button, with the visible search field underneath
     /// (issue #45).
     fn panel_header(&self, cx: &mut Context<Self>) -> gpui::Div {
-        // Issue #44: with the OS title bar hidden the header top row is
-        // the window drag region (traffic lights float over the
-        // content). Child controls keep their own hitboxes, so `+ New`
-        // still clicks while the bare header drags the window.
-        let mut header = div().flex().flex_col().w_full().child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .w_full()
-                .px_2()
-                .pt_2()
-                .window_control_area(WindowControlArea::Drag)
-                .child(div().child("Sessions".to_string()))
-                .child(
-                    Button::new(ElementId::Name("new-run-btn".into()))
-                        .label("+ New")
-                        .primary()
-                        .small()
-                        .on_click(cx.listener(|this, _ev, window, _cx| {
-                            // Same live-run cap as the `n` key (issue #31):
-                            // a refused 11th run never steals focus.
-                            if this.request_new_run() {
-                                this.focus_term(window);
-                            }
-                        })),
-                ),
-        );
+        // Issues #44/#51: with the OS title bar hidden the header is
+        // the window drag region, and its top strip clears the native
+        // traffic lights (Finder-style: lights above, content below).
+        // Child controls keep their own hitboxes, so `+ New` still
+        // clicks while the bare header drags the window.
+        let mut header = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .pt(px(SIDEBAR_HEADER_TOP_PAD))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .px_2()
+                    .pt_2()
+                    .window_control_area(WindowControlArea::Drag)
+                    .child(div().child("Sessions".to_string()))
+                    .child(
+                        Button::new(ElementId::Name("new-run-btn".into()))
+                            .label("+ New")
+                            .primary()
+                            .small()
+                            .on_click(cx.listener(|this, _ev, window, _cx| {
+                                // Same live-run cap as the `n` key (issue #31):
+                                // a refused 11th run never steals focus.
+                                if this.request_new_run() {
+                                    this.focus_term(window);
+                                }
+                            })),
+                    ),
+            );
         if !self.app.sessions.is_empty() {
             header = header.child(self.search_row(cx));
         }
@@ -344,6 +358,65 @@ impl ShellView {
             .children(links)
     }
 
+    /// Live-group header (issues #39/#52): a static row with the same
+    /// metrics as the component label it replaces (`h_8`, `px_2`,
+    /// `text_xs`), but in the explicit sidebar-header color — 7.06 on
+    /// the always-dark panel in both modes, where the theme's
+    /// 70%-opacity label drops to 1.07 in light mode.
+    fn group_header(label: String) -> gpui::Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_shrink_0()
+            .h_8()
+            .px_2()
+            .text_xs()
+            .text_color(rgb(super::theme::SIDEBAR_HEADER_FG))
+            .child(label)
+    }
+
+    /// History section header (issues #39/#55): the whole row is the
+    /// expand affordance — click, `h`, or Enter on a hidden history
+    /// selection all funnel through
+    /// [`ShellView::toggle_history_expanded`], and the chevron + count
+    /// read state at render so nothing desyncs. Full-brightness text
+    /// (11.07) marks it interactive; hover adds a subtle pill; while
+    /// the selection hides inside, the accent pill anchors it — the
+    /// same theme-internal pair the rows use, legible in both modes.
+    fn history_header(
+        &self,
+        count: usize,
+        expanded: bool,
+        selected_inside: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = format!("{} History ({count})", if expanded { "▾" } else { "▸" });
+        let mut row = div()
+            .id(ElementId::Name("history-toggle".into()))
+            .flex()
+            .flex_row()
+            .items_center()
+            .h_8()
+            .px_2()
+            .rounded(px(6.0))
+            .text_xs()
+            .text_color(rgb(super::theme::SIDEBAR_FG))
+            .child(label)
+            .on_click(cx.listener(|this, _ev, _window, _cx| {
+                this.toggle_history_expanded();
+            }));
+        if selected_inside {
+            row = row
+                .font_medium()
+                .bg(cx.theme().sidebar_accent)
+                .text_color(cx.theme().sidebar_accent_foreground);
+        } else {
+            row = row.hover(|this| this.bg(rgba(0xffffff14)));
+        }
+        row.into_any_element()
+    }
+
     pub(crate) fn render_runs(&self, cx: &mut Context<Self>, viewport_w: f32) -> AnyElement {
         // Header with a real button: sessions start here, not at a key hint.
         // The footer carries the status line (issue #32), so the app name
@@ -354,8 +427,8 @@ impl ShellView {
             .flex_col()
             .h_full()
             .w(px(self.app.sidebar_width()))
-            .bg(rgb(PANEL_BG))
-            .text_color(rgb(PANEL_FG))
+            .bg(rgb(super::theme::SIDEBAR_BG))
+            .text_color(rgb(super::theme::SIDEBAR_FG))
             .child(self.panel_header(cx));
         if self.app.sessions.is_empty() {
             // No list to scroll: a spacer keeps the footer pinned to the
@@ -380,20 +453,26 @@ impl ShellView {
             if items.is_empty() {
                 continue;
             }
-            let group = SidebarGroup::new(format!(
-                "{marker} {} ({})",
-                section_title(status),
-                items.len()
-            ))
-            .child(SidebarMenu::new().children(items));
-            list = list.child(group);
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .child(Self::group_header(format!(
+                        "{marker} {} ({})",
+                        section_title(status),
+                        items.len()
+                    )))
+                    .child(SidebarMenu::new().children(items)),
+            );
         }
-        // History (issue #39): its own count so nothing looks silently
-        // dropped, collapsed by default, expanded by click or `h`. Rows
-        // are siblings of the toggle (never a submenu), so no internal
-        // open-state can desync from `history_expanded`. The toggle row
-        // highlights while the selection sits inside collapsed History,
-        // so a hidden selection still has a visible anchor.
+        // History (issues #39/#55): its own count so nothing looks
+        // silently dropped. The header row is the expand affordance
+        // (click/`h`/Enter); rows render only when expanded, as
+        // siblings of the header (never a submenu), so no internal
+        // open-state can desync from `history_expanded`. The header
+        // highlights while the selection sits inside, so a hidden
+        // selection still has a visible anchor.
         let matching_history: Vec<usize> = history
             .into_iter()
             .filter(|i| self.app.matches_filter(&self.app.sessions[*i]))
@@ -401,22 +480,19 @@ impl ShellView {
         if !matching_history.is_empty() {
             let expanded = self.app.history_expanded;
             let selected_inside = matching_history.contains(&self.app.selected);
-            let mut items = vec![SidebarMenuItem::new(if expanded {
-                "▾ Hide history"
-            } else {
-                "▸ Show history"
-            })
-            .active(selected_inside)
-            .on_click(cx.listener(|this, _ev, _window, _cx| {
-                this.app.toggle_history();
-            }))];
+            let mut group = div().flex().flex_col().w_full().child(self.history_header(
+                matching_history.len(),
+                expanded,
+                selected_inside,
+                cx,
+            ));
             if expanded {
-                items.extend(matching_history.iter().map(|i| self.session_row(cx, *i)));
+                group = group.child(
+                    SidebarMenu::new()
+                        .children(matching_history.iter().map(|i| self.session_row(cx, *i))),
+                );
             }
-            list = list.child(
-                SidebarGroup::new(format!("History ({})", matching_history.len()))
-                    .child(SidebarMenu::new().children(items)),
-            );
+            list = list.child(group);
         }
         panel
             .child(
@@ -638,7 +714,7 @@ mod tests {
     #[test]
     fn h_key_toggles_history() {
         // Issue #39: expanding/collapsing works by keyboard (`h`) as
-        // well as by mouse (the toggle row click in `render_runs`).
+        // well as by mouse (the History header click in `render_runs`).
         let mut view = mixed_shell();
         assert!(!view.app.history_expanded);
         assert_eq!(
@@ -651,6 +727,106 @@ mod tests {
             super::super::nav::NavAction::None
         );
         assert!(!view.app.history_expanded);
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn sidebar_header_clears_the_traffic_lights() {
+        // Issue #51: the `Sessions` row starts below the native lights
+        // (which end at POS_Y + DIAMETER), so no label ever sits under
+        // the buttons. The window position is width-independent, so one
+        // assertion covers wide and narrow mode. All-constant by
+        // design: it pins the layout contract against future edits.
+        use super::super::view::{TRAFFIC_LIGHT_DIAMETER, TRAFFIC_LIGHT_POS_Y};
+        assert!(
+            SIDEBAR_HEADER_TOP_PAD >= TRAFFIC_LIGHT_POS_Y + TRAFFIC_LIGHT_DIAMETER,
+            "header pad {SIDEBAR_HEADER_TOP_PAD} must clear the lights"
+        );
+    }
+
+    #[test]
+    fn enter_reveals_a_hidden_history_selection() {
+        // Issue #55: Enter on a selection tucked inside collapsed
+        // History expands (showing its rows) instead of focusing the
+        // terminal of a dead run; once visible, Enter focuses the
+        // terminal as before.
+        use super::super::nav::NavAction;
+        let mut view = mixed_shell();
+        view.app.focus_nav();
+        assert!(!view.app.history_expanded);
+        view.app.selected = 1; // "hist", the historic entry
+        assert!(!view.selection_visible());
+        assert!(view.enter_expands_history());
+        assert_eq!(view.nav_action("enter", false), NavAction::None);
+        assert!(view.app.history_expanded);
+        assert!(view.selection_visible());
+        // Visible now, no link focused: Enter focuses the terminal.
+        assert!(!view.enter_expands_history());
+        assert_eq!(view.nav_action("enter", false), NavAction::FocusTerm);
+        // A visible live selection never expands: Enter focuses.
+        view.app.selected = 0;
+        assert!(!view.enter_expands_history());
+        assert_eq!(view.nav_action("enter", false), NavAction::FocusTerm);
+    }
+
+    #[test]
+    fn jk_and_paging_move_inside_expanded_history() {
+        // Issue #55: with History expanded, j/k and PgUp/PgDn travel
+        // through history rows like any other row; collapsed, a lone
+        // live run keeps the selection instead of entering History.
+        use super::super::nav::NavAction;
+        let mut view = ShellView::new_with_sessions(vec![
+            sess("live", Status::Idle, 100, None),
+            sess("h1", Status::Idle, 3, Some("s-1")),
+            sess("h2", Status::Idle, 2, Some("s-2")),
+            sess("h3", Status::Idle, 1, Some("s-3")),
+        ]);
+        view.app.focus_nav();
+        let live = view
+            .app
+            .sessions
+            .iter()
+            .position(|s| s.id == "live")
+            .expect("live session present");
+        let n = view.app.sessions.len();
+        assert_eq!(n, 4);
+        // Collapsed: everything but the live run hides, so j/k wrap in
+        // place and paging stays put.
+        assert!(!view.app.history_expanded);
+        view.app.selected = live;
+        assert_eq!(view.nav_action("j", false), NavAction::None);
+        assert_eq!(view.app.selected, live, "j skips collapsed History");
+        assert_eq!(view.nav_action("k", false), NavAction::None);
+        assert_eq!(view.app.selected, live, "k skips it backwards too");
+        assert_eq!(view.nav_action("pagedown", false), NavAction::None);
+        assert_eq!(view.app.selected, live, "page skips it as well");
+        // Expanded through the same funnel the header click uses: j
+        // walks the whole list, history rows included.
+        view.toggle_history_expanded();
+        assert!(view.app.history_expanded);
+        view.app.selected = live;
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..n {
+            seen.insert(view.app.selected);
+            assert_eq!(view.nav_action("j", false), NavAction::None);
+        }
+        assert_eq!(seen.len(), n, "every row reachable by j when expanded");
+        // Paging from the head lands inside History.
+        view.app.selected = 0;
+        assert_eq!(view.nav_action("pagedown", false), NavAction::None);
+        assert_eq!(view.app.selected, crate::app::PAGE_STEP.min(n - 1));
+        let landed = view.app.sessions[view.app.selected].clone();
+        assert!(
+            view.is_history(&landed),
+            "page lands on a history row when expanded"
+        );
+        assert!(view.selection_visible());
+        // Collapsing again hides them: j from live stays on live.
+        view.toggle_history_expanded();
+        assert!(!view.app.history_expanded);
+        view.app.selected = live;
+        assert_eq!(view.nav_action("j", false), NavAction::None);
+        assert_eq!(view.app.selected, live);
     }
 
     #[test]

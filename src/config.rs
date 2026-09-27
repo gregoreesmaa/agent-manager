@@ -46,6 +46,11 @@ pub struct Config {
     /// and persist it; narrow viewports still collapse the panel).
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
+    /// History section expansion (issue #55): toggled by the History
+    /// header click, `h`, or Enter on a hidden history selection, and
+    /// restored on launch. Absent in older files means collapsed.
+    #[serde(default)]
+    pub history_expanded: bool,
 }
 
 /// Default terminal-pane font: OFL-licensed, full box-drawing + block
@@ -177,6 +182,7 @@ impl Default for Config {
             theme: ThemePreference::default(),
             terminal: TerminalConfig::default(),
             sidebar_width: default_sidebar_width(),
+            history_expanded: false,
         }
     }
 }
@@ -267,6 +273,22 @@ mod tests {
         let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.sidebar_width, 300.0);
         assert_eq!(back.terminal.font_size, 17.0);
+    }
+
+    #[test]
+    fn history_expansion_defaults_collapsed_and_survives_json() {
+        // Issue #55: expansion persists in the same local config file;
+        // files written before the key existed (or with it absent)
+        // still load as collapsed.
+        assert!(!Config::default().history_expanded);
+        let partial: Config = serde_json::from_str(r#"{"theme": "dark"}"#).unwrap();
+        assert!(!partial.history_expanded);
+        let cfg = Config {
+            history_expanded: true,
+            ..Default::default()
+        };
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert!(back.history_expanded);
     }
 
     #[test]

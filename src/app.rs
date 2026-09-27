@@ -393,8 +393,10 @@ pub struct App {
     /// Title-substring filter (issue #29): the panel shows only matching
     /// runs, in unchanged sort order. Empty means unfiltered.
     pub filter: String,
-    /// History section expansion (issue #39): collapsed by default on
-    /// every launch, toggled by click/`h`. In-memory for the session.
+    /// History section expansion (issues #39/#55): collapsed unless the
+    /// persisted config says expanded (restored on launch via
+    /// [`Self::set_config`]); toggled by click/`h`/Enter, mirrored
+    /// into the config so every toggle persists.
     pub history_expanded: bool,
     pending_spawn: Option<SpawnKind>,
     /// Placeholder-title counter (row identity is the UUID on
@@ -431,8 +433,11 @@ impl App {
     }
 
     /// Install the user configuration (loaded once at startup in
-    /// `main`). Tests keep the default (no extra flags).
+    /// `main`). Tests keep the default (no extra flags). The persisted
+    /// History expansion (issue #55) restores here, so a restart keeps
+    /// the toggle state the last session left.
     pub fn set_config(&mut self, config: Config) {
+        self.history_expanded = config.history_expanded;
         self.config = config;
     }
 
@@ -521,10 +526,13 @@ impl App {
     }
 
     /// Toggle the History section between collapsed and expanded
-    /// (issue #39). Collapsed by default; the selection is left alone
-    /// so a selected history entry keeps its position.
+    /// (issues #39/#55). Collapsed by default; the selection is left
+    /// alone so a selected history entry keeps its position. Mirrored
+    /// into the config — the ShellView toggle funnel persists it, so
+    /// the state survives restarts.
     pub fn toggle_history(&mut self) {
         self.history_expanded = !self.history_expanded;
+        self.config.history_expanded = self.history_expanded;
     }
 
     /// Replace the title filter, snapping the selection into the matches
@@ -1300,6 +1308,25 @@ mod tests {
         app.toggle_history();
         assert!(!app.history_expanded);
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn history_toggle_mirrors_config_and_restores_on_launch() {
+        // Issue #55: the toggle writes through to the config (what the
+        // ShellView funnel persists), and installing a config restores
+        // the bit — a restart keeps the last expansion state.
+        let mut app = App::new(vec![sess("a", Status::Idle, 1)]);
+        app.toggle_history();
+        assert!(app.config.history_expanded);
+        // A fresh launch with that saved config starts expanded.
+        let saved = app.config.clone();
+        let mut relaunched = App::new(vec![sess("a", Status::Idle, 1)]);
+        assert!(!relaunched.history_expanded);
+        relaunched.set_config(saved);
+        assert!(relaunched.history_expanded);
+        // And collapsing restores collapsed.
+        relaunched.toggle_history();
+        assert!(!relaunched.config.history_expanded);
     }
 
     #[test]

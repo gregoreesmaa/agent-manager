@@ -47,7 +47,10 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
         ("j / k", "move selection between sessions"),
         ("↑ / ↓", "move selection between sessions"),
         ("PgUp / PgDn", "page the session list"),
-        ("h", "collapse/expand the History section"),
+        (
+            "h",
+            "collapse/expand History (Enter reveals a hidden selection)",
+        ),
         (
             "Shift+PgUp / Shift+PgDn",
             "scroll the run's retained output (pager)",
@@ -147,10 +150,37 @@ impl ShellView {
         };
     }
 
+    /// Toggle History expansion and persist it (issue #55): the single
+    /// funnel for the `h` key, Enter on a hidden history selection,
+    /// and the History header click — every path persists, so restarts
+    /// restore the state. Skipped in unit-test builds (same split as
+    /// the comfort-key persist): tests cover the state flip here while
+    /// the save/load roundtrip is covered in `config.rs`.
+    pub(crate) fn toggle_history_expanded(&mut self) {
+        self.app.toggle_history();
+        #[cfg(not(test))]
+        let _ = self.app.save_config();
+    }
+
+    /// Enter reveals a hidden history selection (issue #55): the
+    /// selection sits inside collapsed History (and passes the filter,
+    /// so expanding actually shows it), so Enter expands instead of
+    /// focusing the terminal of a dead run. False whenever the
+    /// selection is already visible — normal Enter behavior applies.
+    pub(crate) fn enter_expands_history(&self) -> bool {
+        if self.app.history_expanded {
+            return false;
+        }
+        self.app
+            .selected_session()
+            .is_some_and(|s| self.is_history(s) && self.app.matches_filter(s))
+    }
+
     /// Selection visibility (issue #39): the selected row renders iff it
     /// passes the title filter and is not tucked inside collapsed
-    /// History. A hidden selection keeps working (Enter/`r` still act on
-    /// it) and the History toggle row highlights as its visible anchor.
+    /// History. A hidden selection keeps working (Enter expands to
+    /// reveal it, `r` still acts on it) and the History header
+    /// highlights as its visible anchor.
     pub(crate) fn selection_visible(&self) -> bool {
         match self.app.selected_session() {
             None => true,
@@ -246,7 +276,7 @@ impl ShellView {
                 NavAction::None
             }
             ("h", false) => {
-                self.app.toggle_history();
+                self.toggle_history_expanded();
                 NavAction::None
             }
             ("n", false) => {
@@ -264,6 +294,12 @@ impl ShellView {
             }
             ("i", false) => NavAction::FocusTerm,
             ("enter", _) if self.focused_link_url().is_some() => NavAction::OpenLink,
+            // Issue #55: Enter on a hidden history selection expands
+            // History (revealing it) instead of focusing the terminal.
+            ("enter", _) if self.enter_expands_history() => {
+                self.toggle_history_expanded();
+                NavAction::None
+            }
             ("enter", _) => NavAction::FocusTerm,
             // Yank (issue #49): with a link focused this copies the
             // link without opening it; otherwise it copies the

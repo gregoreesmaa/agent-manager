@@ -18,6 +18,20 @@ pub(crate) const SURFACE_BG: u32 = 0x11111b;
 #[cfg(test)]
 pub(crate) const BAR_BG: u32 = 0x1e1e2e;
 
+/// Sessions-panel surface (issue #52): the panel keeps this dark
+/// surface in both theme modes, so one explicit palette covers dark
+/// and light — the component theme's translucent label colors (built
+/// for a light sidebar) never touch it.
+pub(crate) const SIDEBAR_BG: u32 = 0x1e1e2e;
+/// Sessions-panel primary text: rows and the interactive History
+/// toggle. 11.07 on [`SIDEBAR_BG`].
+pub(crate) const SIDEBAR_FG: u32 = 0xd4d4d4;
+/// Sessions-panel section-header text (issue #52): dimmer than rows
+/// for the Finder-style hierarchy, still 7.06 on [`SIDEBAR_BG`] —
+/// the component's 70%-opacity theme label it replaces drops to 1.07
+/// in light mode (dark `#171717` text on this dark surface).
+pub(crate) const SIDEBAR_HEADER_FG: u32 = 0xAAAAAA;
+
 /// Row marker per status: always non-blank, Attention distinct from the
 /// rest, so runs are distinguishable with color removed.
 pub(crate) fn row_marker(status: Status) -> &'static str {
@@ -62,6 +76,25 @@ mod tests {
         // surfaces, with headroom (8.07 / 7.06, independently checked).
         assert!(contrast_ratio(SECONDARY_FG, SURFACE_BG) >= 4.5);
         assert!(contrast_ratio(SECONDARY_FG, BAR_BG) >= 4.5);
+    }
+
+    #[test]
+    fn sidebar_text_clears_floor_in_both_modes() {
+        // Issue #52: the panel keeps SIDEBAR_BG in both theme modes,
+        // so these explicit colors are the whole story — rows/toggle
+        // at 11.07, section headers at 7.06. The component label they
+        // replace (`sidebar_foreground` at 70% over this surface)
+        // measures 7.94 in dark mode but 1.07 in light mode.
+        for (name, fg) in [
+            ("row/toggle", SIDEBAR_FG),
+            ("section header", SIDEBAR_HEADER_FG),
+        ] {
+            let ratio = contrast_ratio(fg, SIDEBAR_BG);
+            assert!(
+                ratio >= 4.5,
+                "sidebar {name} text too dim: {ratio:.2} (measured)"
+            );
+        }
     }
 
     #[test]
