@@ -123,16 +123,16 @@ jobs:
 
   windows:
     # Native Windows WinUI shell (issue #64): the core library plus the
-    # CMake-built C suite against the real C ABI, plus the MSVC-built
-    # WinUI 3 + ConPTY shell (unpackaged exe, no MSIX — packaging lives
-    # with the CI/packaging issue, see packaging/README.md). Unlike the
+    # CMake-built C suite against the real C ABI, plus the live ConPTY
+    # converse smoke. The MSVC-built WinUI 3 shell is dev-machine-only
+    # (unpackaged exe, no MSIX — see packaging/README.md). Unlike the
     # Linux job this one runs `cargo test --all-targets`, per the
     # issue's acceptance criteria: the gpui binary is macOS-gated in
     # src/main.rs, so on this runner that exercises the full portable
     # lib suite plus a stub bin, while the per-shell proof lives in the
     # CMake/CTest and WinUI steps. Runs on windows-latest only and
     # touches nothing outside native/windows + the core staticlib.
-    # Ships an unpackaged zip of the C suite + WinUI exe.
+    # Ships an unpackaged zip of the portable C suite.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -163,12 +163,12 @@ jobs:
           powershell -ExecutionPolicy Bypass
           -File native/windows/tests/smoke_live.ps1
           -Smoke ./native/windows/build/Release/am-win-smoke.exe
-      - name: package (unpackaged zip; MSIX stubbed — see packaging/README.md)
+      - name: package portable suite (unpackaged zip; MSIX stubbed — see packaging/README.md)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Compress-Archive `
-            -Path native/windows/build/Release/*, native/windows/bin/x64/Release/* `
+            -Path native/windows/build/Release/* `
             -DestinationPath dist/AgentManagerWindows.zip
       - name: upload artifact
         uses: actions/upload-artifact@v4
