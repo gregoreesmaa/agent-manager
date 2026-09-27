@@ -5,6 +5,21 @@
   The core staticlib (agent_manager.lib, from building the cargo lib
   target) links in via CoreLibDir (override with /p:CoreLibDir=dir). -->
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="NuGet">
+    <!-- Native restore contract, mirroring the official unpackaged C++ sample
+      (WindowsAppSDK-Samples Samples/Unpackaged/cpp-console-unpackaged,
+      refs #64): without NuGetTargetMoniker, restore writes a framework the
+      build's ResolveNuGetPackageAssets does not expect (run 36332867325:
+      `does not reference "UAP,Version=v10.0"`). The sample uses
+      native,Version=v0.0 (plain Win32 console); this project keeps
+      ApplicationType=Windows Store for native XAML codegen, so the build
+      demands UAP v10.0 and restore must write it. All four restored packages
+      accept UAP10.0 (WebView2 declares empty native0.0 + UAP10.0 groups;
+      AppSDK/CppWinRT/BuildTools are framework-agnostic). -->
+    <NuGetTargetMoniker>UAP,Version=v10.0</NuGetTargetMoniker>
+    <NuGetTargetPlatformIdentifier>Windows</NuGetTargetPlatformIdentifier>
+    <NuGetTargetPlatformVersion>$(WindowsTargetPlatformVersion)</NuGetTargetPlatformVersion>
+  </PropertyGroup>
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
       <Configuration>Debug</Configuration>
@@ -133,9 +148,9 @@
       <CompileAs>CompileAsC</CompileAs>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
-    <!-- Floating 1.6 servicing line: CI restores the latest 1.6 patch,
-      so no exact build number is pinned here. -->
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
+    <!-- Pinned to the exact 1.6 build CI resolved (run 36332867325,
+      refs #64): a floating 1.6.* re-resolves every run and drifts. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250602001" />
     <!-- C++/WinRT MSBuild support (midlrt.exe + cppwinrt.exe): without this,
       MIDL 3.0 .idl files fall through to the classic COM MIDL compiler,
       which fails with MIDL2025 near "namespace" (run 36328939162). -->

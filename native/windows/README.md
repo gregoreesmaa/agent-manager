@@ -46,9 +46,8 @@ msbuild native/windows/AgentManagerWinUI.vcxproj `
   /p:Configuration=Release /p:Platform=x64
 ```
 
-`Microsoft.WindowsAppSDK` floats on the 1.6 servicing line
-(`Version="1.6.*"` in the vcxproj), so restores pick up the latest 1.6
-patch without pinning an exact build number here.
+`Microsoft.WindowsAppSDK` is pinned to the exact 1.6 build CI resolved
+(`Version="1.6.250602001"` in the vcxproj) so restores never drift.
 
 ## Tests
 
