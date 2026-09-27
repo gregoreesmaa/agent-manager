@@ -21,3 +21,26 @@ gpui = "0.2.2"
 # 0.2.2 line. Pinned to 0.5.x: 0.6+ moved to the gpui-pre 0.3.6 fork and
 # would force a framework migration (see `gpui_version_is_pinned`).
 gpui-component = "=0.5.1"
+
+# Release size tuning (issue #47). Baseline (no tuning): 14,640,416 bytes
+# (~14MB), most of it GUI-stack .text that symbols/LTO cannot remove
+# (cargo bloat top crates: gpui 1.5MiB, std 1021KiB, gpui-component
+# 993KiB, usvg 346KiB, regex-automata 298KiB). A 10x shrink is infeasible
+# with the gpui stack; realistic floor is ~6-7MB.
+[profile.release]
+# `strip = true` drops the symbol table from the emitted binary. Pure win:
+# no runtime effect, only debuggability of the shipped artifact (crash
+# backtraces still work via panic messages; use a debug build to profile).
+# Measured: 14,640,416 -> 11,829,856 bytes (-19%).
+strip = true
+# `opt-level = "z"` optimizes for size over speed. GUI frame cost is
+# negligible for this app (mostly idle event loop + PTY pump), so trading
+# a little throughput for bytes is correct here.
+opt-level = "z"
+# Fat LTO lets LLVM optimize across crate boundaries (the GUI stack is
+# dozens of crates, so cross-crate inlining/dead-code elimination matters).
+# Cost: notably slower release builds; worth it for shipped artifacts.
+lto = true
+# Single codegen unit unlocks the full effect of LTO/inlining at the cost
+# of parallel codegen. Paired with `lto` above.
+codegen-units = 1

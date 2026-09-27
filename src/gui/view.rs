@@ -8,12 +8,9 @@
 //! in [`super::layout`].
 
 use gpui::{
-    div, font, px, rgb, Context, ElementId, Font, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, Size,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, WindowOptions,
     div, px, rgb, Context, ElementId, Font, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, Size,
-    StatefulInteractiveElement, Styled, Window, WindowOptions,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Size,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, WindowOptions,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::Sizable as _;

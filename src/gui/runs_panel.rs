@@ -31,8 +31,8 @@
 //!   status row marker.
 
 use gpui::{
-    div, px, rgb, AnyElement, ClickEvent, Context, ElementId, InteractiveElement,
-    IntoElement, ParentElement, ScrollHandle, StatefulInteractiveElement, Styled, WindowControlArea,
+    div, px, rgb, AnyElement, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
+    ParentElement, ScrollHandle, StatefulInteractiveElement, Styled, WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -469,6 +469,7 @@ mod tests {
             provider_session_id: provider.map(|s| s.into()),
             title_locked: true,
             pending_input: String::new(),
+            cwd: None,
         }
     }
 
