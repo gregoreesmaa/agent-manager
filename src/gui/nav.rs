@@ -47,6 +47,7 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
         ("j / k", "move selection between sessions"),
         ("↑ / ↓", "move selection between sessions"),
         ("PgUp / PgDn", "page the session list"),
+        ("h", "collapse/expand the History section"),
         (
             "Shift+PgUp / Shift+PgDn",
             "scroll the run's retained output (pager)",
@@ -146,6 +147,81 @@ impl ShellView {
         };
     }
 
+    /// Selection visibility (issue #39): the selected row renders iff it
+    /// passes the title filter and is not tucked inside collapsed
+    /// History. A hidden selection keeps working (Enter/`r` still act on
+    /// it) and the History toggle row highlights as its visible anchor.
+    pub(crate) fn selection_visible(&self) -> bool {
+        match self.app.selected_session() {
+            None => true,
+            Some(s) => {
+                self.app.matches_filter(s) && (self.app.history_expanded || !self.is_history(s))
+            }
+        }
+    }
+
+    /// j/k step that skips collapsed History (issue #39): a single step
+    /// when the landing row is visible, otherwise keep stepping in the
+    /// same direction — at most one full cycle, so an all-hidden list
+    /// keeps its selection instead of looping forever.
+    pub(crate) fn step_selection(&mut self, forward: bool) {
+        let n = self.app.sessions.len();
+        if n == 0 {
+            return;
+        }
+        let start = self.app.selected;
+        for _ in 0..n {
+            if forward {
+                self.app.select_next();
+            } else {
+                self.app.select_prev();
+            }
+            if self.app.selected == start || self.selection_visible() {
+                break;
+            }
+        }
+        self.clear_selection();
+        self.link_cursor = None;
+    }
+
+    /// PgUp/PgDn that skip collapsed History (issue #39) while paging
+    /// keeps working (issue #40): the page jump, then single steps out
+    /// of hidden rows — restoring the pre-page selection when the whole
+    /// direction is hidden.
+    pub(crate) fn page_selection(&mut self, forward: bool) {
+        let n = self.app.sessions.len();
+        if n == 0 {
+            return;
+        }
+        let start = self.app.selected;
+        if forward {
+            self.app.select_page_next();
+        } else {
+            self.app.select_page_prev();
+        }
+        if self.selection_visible() {
+            self.clear_selection();
+            self.link_cursor = None;
+            return;
+        }
+        let landed = self.app.selected;
+        for _ in 0..n {
+            if forward {
+                self.app.select_next();
+            } else {
+                self.app.select_prev();
+            }
+            if self.app.selected == landed || self.selection_visible() {
+                break;
+            }
+        }
+        if !self.selection_visible() {
+            self.app.selected = start;
+        }
+        self.clear_selection();
+        self.link_cursor = None;
+    }
+
     /// Nav-focus key dispatch, pure state (headlessly testable). The caller
     /// applies window focus and clipboard effects for the returned action.
     /// `muse` captures keys if and only if focus is Terminal — nav keys
@@ -154,27 +230,23 @@ impl ShellView {
         let action = match (key, ctrl) {
             ("q", false) | ("escape", _) => NavAction::Quit,
             ("j", false) | ("down", _) => {
-                self.app.select_next();
-                self.clear_selection();
-                self.link_cursor = None;
+                self.step_selection(true);
                 NavAction::None
             }
             ("k", false) | ("up", _) => {
-                self.app.select_prev();
-                self.clear_selection();
-                self.link_cursor = None;
+                self.step_selection(false);
                 NavAction::None
             }
             ("pagedown", _) => {
-                self.app.select_page_next();
-                self.clear_selection();
-                self.link_cursor = None;
+                self.page_selection(true);
                 NavAction::None
             }
             ("pageup", _) => {
-                self.app.select_page_prev();
-                self.clear_selection();
-                self.link_cursor = None;
+                self.page_selection(false);
+                NavAction::None
+            }
+            ("h", false) => {
+                self.app.toggle_history();
                 NavAction::None
             }
             ("n", false) => {

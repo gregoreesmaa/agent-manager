@@ -201,6 +201,7 @@ mod tests {
             title: format!("{id} title"),
             project: "proj".into(),
             status: Status::Working,
+            harness: crate::app::HARNESS_MUSE.into(),
             last_active: 7,
             provider_session_id: None,
             pr_links: vec!["https://github.com/acme/app/pull/1".into()],

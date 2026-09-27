@@ -136,6 +136,7 @@ impl Provider for MuseCliProvider {
                         .or(parsed.project)
                         .unwrap_or_else(|| "muse".to_string()),
                     status: self.classify(&dir, &tail),
+                    harness: crate::app::HARNESS_MUSE.to_string(),
                     last_active: mtime,
                     pr_links: parsed.pr_links,
                     related_links: parsed.related_links,

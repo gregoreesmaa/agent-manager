@@ -26,6 +26,32 @@ pub const MAX_STORED_LINKS: usize = 50;
 /// fold behind an `N more` disclosure ([`visible_links`]).
 pub const MAX_VISIBLE_LINKS: usize = 20;
 
+/// Harness id for sessions backed by the Muse CLI (issue #46): every
+/// current session reports this. Kept as a plain string (not an enum)
+/// so unknown/future harness ids survive a save/load roundtrip and
+/// render via the generic fallback instead of failing to parse.
+pub const HARNESS_MUSE: &str = "muse";
+
+/// Default harness for newly spawned runs and for persisted sessions
+/// predating the field (serde fills it in): everything today is muse.
+pub fn default_harness() -> String {
+    HARNESS_MUSE.to_string()
+}
+
+/// `(glyph, short tag)` badge for a harness id (issue #46): distinct
+/// per known harness, generic fallback for unknown ids — never blank.
+/// Glyphs avoid the [`Status`] row markers (`!`, `·`, `>`), and the
+/// short tag keeps rows distinguishable with color removed. Adding a
+/// harness later only registers a new id + icon arm here.
+pub fn harness_badge(harness: &str) -> (&'static str, &'static str) {
+    match harness {
+        "muse" => ("⬢", "mu"),
+        "codex" => ("⬣", "cx"),
+        "claude" => ("▲", "cc"),
+        _ => ("○", "??"),
+    }
+}
+
 /// One chat/agent conversation surfaced by a [`crate::providers::Provider`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatSession {
@@ -33,6 +59,10 @@ pub struct ChatSession {
     pub title: String,
     pub project: String,
     pub status: Status,
+    /// Which agent harness backs the run (issue #46), set at
+    /// discovery/spawn time. All current sessions are [`HARNESS_MUSE`].
+    #[serde(default = "default_harness")]
+    pub harness: String,
     /// Unix seconds of last observed activity (for display only).
     pub last_active: i64,
     /// GitHub PR URLs extracted from the conversation transcript.
@@ -309,6 +339,9 @@ pub struct App {
     /// Title-substring filter (issue #29): the panel shows only matching
     /// runs, in unchanged sort order. Empty means unfiltered.
     pub filter: String,
+    /// History section expansion (issue #39): collapsed by default on
+    /// every launch, toggled by click/`h`. In-memory for the session.
+    pub history_expanded: bool,
     pending_spawn: Option<SpawnKind>,
     next_run: usize,
     status_msg: Option<(String, std::time::Instant)>,
@@ -332,6 +365,7 @@ impl App {
             selected: 0,
             focus: Focus::Nav,
             filter: String::new(),
+            history_expanded: false,
             pending_spawn: None,
             next_run: 0,
             status_msg: None,
@@ -428,6 +462,13 @@ impl App {
             .filter(|(_, s)| self.matches_filter(s))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// Toggle the History section between collapsed and expanded
+    /// (issue #39). Collapsed by default; the selection is left alone
+    /// so a selected history entry keeps its position.
+    pub fn toggle_history(&mut self) {
+        self.history_expanded = !self.history_expanded;
     }
 
     /// Replace the title filter, snapping the selection into the matches
@@ -663,6 +704,7 @@ impl App {
             title: animal_name(n),
             project: current_dir_name(),
             status: Status::Working,
+            harness: default_harness(),
             last_active: now_secs(),
             pr_links: vec![],
             related_links: vec![],
@@ -742,6 +784,7 @@ mod tests {
             title: id.into(),
             project: "proj".into(),
             status,
+            harness: HARNESS_MUSE.into(),
             last_active,
             pr_links: vec![],
             related_links: vec![],
@@ -1127,6 +1170,72 @@ mod tests {
         // Retry reuses the same run id: no extra entry.
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.sessions[0].id, "run-1");
+    }
+
+    #[test]
+    fn harness_badges_cover_known_ids_with_generic_fallback() {
+        // Issue #46: every known harness maps to a distinct non-blank
+        // badge; unknown/future ids render the generic fallback, never
+        // a blank or broken row.
+        let muse = harness_badge("muse");
+        let codex = harness_badge("codex");
+        let claude = harness_badge("claude");
+        let unknown = harness_badge("future-harness");
+        for (glyph, short) in [muse, codex, claude, unknown] {
+            assert!(!glyph.is_empty() && !short.is_empty());
+        }
+        assert_ne!(muse, codex);
+        assert_ne!(muse, claude);
+        assert_ne!(codex, claude);
+        assert_eq!(unknown, ("○", "??"));
+        assert_eq!(harness_badge(""), ("○", "??"));
+        // Badge glyphs never collide with the status row markers, so
+        // the icon and the status cue stay distinguishable in
+        // monochrome (issue #8 bar).
+        for status in [Status::Attention, Status::Idle, Status::Working] {
+            let marker = crate::gui::theme::row_marker(status);
+            for (glyph, _) in [muse, codex, claude, unknown] {
+                assert_ne!(glyph, marker, "harness glyph vs {status:?} marker");
+            }
+        }
+    }
+
+    #[test]
+    fn harness_defaults_to_muse_and_survives_serde() {
+        // Issue #46: all current sessions report muse, including
+        // persisted runs predating the field.
+        assert_eq!(default_harness(), HARNESS_MUSE);
+        let mut app = App::new(vec![]);
+        app.start_new_session();
+        assert_eq!(app.sessions[0].harness, HARNESS_MUSE);
+        // Old runs.json entries without the field load as muse.
+        let old: ChatSession = serde_json::from_str(
+            r#"{"id":"a","title":"a","project":"p","status":"Idle","last_active":1,"pr_links":[],"related_links":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.harness, HARNESS_MUSE);
+        // Unknown future ids roundtrip instead of failing to parse.
+        let mut future = sess("f", Status::Idle, 1);
+        future.harness = "future-harness".into();
+        let text = serde_json::to_string(&future).unwrap();
+        let back: ChatSession = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.harness, "future-harness");
+        assert_eq!(harness_badge(&back.harness), ("○", "??"));
+    }
+
+    #[test]
+    fn history_starts_collapsed_and_toggles() {
+        // Issue #39: collapsed by default on every launch; the toggle
+        // flips both ways and leaves the selection alone.
+        let mut app = App::new(vec![sess("a", Status::Idle, 1)]);
+        assert!(!app.history_expanded);
+        app.selected = 0;
+        app.toggle_history();
+        assert!(app.history_expanded);
+        assert_eq!(app.selected, 0);
+        app.toggle_history();
+        assert!(!app.history_expanded);
+        assert_eq!(app.selected, 0);
     }
 
     #[test]

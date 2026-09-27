@@ -229,6 +229,7 @@ mod tests {
             title: "old work".into(),
             project: "muse".into(),
             status: Status::Idle,
+            harness: crate::app::HARNESS_MUSE.into(),
             last_active: 1,
             pr_links: vec!["https://github.com/acme/app/pull/9".into()],
             related_links: vec![],
