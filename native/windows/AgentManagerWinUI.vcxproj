@@ -31,6 +31,15 @@
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
     <ProjectName>AgentManagerWinUI</ProjectName>
+    <!-- Native XAML rules (run 36330128827, refs #64):
+      MarkupCompilePass1/CompileXaml live in VS's
+      Microsoft.Windows.UI.Xaml.Cpp.targets, imported only when
+      ApplicationType is Windows Store. Without it no *.xaml.g.h is
+      emitted and the .xaml.h includes fail with C1083. Unpackaged is
+      kept via AppContainerApplication=false + AppxPackage=false below. -->
+    <AppContainerApplication>false</AppContainerApplication>
+    <ApplicationType>Windows Store</ApplicationType>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
     <!-- WinUI 3, unpackaged: a plain exe, no MSIX (non-goal in #64). -->
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
