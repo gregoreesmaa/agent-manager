@@ -25,8 +25,10 @@ vt100 = "0.15"
 # The gpui shell (src/main.rs + src/gui/) is macOS-only. The core library
 # (src/lib.rs) is framework-free by contract (see docs/native-core-seam.md),
 # so the GUI-stack deps stay macOS-scoped: Linux links only the core
-# staticlib into the GTK shell (native/linux, issue #63) and never pays
-# for — or even compiles — the macOS GUI stack.
+# staticlib into the GTK shell (native/linux, issue #63), and Windows
+# links only agent_manager.lib into the WinUI shell (native/windows,
+# issue #64) — neither ever pays for, or even compiles, the macOS GUI
+# stack.
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = "0.2.2"
 # Native chrome components (Button, List, Sidebar, …) on the pinned gpui

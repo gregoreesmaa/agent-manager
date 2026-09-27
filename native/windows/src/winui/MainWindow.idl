@@ -1,0 +1,27 @@
+namespace AgentManagerWinUI
+{
+    [default_interface]
+    runtimeclass MainWindow : Microsoft.UI.Xaml.Window
+    {
+        MainWindow();
+
+        void NewButton_Click(
+            Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
+        void SaveButton_Click(
+            Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
+        void FindNextButton_Click(
+            Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
+        void FilterBox_TextChanged(
+            Object sender,
+            Microsoft.UI.Xaml.Controls.TextChangedEventArgs args);
+        void RosterList_SelectionChanged(
+            Object sender,
+            Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs args);
+        void ThemeBox_SelectionChanged(
+            Object sender,
+            Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs args);
+        void RootGrid_KeyDown(
+            Object sender,
+            Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);
+    }
+}

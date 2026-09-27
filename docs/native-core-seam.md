@@ -1,12 +1,14 @@
 # Native core seam (proposal)
 
-Status: proposal only — except for the first two consumers: `swift/`
+Status: proposal only — except for the three landed consumers: `swift/`
 (`AgentManagerMac`, #62) binds the C ABI below via SwiftTerm + SwiftUI
-(see `swift/README.md` for its wiring table), and `native/linux/`
+(see `swift/README.md` for its wiring table), `native/linux/`
 (`agent-manager-gtk`, #63) binds the same C ABI via GTK4/libadwaita +
-VTE (see `native/linux/README.md` for its wiring table). The rest of
-this doc records the audit result, the decoupling already landed, and
-the exact core API a future per-OS shell binds against.
+VTE (see `native/linux/README.md` for its wiring table), and
+`native/windows/` (`AgentManagerWinUI`, #64) binds it via WinUI 3 +
+ConPTY (see `native/windows/README.md` for its wiring table). The rest
+of this doc records the audit result, the decoupling already landed,
+and the exact core API a per-OS shell binds against.
 
 Volatility-shield rule (from `VISION-TECHNICAL.md`): no framework types
 in the core. Core = everything except `src/gui/` and `src/main.rs`.
@@ -251,6 +253,41 @@ The Linux shell is the portability proof: it links only the core
   (append-suffix hot path, scroll overlap, clear-and-replay, CRLF
   normalization), so both shells show identical screens from identical
   snapshots.
+
+### Windows notes (`native/windows/`, #64)
+
+The Windows shell closes the epic (macOS → Linux → Windows) with a
+WinUI 3 UI over the same C ABI. What future maintainers should know:
+
+- ConPTY lives in the core, not the shell: on Windows the core's
+  `EmbeddedPty` is ConPTY-backed (`portable-pty` uses the native
+  Console Pseudo-terminal API), so `bridge_spawn` *is* the ConPTY
+  spawn. The WinUI surface never creates a console — the same
+  single-emulator rule as Linux's "no PTY inside VTE", which keeps
+  exactly one line discipline and no double-echo.
+- The portable C core (`core_bridge`, `feed`, `smoke`) is shared
+  design, not shared files, with `native/linux/`: each shell vendors
+  its own copy so per-OS shells stay independently buildable (the
+  Windows copy adds only `extern "C"` guards for its C++ consumer).
+  `feed.c` is verbatim logic-identical; `am-win-feed-test` pins it.
+- Key encoding (`src/terminal_keys.h`) ports the Linux key controller
+  case for case but resolves printables through the thread layout
+  (`ToUnicode`), with AltGr-as-character documented at the one place
+  it diverges from the Linux Alt handling.
+- The hermetic live proof compiles `tests/fake_muse.c` to `muse.exe`
+  because CreateProcess cannot execute the shell-script fake the unix
+  harnesses use; the core's own `public_spawn_success_path` stays
+  `#[cfg(unix)]` for the same reason, with `smoke_live.ps1` as its
+  Windows counterpart.
+- Unlike the Linux job, the Windows CI job runs
+  `cargo test --all-targets`: the gpui binary is macOS-gated in
+  `src/main.rs` (the `gpui` / `gpui-component` deps stay macOS-scoped
+  in `Cargo.toml`; the Windows shell links only `agent_manager.lib` +
+  system libs), so on `windows-latest` that exercises the full
+  portable lib suite plus a stub bin. Scoping is about what the
+  *native shells* link, not what the toolchain could build — and the
+  gate keeps `--all-targets` meaningful-green on every runner instead
+  of rotting outside macOS.
 
 ## 5. Prerequisites before any shell links the core
 

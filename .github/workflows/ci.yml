@@ -60,3 +60,50 @@ jobs:
           timeout -s TERM 15 xvfb-run -a ./native/linux/build/agent-manager-gtk > /tmp/app.log 2>&1 || true
           grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' /tmp/app.log | head -n 20
           ! grep -E 'Adwaita-ERROR|Gtk-CRITICAL|SMOKE-FAIL' /tmp/app.log
+
+  windows:
+    # Native Windows WinUI shell (issue #64): the core library plus the
+    # CMake-built C suite against the real C ABI, plus the MSVC-built
+    # WinUI 3 + ConPTY shell (unpackaged exe, no MSIX — packaging lives
+    # with the CI/packaging issue). Unlike the Linux job this one runs
+    # `cargo test --all-targets`, per the issue's acceptance criteria:
+    # the gpui binary is macOS-gated in src/main.rs, so on this runner
+    # that exercises the full portable lib suite plus a stub bin, while
+    # the per-shell proof lives in the CMake/CTest and WinUI steps.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: core staticlib
+        run: cargo build --lib
+      - name: test
+        run: cargo test --all-targets
+      - name: no gpui in the Windows shell
+        shell: pwsh
+        run: |
+          $hits = Select-String -Path native/windows/ -Pattern 'gpui' -Recurse
+          if ($hits) { $hits; exit 1 }
+      - name: C suite (CMake, MSVC)
+        shell: pwsh
+        run: |
+          cmake -S native/windows -B native/windows/build `
+            "-Dcore_lib_dir=$env:GITHUB_WORKSPACE/target/debug"
+          cmake --build native/windows/build --config Release
+          ctest --test-dir native/windows/build -C Release --output-on-failure
+      - name: live converse (fake muse.exe)
+        shell: pwsh
+        run: >
+          powershell -ExecutionPolicy Bypass
+          -File native/windows/tests/smoke_live.ps1
+          -Smoke native/windows/build/Release/am-win-smoke.exe
+      - name: WinUI build (unpackaged exe, no MSIX)
+        shell: pwsh
+        run: |
+          msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
+          msbuild native/windows/AgentManagerWinUI.vcxproj `
+            /p:Configuration=Release /p:Platform=x64 `
+            "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/debug"

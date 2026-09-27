@@ -15,17 +15,31 @@
 // shells bind one crate; this binary consumes it like any other client.
 // The re-export keeps the existing `crate::<module>` paths in `gui/`
 // working with no module moves.
+//
+// macOS-only binary (issues #63/#64): the `gpui` / `gpui-component`
+// deps are macOS-scoped in Cargo.toml, so the whole shell below is
+// gated on `target_os = "macos"`. On other targets the binary is a
+// stub that fails loud at runtime; `cargo test --all-targets` stays
+// green on every runner because the portable gate is the lib suite
+// (each per-OS shell proves itself in its own CI job).
+#[cfg(target_os = "macos")]
 pub use agent_manager::{
     app, config, embedded, parsers, persist, providers, scrollback, transcript,
 };
+#[cfg(target_os = "macos")]
 mod gui;
 
+#[cfg(target_os = "macos")]
 use gpui::{AppContext, Application, Entity};
+#[cfg(target_os = "macos")]
 use gpui_component::{Root, Theme};
 
+#[cfg(target_os = "macos")]
 use gui::shell::ShellView;
+#[cfg(target_os = "macos")]
 use providers::{MuseCliProvider, Provider};
 
+#[cfg(target_os = "macos")]
 fn main() {
     // Historic attach: provider-discovered sessions seed the list before
     // any PTY exists (unreachable store degrades to an empty list, never
@@ -85,4 +99,18 @@ fn main() {
         })
         .unwrap();
     });
+}
+
+/// Non-macOS stub: the gpui shell runs on macOS only. Windows and Linux
+/// have their own native shells over the core C ABI (`native/windows`,
+/// `native/linux`); this stub exists so the binary target — and with it
+/// `cargo test --all-targets` — still builds on every runner.
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!(
+        "agent-manager: the gpui shell runs on macOS only; on Windows use \
+         the WinUI shell (native/windows) and on Linux the GTK shell \
+         (native/linux), both over the core C ABI."
+    );
+    std::process::exit(1);
 }

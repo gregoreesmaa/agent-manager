@@ -681,6 +681,12 @@ mod tests {
         ))
     }
 
+    // Unix-only: the fake is an extensionless shell script, which
+    // CreateProcess cannot execute. The Windows counterpart is the
+    // hermetic smoke-live step of the windows CI job (issue #64):
+    // tests/smoke_live.ps1 compiles tests/fake_muse.c to muse.exe and
+    // runs am-win-smoke --smoke-live against it.
+    #[cfg(unix)]
     #[test]
     fn public_spawn_success_path() {
         // Issue #61: the review flagged the public `am_spawn` (which runs
