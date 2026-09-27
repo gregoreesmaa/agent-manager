@@ -1,4 +1,6 @@
 /target
+swift/.build
+swift/.swiftpm
 .DS_Store
 *.pdb
 agent-manager-state.json

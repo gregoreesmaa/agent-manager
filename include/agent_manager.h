@@ -110,6 +110,14 @@ char *am_spans_json(const AmPty *pty);
  * Returns -1 on null handle, -2 when `row` is out of bounds. */
 int32_t am_status(const AmCore *core, size_t row);
 
+/* Number of roster rows in the core. Null core yields 0, never UB. */
+size_t am_session_count(const AmCore *core);
+
+/* Owned JSON of roster row `row` (a serialized `ChatSession`). NULL on
+ * null handle, out-of-bounds row, or JSON failure; free with
+ * `am_screen_text_free`. */
+char *am_session_json(const AmCore *core, size_t row);
+
 /* Last error message for this thread (UTF-8, NUL-terminated). Never
  * NULL; valid until the next failing `am_*` call on this thread. */
 const char *am_last_error(void);

@@ -389,6 +389,53 @@ pub unsafe extern "C" fn am_status(core: *const AmCore, row: usize) -> c_int {
     }
 }
 
+/// Number of roster rows in the core. Null core yields 0 (never UB).
+///
+/// # Safety
+/// `core` must be null or a live pointer from [`am_core_new`].
+#[no_mangle]
+pub unsafe extern "C" fn am_session_count(core: *const AmCore) -> usize {
+    if core.is_null() {
+        return 0;
+    }
+    (*core).app.sessions.len()
+}
+
+/// Owned JSON of roster row `row` (a serialized [`ChatSession`]; the
+/// documented roster crossing from the seam sketch). Returns null on
+/// null handle, out-of-bounds row, or (unreachable in practice) JSON
+/// failure; free with [`am_screen_text_free`].
+///
+/// # Safety
+/// `core` must be null or a live pointer from [`am_core_new`].
+#[no_mangle]
+pub unsafe extern "C" fn am_session_json(core: *const AmCore, row: usize) -> *mut c_char {
+    if core.is_null() {
+        set_error("am_session_json: null core".to_string());
+        return std::ptr::null_mut();
+    }
+    let sessions: &[ChatSession] = &(*core).app.sessions;
+    match sessions.get(row) {
+        Some(session) => match serde_json::to_string(session) {
+            Ok(doc) => match CString::new(doc) {
+                Ok(s) => s.into_raw(),
+                Err(_) => {
+                    set_error("am_session_json: row contains NUL".to_string());
+                    std::ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_error(format!("am_session_json: {e:#}"));
+                std::ptr::null_mut()
+            }
+        },
+        None => {
+            set_error(format!("am_session_json: row {row} out of bounds"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Last error message for this thread (UTF-8, NUL-terminated). Never
 /// null; valid until the next failing `am_*` call on this thread.
 ///
@@ -748,6 +795,54 @@ mod tests {
             assert!(msg.contains("UTF-8"), "last_error: {msg:?}");
             am_pty_free(pty);
             am_core_free(core);
+        }
+    }
+
+    #[test]
+    fn session_count_and_json_round_trip() {
+        use crate::app::{App, ChatSession, HARNESS_MUSE};
+        fn row(id: &str, status: Status) -> ChatSession {
+            ChatSession {
+                id: id.into(),
+                title: id.into(),
+                project: "proj".into(),
+                status,
+                harness: HARNESS_MUSE.into(),
+                last_active: 0,
+                pr_links: vec![],
+                related_links: vec![],
+                links_truncated: false,
+                transcript: vec![],
+                transcript_truncated: false,
+                title_locked: true,
+                pending_input: String::new(),
+                provider_session_id: None,
+                cwd: None,
+            }
+        }
+        let core = AmCore {
+            app: App::new(vec![row("a", Status::Attention), row("b", Status::Idle)]),
+        };
+        unsafe {
+            assert_eq!(am_session_count(&core as *const AmCore), 2);
+            assert_eq!(am_session_count(std::ptr::null()), 0);
+            let raw = am_session_json(&core as *const AmCore, 0);
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_str().unwrap().to_owned();
+            am_screen_text_free(raw);
+            let doc: serde_json::Value =
+                serde_json::from_str(&text).expect("row serializes as JSON");
+            assert_eq!(doc["id"], "a");
+            assert_eq!(doc["title"], "a");
+            assert_eq!(doc["project"], "proj");
+            assert_eq!(doc["status"], "Attention");
+            // Out-of-bounds and null handles report null with a message.
+            assert!(am_session_json(&core as *const AmCore, 7).is_null());
+            let msg = CStr::from_ptr(am_last_error())
+                .to_string_lossy()
+                .into_owned();
+            assert!(msg.contains("am_session_json"), "last_error: {msg:?}");
+            assert!(am_session_json(std::ptr::null(), 0).is_null());
         }
     }
 

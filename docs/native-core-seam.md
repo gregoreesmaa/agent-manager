@@ -1,6 +1,8 @@
 # Native core seam (proposal)
 
-Status: proposal only. No SwiftUI / native shell is built here; this doc
+Status: proposal only — except for the first consumer: `swift/`
+(`AgentManagerMac`, #62) binds the C ABI below via SwiftTerm + SwiftUI
+(see `swift/README.md` for its wiring table). The rest of this doc
 records the audit result, the decoupling already landed, and the exact
 core API a future per-OS shell binds against.
 
@@ -261,12 +263,14 @@ presence flags — `Option` stays on the Rust side).
 | `am_screen_text` + `am_screen_text_free` | owned UTF-8, caller frees |
 | `am_spans_json` | owned styled spans as JSON (rows of `{text,fg,bg,bold,italic,underline}`), freed with `am_screen_text_free` |
 | `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
+| `am_session_count` | roster row count; 0 on null (#62) |
+| `am_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `am_screen_text_free` (#62) |
 | `am_last_error` | thread-local message; never null |
 | `am_pty_free` | reaps the child; null no-op |
 
 ### C header (`include/agent_manager.h`, hardened #61)
 
-The header is checked in and mirrors `src/ffi.rs` exactly (13 exports;
+The header is checked in and mirrors `src/ffi.rs` exactly (15 exports;
 verified: every `am_*` in the header is a `T` symbol in
 `target/debug/libagent_manager.a` and vice versa). Regenerate after any
 FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)
