@@ -148,7 +148,7 @@ jobs:
       - name: no gpui in the Windows shell
         shell: pwsh
         run: |
-          $hits = Select-String -Path native/windows/ -Pattern 'gpui' -Recurse
+          $hits = Get-ChildItem native/windows -Recurse -File | Select-String -Pattern 'gpui'
           if ($hits) { $hits; exit 1 }
       - name: C suite (CMake, MSVC)
         shell: pwsh
