@@ -9,7 +9,7 @@
 
 use gpui::{
     div, px, rgb, Context, ElementId, Font, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Size,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, Size,
     StatefulInteractiveElement, Styled, Window, WindowControlArea, WindowOptions,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -311,17 +311,33 @@ impl ShellView {
 /// the PTY floors (see [`MIN_WINDOW_WIDTH`]/[`MIN_WINDOW_HEIGHT`]) so the
 /// OS never shrinks the window past what the terminal grid can display.
 ///
-/// Issue #44: no OS title bar — `titlebar: None` puts the window in the
-/// native overlay mode (transparent titlebar on macOS/Windows), so the
-/// terminal owns the title-bar row's pixels too and the content runs
-/// edge-to-edge. The traffic lights stay native (floating over the
-/// content at the OS position), and dragging still works through the
-/// custom drag regions (sidebar header in wide mode, slim status bar in
-/// narrow mode). Nothing in-window is taller than before: wide mode
-/// gains a row, narrow mode keeps exactly its slim bar.
+/// Issue #44: no OS title bar — the content runs edge-to-edge behind a
+/// transparent titlebar (traffic lights float over the content at the OS
+/// position), so the terminal owns the title-bar row's pixels too.
+/// Window dragging works through the custom drag regions (sidebar header
+/// in wide mode, slim status bar in narrow mode). Nothing in-window is
+/// taller than before: wide mode gains a row, narrow mode keeps exactly
+/// its slim bar.
+///
+/// Issue #58: the hidden titlebar must stay `Some` + `appears_transparent`
+/// (the same shape as `gpui_component::TitleBar::title_bar_options()`),
+/// never `titlebar: None` — on macOS gpui maps `None` to a style mask
+/// without `NSResizableWindowMask`, which silently kills all
+/// edge/corner resizing (plus close/miniaturize). `Some`-transparent
+/// keeps Titled|Closable|Resizable|Miniaturizable with full-size content,
+/// so every edge and corner resizes natively. The custom drag regions
+/// cannot swallow those resize handles: on macOS gpui leaves
+/// `on_hit_test_window_control` unimplemented, so window-control
+/// hitboxes never divert edge hits from the OS resize handling.
+/// `is_resizable` stays explicit so a future edit cannot silently drop it.
 pub fn window_options() -> WindowOptions {
     WindowOptions {
-        titlebar: None,
+        titlebar: Some(gpui::TitlebarOptions {
+            title: Some(SharedString::from("Agent Manager")),
+            appears_transparent: true,
+            ..Default::default()
+        }),
+        is_resizable: true,
         window_min_size: Some(Size {
             width: px(MIN_WINDOW_WIDTH),
             height: px(MIN_WINDOW_HEIGHT),
@@ -341,14 +357,26 @@ mod tests {
     #[test]
     fn hidden_titlebar_frees_the_os_row_without_touching_the_minimum() {
         // Issue #44: no OS title bar — the content runs edge-to-edge
-        // behind the native overlay (traffic lights float over it), so
-        // the terminal gains the title-bar row's pixels. The minimum
+        // behind a transparent titlebar (traffic lights float over it),
+        // so the terminal gains the title-bar row's pixels. The minimum
         // geometry is unchanged (narrow mode keeps its slim bar).
+        // Issue #58: the hidden titlebar is `Some`-transparent, never
+        // `None` — `None` drops `NSResizableWindowMask` on macOS and the
+        // window stops resizing entirely.
+        let opts = super::window_options();
+        let titlebar = opts
+            .titlebar
+            .as_ref()
+            .expect("hidden titlebar stays a transparent Some, not None");
         assert!(
-            super::window_options().titlebar.is_none(),
+            titlebar.appears_transparent,
             "OS title bar must stay hidden"
         );
-        let min = super::window_options()
+        assert!(
+            opts.is_resizable,
+            "main window must stay user-resizable (issue #58)"
+        );
+        let min = opts
             .window_min_size
             .expect("main window sets a minimum size");
         assert_eq!(f32::from(min.width), MIN_WINDOW_WIDTH);

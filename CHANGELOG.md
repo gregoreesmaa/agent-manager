@@ -4,6 +4,13 @@ All notable changes, newest first. Issue numbers track `gh issue`.
 
 ## Unreleased (on main)
 
+- UX: restore window resizing — hidden titlebar is `Some`-transparent
+  again (`None` dropped `NSResizableWindowMask` on macOS), edges/corners
+  resize, minimum + narrow/wide breakpoints unchanged (#58).
+- UX: sidebar native-rendering spike — keep `gpui-component` sidebar,
+  native `NSOutlineView` interop rejected (see
+  `docs/57-sidebar-native-eval.md`) (#57).
+
 - UX: sticky errors for spawn + PTY write failures (#2) — transient info
   keeps the 3s TTL, errors stay until dismissed (`d`) or the next success.
 - UX: ended-run Restart/Rerun affordance, header button + `r` (#3).
