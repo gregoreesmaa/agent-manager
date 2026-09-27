@@ -542,11 +542,38 @@ mod tests {
         );
     }
 
+    /// Child-printed cwd contains the expected dir, tolerating the
+    /// Windows verbatim prefix (`\\?\`) stripped by the caller plus
+    /// Windows case-insensitivity (temp dirs may mix short/long case).
+    fn cwd_matches(contents: &str, want: &str) -> bool {
+        #[cfg(windows)]
+        {
+            contents.to_lowercase().contains(&want.to_lowercase())
+        }
+        #[cfg(not(windows))]
+        {
+            contents.contains(want)
+        }
+    }
+
+    fn pump_until_cwd(pty: &mut EmbeddedPty, want: &str, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if cwd_matches(&pty.contents(), want) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        cwd_matches(&pty.contents(), want)
+    }
+
     #[test]
     fn spawn_with_cwd_runs_the_child_in_the_picked_folder() {
         // Issue #48 falsifiable check: a session started with folder
-        // `/tmp/demo-proj` runs its agent with that cwd (`pwd` prints
-        // it). `None` keeps the old inherit behavior.
+        // `/tmp/demo-proj` runs its agent with that cwd (the child
+        // prints it). `None` keeps the old inherit behavior.
+        // `pwd` is Unix-only (and Git-Bash `pwd` prints POSIX paths),
+        // so Windows asks `cmd /C cd`, which prints the native path.
         let dir = std::env::temp_dir().join(format!(
             "agent-manager-cwd-test-{}",
             std::time::SystemTime::now()
@@ -557,9 +584,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let canon = std::fs::canonicalize(&dir).unwrap();
         let want = canon.to_string_lossy().into_owned();
-        let mut pty = EmbeddedPty::spawn_with_cwd("pwd", &[], 80, 24, Some(canon.as_path()))
-            .expect("pwd must spawn");
-        assert!(pump_until(&mut pty, &want, Duration::from_secs(5)));
+        let want = want.strip_prefix(r"\\?\").unwrap_or(&want);
+        let (program, args): (String, Vec<String>) = if cfg!(windows) {
+            ("cmd".to_string(), vec!["/C".to_string(), "cd".to_string()])
+        } else {
+            ("pwd".to_string(), Vec::new())
+        };
+        let mut pty = EmbeddedPty::spawn_with_cwd(&program, &args, 80, 24, Some(canon.as_path()))
+            .expect("cwd printer must spawn");
+        assert!(pump_until_cwd(&mut pty, want, Duration::from_secs(5)));
         assert!(wait_exit(&mut pty, Duration::from_secs(5)));
         let _ = std::fs::remove_dir_all(&dir);
     }

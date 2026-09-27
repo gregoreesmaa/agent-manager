@@ -342,17 +342,41 @@ pub fn short_cwd(cwd: &str) -> String {
     }
 }
 
+/// Home directory, portably: `$HOME` on Unix, `%USERPROFILE%` (then
+/// `%HOMEDRIVE%%HOMEPATH%`) on Windows, where `HOME` is usually unset.
+pub fn home_dir() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Some(home);
+        }
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        if !profile.is_empty() {
+            return Some(profile);
+        }
+    }
+    let drive = std::env::var("HOMEDRIVE").unwrap_or_default();
+    let path = std::env::var("HOMEPATH").unwrap_or_default();
+    if !path.is_empty() {
+        return Some(format!("{drive}{path}"));
+    }
+    None
+}
+
 /// Normalize folder-picker input (issue #48): blank means the default
-/// (inherit, `None`); a leading `~` expands to `$HOME`; anything else
-/// passes through untouched (existence is checked at confirm time).
+/// (inherit, `None`); a leading `~` expands to the home directory;
+/// anything else passes through untouched (existence is checked at
+/// confirm time).
 pub fn expand_cwd_input(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
     if let Some(rest) = trimmed.strip_prefix('~') {
-        if rest.is_empty() || rest.starts_with('/') {
-            if let Ok(home) = std::env::var("HOME") {
+        // `\` only separates on Windows: on Unix `~\foo` is a real name.
+        let sep = rest.starts_with('/') || (cfg!(windows) && rest.starts_with('\\'));
+        if rest.is_empty() || sep {
+            if let Some(home) = home_dir() {
                 return Some(format!("{home}{rest}"));
             }
         }
@@ -1396,7 +1420,7 @@ mod tests {
             Some("/tmp/demo-proj".to_string())
         );
         assert_eq!(expand_cwd_input("  /tmp/x  "), Some("/tmp/x".to_string()));
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = home_dir().expect("test env has a home dir");
         assert_eq!(expand_cwd_input("~/proj"), Some(format!("{home}/proj")));
         // `~other` is a real relative name, not a home: untouched.
         assert_eq!(expand_cwd_input("~other"), Some("~other".to_string()));
