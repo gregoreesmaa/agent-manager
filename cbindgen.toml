@@ -1,0 +1,12 @@
+# cbindgen config for include/agent_manager.h (issue #61).
+# Regenerate: cbindgen --config cbindgen.toml --crate agent-manager \
+#   --output include/agent_manager.h
+language = "C"
+include_guard = "agent_manager"
+autogen_warning = "/* Warning: regenerate with cbindgen, do not hand-edit beyond the checked-in snapshot. */"
+sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
+
+[defines]
+"target_os = macos" = "OS_MACOS"
+"target_os = linux" = "OS_LINUX"
+"target_os = windows" = "OS_WINDOWS"

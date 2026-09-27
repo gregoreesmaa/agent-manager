@@ -263,3 +263,27 @@ presence flags — `Option` stays on the Rust side).
 | `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
 | `am_last_error` | thread-local message; never null |
 | `am_pty_free` | reaps the child; null no-op |
+
+### C header (`include/agent_manager.h`, hardened #61)
+
+The header is checked in and mirrors `src/ffi.rs` exactly (13 exports;
+verified: every `am_*` in the header is a `T` symbol in
+`target/debug/libagent_manager.a` and vice versa). Regenerate after any
+FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)
+(`cbindgen.toml` at the repo root):
+
+```sh
+cargo install cbindgen
+cbindgen --config cbindgen.toml --crate agent-manager \
+  --output include/agent_manager.h
+```
+
+`cc -fsyntax-only -std=c99 -Wall include/agent_manager.h` must stay
+clean. Error/status codes are pinned by tests, not just docs:
+`error_codes_round_trip` (`Ok=0..Config=5`),
+`status_codes_map_roster_status` (Attention=0, Idle=1, Working=2, -1
+null, -2 out of bounds), and every failure above asserts its
+`am_last_error` message. The public `am_spawn` success path is covered
+hermetically (`public_spawn_success_path`: fake `muse` on `PATH`) and
+`am_core_save` success + failure without touching live config
+(`core_save_round_trips_to_scoped_config` via `$AGENT_MANAGER_CONFIG`).

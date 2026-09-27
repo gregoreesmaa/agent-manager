@@ -190,6 +190,21 @@ pub unsafe extern "C" fn am_spawn(
         set_error("am_spawn: null core or out".to_string());
         return AmError::Null.code();
     }
+    let (program, args) = (*core).app.spawn_command_for(&SpawnKind::New);
+    spawn_into(out, &program, &args, cwd, cols, rows)
+}
+
+/// Shared spawn tail for [`am_spawn`] (and the test-only argv variant
+/// below): parse `cwd`, spawn, box the handle. One seam so the public
+/// success path and the hermetic tests share every line after argv.
+unsafe fn spawn_into(
+    out: *mut *mut AmPty,
+    program: &str,
+    args: &[String],
+    cwd: *const c_char,
+    cols: u16,
+    rows: u16,
+) -> c_int {
     let cwd_path;
     let cwd_opt = if cwd.is_null() {
         None
@@ -205,8 +220,7 @@ pub unsafe extern "C" fn am_spawn(
             }
         }
     };
-    let (program, args) = (*core).app.spawn_command_for(&SpawnKind::New);
-    match EmbeddedPty::spawn_with_cwd(&program, &args, cols, rows, cwd_opt) {
+    match EmbeddedPty::spawn_with_cwd(program, args, cols, rows, cwd_opt) {
         Ok(pty) => {
             *out = Box::into_raw(Box::new(AmPty { pty }));
             AmError::Ok.code()
@@ -286,7 +300,10 @@ pub unsafe extern "C" fn am_screen_text(pty: *const AmPty) -> *mut c_char {
     let text = (*pty).pty.snapshot_text();
     match CString::new(text) {
         Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
+        Err(_) => {
+            set_error("am_screen_text: snapshot contains NUL".to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -343,7 +360,10 @@ pub unsafe extern "C" fn am_spans_json(pty: *const AmPty) -> *mut c_char {
     );
     match CString::new(doc.to_string()) {
         Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
+        Err(_) => {
+            set_error("am_spans_json: snapshot contains NUL".to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -538,6 +558,199 @@ mod tests {
         }
     }
 
+    #[test]
+    fn status_codes_map_roster_status() {
+        use crate::app::{App, ChatSession, HARNESS_MUSE};
+        fn row(id: &str, status: Status) -> ChatSession {
+            ChatSession {
+                id: id.into(),
+                title: id.into(),
+                project: "proj".into(),
+                status,
+                harness: HARNESS_MUSE.into(),
+                last_active: 0,
+                pr_links: vec![],
+                related_links: vec![],
+                links_truncated: false,
+                transcript: vec![],
+                transcript_truncated: false,
+                title_locked: true,
+                pending_input: String::new(),
+                provider_session_id: None,
+                cwd: None,
+            }
+        }
+        let core = AmCore {
+            app: App::new(vec![
+                row("a", Status::Attention),
+                row("b", Status::Idle),
+                row("c", Status::Working),
+            ]),
+        };
+        unsafe {
+            assert_eq!(am_status(&core as *const AmCore, 0), 0);
+            assert_eq!(am_status(&core as *const AmCore, 1), 1);
+            assert_eq!(am_status(&core as *const AmCore, 2), 2);
+            assert_eq!(am_status(&core as *const AmCore, 3), -2);
+            // Null handle reports -1 and records a message (never UB).
+            assert_eq!(am_status(std::ptr::null(), 0), -1);
+            let msg = CStr::from_ptr(am_last_error())
+                .to_string_lossy()
+                .into_owned();
+            assert!(msg.contains("am_status"), "last_error: {msg:?}");
+        }
+    }
+
+    /// Restores a process env var on drop (tests share one process).
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+            let old = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, old }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "agent-manager-ffi61-{tag}-{}-{}",
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    #[test]
+    fn public_spawn_success_path() {
+        // Issue #61: the review flagged the public `am_spawn` (which runs
+        // the real `muse` command) as success-untested. A fake `muse`
+        // earlier on PATH exercises the exact public entry point,
+        // hermetically: no real agent, no live config.
+        let dir = unique_dir("muse");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("muse"),
+            "#!/bin/sh\necho fake-muse-ready-61\nsleep 30\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("muse"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let joined = format!("{}:{}", dir.display(), old_path);
+        let _path = EnvGuard::set("PATH", std::ffi::OsStr::new(&joined));
+        unsafe {
+            let core = am_core_new();
+            assert!(!core.is_null());
+            let mut pty: *mut AmPty = std::ptr::null_mut();
+            let rc = am_spawn(core, &mut pty, std::ptr::null(), 80, 24);
+            assert_eq!(rc, AmError::Ok.code());
+            assert!(!pty.is_null());
+            assert!(pump_until_text(
+                pty,
+                "fake-muse-ready-61",
+                Duration::from_secs(10)
+            ));
+            am_pty_free(pty);
+            am_core_free(core);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn core_save_round_trips_to_scoped_config() {
+        // Issue #61: `am_core_save` was deliberately untested (live user
+        // config). `$AGENT_MANAGER_CONFIG` scopes it to a temp file, so
+        // the success path is covered without touching real config.
+        let dir = unique_dir("cfg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let _scoped = EnvGuard::set("AGENT_MANAGER_CONFIG", file.as_os_str());
+        unsafe {
+            let core = am_core_new();
+            assert!(!core.is_null());
+            assert_eq!(am_core_save(core), AmError::Ok.code());
+            am_core_free(core);
+        }
+        let text = std::fs::read_to_string(&file).expect("scoped config written");
+        let _: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        // Failure path: the scoped path is a directory, so the write
+        // fails and the Config code (plus message) is reported.
+        let sub = dir.join("adir");
+        std::fs::create_dir_all(&sub).unwrap();
+        let _scoped2 = EnvGuard::set("AGENT_MANAGER_CONFIG", sub.as_os_str());
+        unsafe {
+            let core = am_core_new();
+            assert!(!core.is_null());
+            assert_eq!(am_core_save(core), AmError::Config.code());
+            let msg = CStr::from_ptr(am_last_error())
+                .to_string_lossy()
+                .into_owned();
+            assert!(msg.contains("am_core_save"), "last_error: {msg:?}");
+            am_core_free(core);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_and_cwd_edge_cases_report_codes() {
+        unsafe {
+            let core = am_core_new();
+            assert!(!core.is_null());
+            let mut pty: *mut AmPty = std::ptr::null_mut();
+            let prog = CString::new("sleep").unwrap();
+            let arg = CString::new("30").unwrap();
+            let argv = [prog.as_ptr(), arg.as_ptr()];
+            let rc = am_spawn_argv(core, &mut pty, argv.as_ptr(), 2, std::ptr::null(), 80, 24);
+            assert_eq!(rc, AmError::Ok.code());
+            // Null data with len > 0 on a live handle is a Null error.
+            assert_eq!(am_write(pty, std::ptr::null(), 1), AmError::Null.code());
+            let msg = CStr::from_ptr(am_last_error())
+                .to_string_lossy()
+                .into_owned();
+            assert!(msg.contains("am_write"), "last_error: {msg:?}");
+            // Non-UTF8 cwd is a Utf8 error and spawns nothing.
+            let bad: [u8; 2] = [0xFF, 0x00];
+            let mut out2: *mut AmPty = std::ptr::null_mut();
+            assert_eq!(
+                am_spawn_argv(
+                    core,
+                    &mut out2,
+                    argv.as_ptr(),
+                    2,
+                    bad.as_ptr() as *const c_char,
+                    80,
+                    24
+                ),
+                AmError::Utf8.code()
+            );
+            assert!(out2.is_null());
+            let msg = CStr::from_ptr(am_last_error())
+                .to_string_lossy()
+                .into_owned();
+            assert!(msg.contains("UTF-8"), "last_error: {msg:?}");
+            am_pty_free(pty);
+            am_core_free(core);
+        }
+    }
+
     /// Test-only spawn with an explicit argv (the public [`am_spawn`] runs
     /// the configured `muse` session command; tests need fake commands).
     unsafe fn am_spawn_argv(
@@ -573,40 +786,5 @@ mod tests {
             None => (*core).app.spawn_command_for(&SpawnKind::New),
         };
         spawn_into(out, &program, &args, cwd, cols, rows)
-    }
-
-    unsafe fn spawn_into(
-        out: *mut *mut AmPty,
-        program: &str,
-        args: &[String],
-        cwd: *const c_char,
-        cols: u16,
-        rows: u16,
-    ) -> c_int {
-        let cwd_path;
-        let cwd_opt = if cwd.is_null() {
-            None
-        } else {
-            match CStr::from_ptr(cwd).to_str() {
-                Ok(s) => {
-                    cwd_path = std::path::PathBuf::from(s);
-                    Some(cwd_path.as_path())
-                }
-                Err(_) => {
-                    set_error("am_spawn: cwd is not valid UTF-8".to_string());
-                    return AmError::Utf8.code();
-                }
-            }
-        };
-        match EmbeddedPty::spawn_with_cwd(program, args, cols, rows, cwd_opt) {
-            Ok(pty) => {
-                *out = Box::into_raw(Box::new(AmPty { pty }));
-                AmError::Ok.code()
-            }
-            Err(e) => {
-                set_error(format!("am_spawn: {e:#}"));
-                AmError::Spawn.code()
-            }
-        }
     }
 }
