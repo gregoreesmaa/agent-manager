@@ -12,6 +12,7 @@
 pub mod app;
 pub mod config;
 pub mod embedded;
+pub mod ffi;
 pub mod parsers;
 pub mod persist;
 pub mod providers;

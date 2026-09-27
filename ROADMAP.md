@@ -26,6 +26,8 @@ Drawn from `VISION.md` / `VISION-UX.md` / `VISION-TECHNICAL.md` /
 
 ## Later (3-year VISION.md)
 
+- Native per-OS shells over the shared Rust core C ABI (#60): macOS
+  SwiftUI → Linux GTK4/VTE → WinUI/ConPTY.
 - Brand-swappable backends (muse/claude/opencode/codex) behind the
   single `Provider` seam; per-CLI adapters stay additive.
 - Framework-volatility shield stays: pinned gpui 0.2.2 line, loud pin

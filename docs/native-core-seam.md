@@ -233,11 +233,33 @@ paths want the same two prerequisites (§5), so nothing is thrown away.
    + `gui/` as the existing binary consumer. No module moves needed —
    only visibility (`gui`-facing helpers already `pub`/`pub(crate)` where
    the shell needs them).
-2. Convert the borrowed `LiveView<'a>` (and `vt100::Screen` exposure) to
-   owned snapshots at the FFI edge: plain text plus style spans
-   (`gui/terminal.rs::TermSpan`-shaped: text + fg/bg/bold/italic/
-   underline as plain values), so no lifetime crosses the boundary.
-3. Map the two `anyhow`/`io` error types to integer codes + message
-   strings (C ABI) or a `CoreError` enum (UniFFI); success-path behavior
-   (degrade-to-empty on missing/corrupt files) is already the contract
-   and must be preserved, not re-decided per shell.
+2. ✅ DONE (slice 2, #60): `EmbeddedPty::snapshot_text()` /
+   `snapshot_spans()` / `snapshot()` return owned text + spans
+   (`embedded::SnapSpan`-shaped: text + fg/bg/bold/italic/underline as
+   plain values; palette duplicated from `gui/terminal.rs`, gui untouched).
+   `view()` stays for the gui. No lifetime crosses the FFI boundary.
+3. ✅ DONE (slice 2, #60): `src/ffi.rs` maps errors to `AmError` int
+   codes (`Ok=0, Spawn=1, Io=2, Utf8=3, Null=4, Config=5`) + a
+   thread-local message via `am_last_error()`. Degrade-to-empty on
+   missing/corrupt files is preserved (discovery + load inside
+   `am_core_new` never fail).
+
+### Landed C ABI (`src/ffi.rs`, crate-type `staticlib` + `rlib`)
+
+Opaque handles (`AmCore` owns `App`+`Config`, `AmPty` owns one
+`EmbeddedPty`); plain `#[repr(C)]` `AmRgb` / `AmStyle` (`has_fg`/`has_bg`
+presence flags — `Option` stays on the Rust side).
+
+| fn | contract |
+|---|---|
+| `am_core_new` / `am_core_free` | discovery + persistence merge inside; null-safe free |
+| `am_core_save` | persist config; `Config` code on failure |
+| `am_spawn(core, out, cwd, cols, rows)` | fresh `muse` session; null cwd inherits; int code |
+| `am_pump` | dirty gate; null → false |
+| `am_write(pty, bytes, len)` | raw input bytes; int code |
+| `am_resize` | null no-op |
+| `am_screen_text` + `am_screen_text_free` | owned UTF-8, caller frees |
+| `am_spans_json` | owned styled spans as JSON (rows of `{text,fg,bg,bold,italic,underline}`), freed with `am_screen_text_free` |
+| `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
+| `am_last_error` | thread-local message; never null |
+| `am_pty_free` | reaps the child; null no-op |

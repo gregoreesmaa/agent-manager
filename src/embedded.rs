@@ -104,6 +104,149 @@ pub struct LiveView<'a> {
     pub exited: bool,
 }
 
+/// 8-bit RGB triple, framework-free (epic #60 slice 2: the owned FFI
+/// shape; mirrors the gui-local `gui::terminal::Rgb8` without moving it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapRgb(pub u8, pub u8, pub u8);
+
+/// Cell style in framework-free form (`None` = terminal default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapStyle {
+    pub fg: Option<SnapRgb>,
+    pub bg: Option<SnapRgb>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
+/// One coalesced same-style span of a row (owned text, no lifetime).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapSpan {
+    pub text: String,
+    pub style: SnapStyle,
+}
+
+/// Owned screen snapshot for the FFI edge: plain text plus style spans,
+/// so no `LiveView` lifetime or `&vt100::Screen` crosses the boundary
+/// (epic #60 §5.2). `cursor` is the 0-based caret cell, if known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenSnapshot {
+    pub text: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub cursor: Option<(u16, u16)>,
+    pub exited: bool,
+    pub spans: Vec<Vec<SnapSpan>>,
+}
+
+/// Standard xterm 16-color palette as RGB triples (same values as the
+/// gui-local table; duplicated so the core stays framework-free).
+const SNAP_PALETTE_16: [(u8, u8, u8); 16] = [
+    (0, 0, 0),
+    (205, 0, 0),
+    (0, 205, 0),
+    (205, 205, 0),
+    (0, 0, 238),
+    (205, 0, 205),
+    (0, 205, 205),
+    (229, 229, 229),
+    (127, 127, 127),
+    (255, 0, 0),
+    (0, 255, 0),
+    (255, 255, 0),
+    (92, 92, 255),
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 255, 255),
+];
+
+/// Map a vt100 color to RGB on the dark palette (`None` = default).
+fn snap_color(color: vt100::Color) -> Option<SnapRgb> {
+    match color {
+        vt100::Color::Default => None,
+        vt100::Color::Idx(i) => {
+            let i = i as usize;
+            if i < 16 {
+                let (r, g, b) = SNAP_PALETTE_16[i];
+                Some(SnapRgb(r, g, b))
+            } else if i < 232 {
+                let v = i - 16;
+                let comp = |c: usize| {
+                    if c == 0 {
+                        0
+                    } else {
+                        (55 + 40 * c) as u8
+                    }
+                };
+                Some(SnapRgb(comp(v / 36), comp((v % 36) / 6), comp(v % 6)))
+            } else {
+                let g = (8 + 10 * (i - 232)) as u8;
+                Some(SnapRgb(g, g, g))
+            }
+        }
+        vt100::Color::Rgb(r, g, b) => Some(SnapRgb(r, g, b)),
+    }
+}
+
+/// Render the emulated screen grid as rows of coalesced owned spans.
+/// Same coalescing as the gui-local `screen_rows` minus the framework
+/// color conversion and cursor highlight (the caret crosses separately
+/// via [`ScreenSnapshot::cursor`]).
+pub fn snapshot_rows(screen: &vt100::Screen) -> Vec<Vec<SnapSpan>> {
+    let (rows, cols) = screen.size();
+    let mut out = Vec::with_capacity(rows as usize);
+    for r in 0..rows {
+        let mut spans: Vec<SnapSpan> = Vec::new();
+        let mut buf = String::new();
+        let mut cur = SnapStyle {
+            fg: None,
+            bg: None,
+            bold: false,
+            italic: false,
+            underline: false,
+        };
+        let mut open = false;
+        for c in 0..cols {
+            let Some(cell) = screen.cell(r, c) else {
+                break;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let (mut fg, mut bg) = (snap_color(cell.fgcolor()), snap_color(cell.bgcolor()));
+            if cell.inverse() {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            let style = SnapStyle {
+                fg,
+                bg,
+                bold: cell.bold(),
+                italic: cell.italic(),
+                underline: cell.underline(),
+            };
+            if !open {
+                cur = style;
+                open = true;
+            } else if style != cur {
+                spans.push(SnapSpan {
+                    text: std::mem::take(&mut buf),
+                    style: cur,
+                });
+                cur = style;
+            }
+            buf.push_str(&cell.contents());
+        }
+        if open {
+            spans.push(SnapSpan {
+                text: buf,
+                style: cur,
+            });
+        }
+        out.push(spans);
+    }
+    out
+}
+
 /// A live child process behind a PTY with a vt100-emulated screen.
 ///
 /// Output is collected by a background reader thread into a channel; call
@@ -281,6 +424,30 @@ impl EmbeddedPty {
         }
     }
 
+    /// Owned plain-text snapshot of the emulated screen (FFI edge).
+    pub fn snapshot_text(&self) -> String {
+        self.parser.screen().contents()
+    }
+
+    /// Owned styled-span snapshot of the emulated screen (FFI edge).
+    pub fn snapshot_spans(&self) -> Vec<Vec<SnapSpan>> {
+        snapshot_rows(self.parser.screen())
+    }
+
+    /// Full owned snapshot: text, grid size, cursor, exit flag, spans.
+    pub fn snapshot(&self) -> ScreenSnapshot {
+        let screen = self.parser.screen();
+        let (rows, cols) = screen.size();
+        ScreenSnapshot {
+            text: screen.contents(),
+            rows,
+            cols,
+            cursor: Some(screen.cursor_position()),
+            exited: self.exited,
+            spans: snapshot_rows(screen),
+        }
+    }
+
     /// Plain-text contents of the emulated screen (for tests).
     #[cfg(test)]
     fn contents(&mut self) -> String {
@@ -455,6 +622,33 @@ mod tests {
         pty.write_input(b"ping-input\n")
             .expect("write must succeed");
         assert!(pump_until(&mut pty, "ping-input", Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn owned_snapshot_helpers_match_borrowed_view() {
+        // Epic #60 §5.2: the FFI edge copies text + spans, so the owned
+        // snapshot must agree with the borrowed view at the same instant.
+        let mut pty =
+            EmbeddedPty::spawn("echo", &["snap-own".to_string()], 80, 24).expect("echo must spawn");
+        assert!(pump_until(&mut pty, "snap-own", Duration::from_secs(5)));
+        let snap = pty.snapshot();
+        assert!(snap.text.contains("snap-own"));
+        assert_eq!((snap.rows, snap.cols), pty.view().screen.size());
+        assert_eq!(snap.exited, pty.view().exited);
+        assert_eq!(snap.text, pty.snapshot_text());
+        assert_eq!(snap.spans, pty.snapshot_spans());
+        let joined: String = snap
+            .spans
+            .iter()
+            .flatten()
+            .map(|s| s.text.as_str())
+            .collect();
+        for line in snap.text.lines() {
+            let line = line.trim_end();
+            if !line.is_empty() {
+                assert!(joined.contains(line), "spans must cover {line:?}");
+            }
+        }
     }
 
     #[test]
