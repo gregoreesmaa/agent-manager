@@ -4,8 +4,8 @@ import SwiftUI
 ///
 /// - Roster: core rows grouped by urgency (needs-input first), with a
 ///   native search field filtering title/project/id.
-/// - Spawn: toolbar button (or the empty-state button) starts the
-///   selected row's child via `am_spawn`; typing in the terminal
+/// - Spawn: sidebar footer button (or the empty-state button) starts
+///   the selected row's child via `am_spawn`; typing in the terminal
 ///   converses through `am_write`.
 /// - History: every row shows its project, harness, and last-active age;
 ///   the rows themselves come from discovery + the persisted store, so
@@ -19,46 +19,28 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $state.selection) {
-                if state.filteredRows.isEmpty {
-                    Text("No sessions match.").foregroundStyle(.secondary)
-                }
-                ForEach(statusSections, id: \.status) { section in
-                    if !section.rows.isEmpty {
-                        Section("\(section.title) (\(section.rows.count))") {
-                            ForEach(section.rows) { row in
-                                rowLabel(row)
-                                    .tag(row.id)
-                                    .badge(state.hasLivePty(row.id) ? "live" : nil)
+            VStack(spacing: 0) {
+                List(selection: $state.selection) {
+                    if state.filteredRows.isEmpty {
+                        Text("No sessions match.").foregroundStyle(.secondary)
+                    }
+                    ForEach(statusSections, id: \.status) { section in
+                        if !section.rows.isEmpty {
+                            Section("\(section.title) (\(section.rows.count))") {
+                                ForEach(section.rows) { row in
+                                    rowLabel(row)
+                                        .tag(row.id)
+                                        .badge(state.hasLivePty(row.id) ? "live" : nil)
+                                }
                             }
                         }
                     }
                 }
+                .searchable(text: $state.filter, prompt: "Filter sessions")
+                Divider()
+                sidebarFooter
             }
-            .searchable(text: $state.filter, prompt: "Filter sessions")
             .navigationTitle(title)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Spawn", action: state.spawnSelected)
-                        .keyboardShortcut("n", modifiers: .command)
-                        .disabled(!state.canSpawn)
-                        .help("Start the selected session (am_spawn)")
-                }
-                ToolbarItem {
-                    Button("Save", action: state.save)
-                        .keyboardShortcut("s", modifiers: .command)
-                        .help("Persist the core config (am_core_save)")
-                }
-                ToolbarItem {
-                    Picker("Theme", selection: $appearance) {
-                        Text("System").tag("system")
-                        Text("Dark").tag("dark")
-                        Text("Light").tag("light")
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 200)
-                }
-            }
         } detail: {
             detailView
         }
@@ -70,6 +52,32 @@ struct ContentView: View {
     }
 
     // MARK: - Sidebar
+
+    /// Spawn/Save/Theme live in the sidebar footer so the window has no
+    /// toolbar and the detail terminal owns the full height. The
+    /// keyboard shortcuts stay on the buttons, so Cmd-N / Cmd-S keep
+    /// working; Cmd-S is additionally wired app-wide in
+    /// `AgentManagerMacApp.commands`.
+    private var sidebarFooter: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Button("Spawn", action: state.spawnSelected)
+                    .keyboardShortcut("n", modifiers: .command)
+                    .disabled(!state.canSpawn)
+                    .help("Start the selected session (am_spawn)")
+                Button("Save", action: state.save)
+                    .keyboardShortcut("s", modifiers: .command)
+                    .help("Persist the core config (am_core_save)")
+            }
+            Picker("Theme", selection: $appearance) {
+                Text("System").tag("system")
+                Text("Dark").tag("dark")
+                Text("Light").tag("light")
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(8)
+    }
 
     private var title: String {
         let n = state.attentionCount
