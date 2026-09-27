@@ -585,6 +585,49 @@ mod tests {
         }
     }
 
+    // Unix-only like the fake-`muse` test above: `printf` is a POSIX
+    // utility, not guaranteed on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn spans_json_preserves_sgr_red() {
+        // Issue #70 falsifiable at the core edge: a child emitting ANSI
+        // colors (`printf '\e[31mred\e[0m'`) must surface a red span, which
+        // is what the Swift pump re-emits as SGR for the terminal view.
+        unsafe {
+            let core = am_core_new();
+            assert!(!core.is_null());
+            let mut pty: *mut AmPty = std::ptr::null_mut();
+            let prog = CString::new("printf").unwrap();
+            // POSIX octal escapes in the format string: the child emits
+            // real SGR bytes around `red`.
+            let arg = CString::new("\\033[31mred\\033[0m\\n").unwrap();
+            let argv = [prog.as_ptr(), arg.as_ptr()];
+            let rc = am_spawn_argv(core, &mut pty, argv.as_ptr(), 2, std::ptr::null(), 80, 24);
+            assert_eq!(rc, AmError::Ok.code());
+            assert!(!pty.is_null());
+            assert!(pump_until_text(pty, "red", Duration::from_secs(5)));
+            // The plain snapshot strips SGR (the #70 root cause on its own).
+            let raw = am_screen_text(pty);
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            assert!(text.contains("red"));
+            assert!(!text.contains('\x1b'));
+            // The spans snapshot keeps the red style (palette 205,0,0).
+            let spans_raw = am_spans_json(pty);
+            assert!(!spans_raw.is_null());
+            let spans = CStr::from_ptr(spans_raw).to_string_lossy().into_owned();
+            am_screen_text_free(spans_raw);
+            am_pty_free(pty);
+            am_core_free(core);
+            assert!(spans.contains("red"), "spans carry text: {spans}");
+            assert!(
+                spans.contains("[205,0,0]"),
+                "red SGR maps to palette red: {spans}"
+            );
+        }
+    }
+
     #[test]
     fn spawn_failure_reports_spawn_code() {
         unsafe {

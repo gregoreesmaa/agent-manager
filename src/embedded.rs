@@ -794,4 +794,20 @@ mod tests {
             .expect("must fail");
         assert!(err.to_string().contains("definitely-not-a-real-binary-xyz"));
     }
+
+    #[test]
+    fn red_sgr_reaches_snapshot_spans() {
+        // Issue #70: the FFI-edge span snapshot must preserve SGR colors —
+        // the falsifiable `printf '\e[31mred\e[0m\n'` renders red because
+        // this snapshot carries the style the plain text drops.
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"\x1b[31mred\x1b[0m\n");
+        let rows = snapshot_rows(parser.screen());
+        let span = rows[0]
+            .iter()
+            .find(|s| s.text.contains("red"))
+            .expect("red span survives");
+        assert_eq!(span.style.fg, Some(SnapRgb(205, 0, 0)));
+        assert!(!span.style.bold);
+    }
 }

@@ -5,8 +5,9 @@ import SwiftUI
 /// The session terminal: a SwiftTerm `TerminalView` (native selection,
 /// copy/paste, scrollback, and Cmd-F find) driven by the core.
 ///
-/// Output flows core PTY -> `am_pump`/`am_screen_text` -> snapshot delta
-/// -> `view.feed(text:)`; keystrokes flow view -> `send` delegate ->
+/// Output flows core PTY -> `am_pump`/`am_screen_text`+`am_spans_json` ->
+/// SGR snapshot delta -> `view.feed(text:)`; keystrokes flow view ->
+/// `send` delegate ->
 /// `am_write`; window resizes flow view -> `sizeChanged` -> `am_resize`.
 /// No terminal grid is drawn here; the view owns all of that.
 struct CoreTerminalView: NSViewRepresentable {

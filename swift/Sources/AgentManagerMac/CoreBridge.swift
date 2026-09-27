@@ -31,6 +31,9 @@ import Foundation
 @_silgen_name("am_screen_text_free") private func am_screen_text_free(
     _ s: UnsafeMutablePointer<CChar>?
 )
+@_silgen_name("am_spans_json") private func am_spans_json(
+    _ pty: OpaquePointer?
+) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("am_status") private func am_status(
     _ core: OpaquePointer?, _ row: Int
 ) -> Int32
@@ -170,5 +173,13 @@ final class Pty {
     /// Owned plain-text snapshot of the emulated screen.
     func screenText() -> String? {
         copyOwnedString(am_screen_text(handle))
+    }
+
+    /// Owned styled-span snapshot of the emulated screen (`am_spans_json`:
+    /// one array per grid row of `{text,fg,bg,bold,italic,underline}`;
+    /// `fg`/`bg` are `[r,g,b]` or null). Nil on null handle or an
+    /// unreachable NUL-byte failure.
+    func spansJson() -> String? {
+        copyOwnedString(am_spans_json(handle))
     }
 }

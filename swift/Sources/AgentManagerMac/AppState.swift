@@ -139,15 +139,29 @@ final class AppState: ObservableObject {
     private func pump() {
         for (id, pty) in ptys {
             guard pty.pump() else { continue }
-            guard let snapshot = pty.screenText() else { continue }
+            // Color-preserving render of the same screen: the styled spans
+            // re-emitted as SGR when they decode, else the plain snapshot.
+            // The reconciler below works on either form, so both stay
+            // duplication-free and resize-safe; `fedText` stores whichever
+            // form was shown last.
+            let current: String
+            if let spans = pty.spansJson(),
+               let styled = AnsiFeed.render(json: spans)
+            {
+                current = styled
+            } else if let snapshot = pty.screenText() {
+                current = snapshot
+            } else {
+                continue
+            }
             let shown = fedText[id, default: ""]
-            if let feed = TerminalFeed.delta(old: shown, new: snapshot),
+            if let feed = TerminalFeed.delta(old: shown, new: current),
                !feed.isEmpty
             {
                 feedSeq += 1
                 feeds[id] = (feed, feedSeq)
             }
-            fedText[id] = snapshot
+            fedText[id] = current
         }
         for i in 0 ..< rows.count {
             statuses[rows[i].id] = Int(core.status(i))
