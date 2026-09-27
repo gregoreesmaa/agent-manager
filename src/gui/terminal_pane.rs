@@ -205,7 +205,7 @@ impl ShellView {
                 .active_view()
                 .map(|v| v.screen.size().1)
                 .unwrap_or(self.cols);
-            let term_font = terminal_font(self.app.terminal_config());
+            let term_font = self.term_font();
             let (full, runs) = layout_text(&spans, &term_font, theme.fg);
             let highlight = match self.selection_pair() {
                 Some((s, e)) => selection_rows(s, e, cols),
@@ -232,7 +232,7 @@ impl ShellView {
             return self.render_empty_pane(cx);
         };
         let rows = screen_rows(view.screen, resolved_cursor(&view), theme.cursor, light);
-        let term_font = terminal_font(self.app.terminal_config());
+        let term_font = self.term_font();
         let (full, runs) = layout_text(&rows, &term_font, theme.fg);
         self.term_frame
             .store(run_id, fingerprint, light, full.clone(), runs.clone());
@@ -297,7 +297,7 @@ impl ShellView {
         // emoji/CJK/system fallback tail, so TextRuns and the element
         // agree on one font and box-drawing/emoji/CJK never fall back to
         // a proportional face mid-row.
-        let term_font = terminal_font(self.app.terminal_config());
+        let term_font = self.term_font();
         div()
             .flex_1()
             .h_full()
@@ -350,6 +350,77 @@ impl ShellView {
     }
 }
 
+/// Known-monospace families (issue #53), in head preference order: the
+/// first installed entry heads the render stack when the configured
+/// primary is missing or proportional. Latin-monospace only — the
+/// emoji/CJK tail stays a tail, never a head, so Latin columns cannot
+/// drift.
+const MONO_HEAD_CANDIDATES: &[&str] = &[
+    "Menlo",
+    "SF Mono",
+    "DejaVu Sans Mono",
+    "Noto Sans Mono",
+    "JetBrains Mono",
+    "Fira Code",
+    "Hack",
+    "Iosevka",
+    "Roboto Mono",
+    "Cascadia Mono",
+    "Cascadia Code",
+    "Consolas",
+];
+
+/// Known-proportional families (issue #53): never honored as the
+/// terminal head even when installed and explicitly configured — a UI
+/// face breaks TUI column alignment exactly like a missing font does.
+/// Matched case-insensitively, exact names only (`Roboto Mono` stays
+/// valid while `Roboto` does not).
+const PROPORTIONAL_FAMILIES: &[&str] = &[
+    "Helvetica",
+    "Helvetica Neue",
+    "Arial",
+    "Times",
+    "Times New Roman",
+    "Georgia",
+    "Verdana",
+    "SF Pro",
+    "SF Pro Text",
+    "SF Pro Display",
+    "Segoe UI",
+    "Roboto",
+    "Inter",
+    "New York",
+    "PingFang SC",
+    ".AppleSystemUIFont",
+    ".SystemUIFont",
+];
+
+/// True when `name` is a known-proportional UI face (issue #53).
+pub(crate) fn is_proportional_family(name: &str) -> bool {
+    PROPORTIONAL_FAMILIES
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(name))
+}
+
+/// Effective terminal head (issue #53): the configured primary when it
+/// is installed and monospace, else the first installed known-monospace
+/// family, else the primary as a warned last resort. Returns the head
+/// plus whether a fallback engaged (i.e. whether to flash the hint).
+/// The stack can therefore never head a proportional face: a missing
+/// primary used to fall through to gpui's proportional system face
+/// because the `FontFallbacks` tail only cascades missing *glyphs* once
+/// a base font loads — it never rescues a missing base.
+pub(crate) fn effective_terminal_family(installed: &[String], primary: &str) -> (String, bool) {
+    let present = |name: &str| installed.iter().any(|n| n.eq_ignore_ascii_case(name));
+    if present(primary) && !is_proportional_family(primary) {
+        return (primary.to_string(), false);
+    }
+    if let Some(mono) = MONO_HEAD_CANDIDATES.iter().find(|m| present(m)) {
+        return (mono.to_string(), true);
+    }
+    (primary.to_string(), true)
+}
+
 /// Build the gpui [`Font`] for the terminal pane from the user setting
 /// (issue #35): the configured primary family plus the explicit
 /// emoji/CJK/monospace fallback chain, so one missing family never
@@ -367,6 +438,42 @@ pub(crate) fn terminal_font(cfg: &TerminalConfig) -> Font {
     }
 }
 
+/// Terminal [`Font`] headed by an explicit family (issue #53): `head`
+/// first, then the configured stack with any duplicate of the head
+/// removed, so the resolved-monospace substitute keeps the same
+/// emoji/CJK tail as the configured primary.
+pub(crate) fn headed_terminal_font(head: &str, cfg: &TerminalConfig) -> Font {
+    // One-way shortcut: the configured head is exactly the #35
+    // constructor (`terminal_font` never calls back here).
+    if head == cfg.font_family {
+        return terminal_font(cfg);
+    }
+    let mut stack = vec![head.to_string()];
+    for family in cfg.font_stack() {
+        if family != head && !stack.contains(&family) {
+            stack.push(family);
+        }
+    }
+    let mut fallbacks = stack.clone();
+    fallbacks.remove(0);
+    Font {
+        family: stack[0].clone().into(),
+        features: Default::default(),
+        weight: Default::default(),
+        style: Default::default(),
+        fallbacks: Some(FontFallbacks::from_fonts(fallbacks)),
+    }
+}
+
+/// Terminal [`Font`] that truly renders monospace (issue #53): headed
+/// by [`effective_terminal_family`] against the installed families, so
+/// every TextRun, the text element, and the PTY metrics agree on one
+/// installed monospace face.
+pub(crate) fn resolved_terminal_font(installed: &[String], cfg: &TerminalConfig) -> Font {
+    let (head, _) = effective_terminal_family(installed, &cfg.font_family);
+    headed_terminal_font(&head, cfg)
+}
+
 /// Whether the terminal pane renders the light palette (issue #43):
 /// true when a global component theme exists and is not dark. Headless
 /// (no theme global) stays dark, preserving the historic default.
@@ -374,27 +481,37 @@ pub(crate) fn term_is_light(cx: &gpui::App) -> bool {
     cx.try_global::<Theme>().is_some_and(|t| !t.is_dark())
 }
 
-/// One-line hint naming a missing terminal primary font (issue #41):
-/// `Some` when `primary` matches no installed family (case-insensitive),
-/// so the pane can say which font fell back to the monospace chain.
+/// One-line hint naming the resolved terminal font (issues #41/#53):
+/// `None` when `primary` is installed and monospace; otherwise names
+/// the primary plus the substitute head, so the resolved font is
+/// always visible on the status line instead of failing silently.
 pub(crate) fn missing_font_hint(installed: &[String], primary: &str) -> Option<String> {
-    let present = installed
+    let installed_primary = installed
         .iter()
         .any(|name| name.eq_ignore_ascii_case(primary));
-    if present {
+    let (head, _) = effective_terminal_family(installed, primary);
+    if installed_primary && !is_proportional_family(primary) {
         None
+    } else if installed_primary {
+        Some(format!(
+            "terminal font '{primary}' is proportional — using {head} for column alignment"
+        ))
+    } else if head == primary {
+        Some(format!(
+            "terminal font '{primary}' not installed and no monospace fallback found"
+        ))
     } else {
         Some(format!(
-            "terminal font '{primary}' not installed — using fallback monospace"
+            "terminal font '{primary}' not installed — using {head}"
         ))
     }
 }
 
 impl ShellView {
-    /// Probe the installed families for the configured primary (issue
-    /// #41): on a first-seen missing primary, flash the one-line hint on
-    /// the status line. Runs once per configured family so the per-frame
-    /// render never re-enumerates system fonts.
+    /// Probe the installed families for the configured primary (issues
+    /// #41/#53): resolves the monospace head once per configured
+    /// family and flashes the one-line hint when a fallback engaged, so
+    /// the per-frame render never re-enumerates system fonts.
     pub(crate) fn probe_terminal_font(&mut self, cx: &gpui::App) {
         let primary = self.app.terminal_config().font_family.clone();
         if self
@@ -406,10 +523,36 @@ impl ShellView {
         }
         let installed = cx.text_system().all_font_names();
         let hint = missing_font_hint(&installed, &primary);
-        self.font_probe = Some((primary, hint.is_none()));
+        // The cached head is the family of the resolved stack itself,
+        // never a parallel computation that could disagree with it.
+        let head = resolved_terminal_font(&installed, self.app.terminal_config())
+            .family
+            .to_string();
+        self.font_probe = Some((primary, head));
         if let Some(hint) = hint {
             self.app.set_status(hint);
         }
+    }
+
+    /// Family actually heading the terminal render stack (issue #53):
+    /// the probed head when it covers the configured primary, else the
+    /// configured primary (first frame / headless). This is the
+    /// debugging surface for the monospace investigation: whatever this
+    /// returns is what every TextRun and the metrics measure.
+    pub(crate) fn resolved_font_head(&self) -> String {
+        let primary = self.app.terminal_config().font_family.clone();
+        match &self.font_probe {
+            Some((checked, head)) if *checked == primary => head.clone(),
+            _ => primary,
+        }
+    }
+
+    /// Font actually rendering in the terminal pane (issue #53): the
+    /// resolved head plus the configured tail, so TextRuns, the text
+    /// element, and the PTY metrics agree on one installed monospace
+    /// face instead of silently falling back to a proportional face.
+    pub(crate) fn term_font(&self) -> Font {
+        headed_terminal_font(&self.resolved_font_head(), self.app.terminal_config())
     }
 }
 
@@ -736,6 +879,148 @@ mod tests {
             missing_font_hint(&installed, "Iosevka Nerd Font").expect("absent primary hints");
         assert!(hint.contains("Iosevka Nerd Font"), "names it: {hint}");
         assert!(missing_font_hint(&[], "Menlo").is_some());
+    }
+
+    #[test]
+    fn effective_head_never_leaves_the_monospace_stack() {
+        // Issue #53 core: a missing primary resolves to the first
+        // installed known-monospace family — never the raw missing name
+        // (which gpui renders with a proportional stand-in) and never an
+        // unrelated installed proportional face.
+        use crate::config::TerminalConfig;
+        let installed = vec![
+            "Helvetica".to_string(),
+            "Apple Color Emoji".to_string(),
+            "Menlo".to_string(),
+        ];
+        let (head, fell_back) =
+            effective_terminal_family(&installed, &TerminalConfig::default().font_family);
+        assert_eq!(head, "Menlo");
+        assert!(fell_back);
+        // The hint surfaces the substitute for debugging.
+        let hint = missing_font_hint(&installed, &TerminalConfig::default().font_family)
+            .expect("fallback hints");
+        assert!(hint.contains("Menlo"), "names the substitute: {hint}");
+    }
+
+    #[test]
+    fn proportional_primary_is_rejected_even_when_installed() {
+        // Issue #53: explicitly configuring a proportional UI face still
+        // renders monospace — the head refuses it exactly like a missing
+        // primary. This is the regression test that fails under a
+        // proportional font: the resolved head must differ from it.
+        let installed = vec!["Helvetica".to_string(), "Menlo".to_string()];
+        let (head, fell_back) = effective_terminal_family(&installed, "Helvetica");
+        assert_ne!(head, "Helvetica");
+        assert_eq!(head, "Menlo");
+        assert!(fell_back);
+        let hint = missing_font_hint(&installed, "Helvetica").expect("proportional hints");
+        assert!(hint.contains("proportional"), "says why: {hint}");
+        assert!(hint.contains("Menlo"), "names the substitute: {hint}");
+        // Near-miss names stay valid: Roboto Mono is monospace even
+        // though Roboto is proportional.
+        assert!(!is_proportional_family("Roboto Mono"));
+        assert!(is_proportional_family("Roboto"));
+    }
+
+    #[test]
+    fn installed_monospace_primary_is_honored() {
+        // No fallback, no hint when the configured family is present.
+        let installed = vec!["Iosevka Nerd Font".to_string(), "Menlo".to_string()];
+        let (head, fell_back) = effective_terminal_family(&installed, "Iosevka Nerd Font");
+        assert_eq!(head, "Iosevka Nerd Font");
+        assert!(!fell_back);
+        assert_eq!(missing_font_hint(&installed, "Iosevka Nerd Font"), None);
+    }
+
+    #[test]
+    fn resolved_runs_carry_the_substitute_head_with_the_same_tail() {
+        // Issue #53 end to end: with the default primary absent, the
+        // runs gpui shapes head the installed monospace substitute and
+        // keep the configured emoji/CJK tail — so box-drawing, bold,
+        // and newline runs all share one monospace face.
+        use crate::config::TerminalConfig;
+        let cfg = TerminalConfig::default();
+        let installed = vec!["Menlo".to_string(), "Apple Color Emoji".to_string()];
+        let resolved = resolved_terminal_font(&installed, &cfg);
+        assert_eq!(resolved.family.as_ref(), "Menlo");
+        let tail = resolved
+            .fallbacks
+            .as_ref()
+            .expect("tail survives the substitute head")
+            .fallback_list()
+            .to_vec();
+        assert!(tail.contains(&"Apple Color Emoji".to_string()));
+        assert!(!tail.contains(&"Menlo".to_string()), "no head duplicate");
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process("─┌─┐ \x1b[1mbold\x1b[0m \x1b[31mred\x1b[0m".as_bytes());
+        let rows = screen_rows(parser.screen(), None, Rgb8(0, 0, 0), false);
+        let (full, runs) = layout_text(&rows, &resolved, term_theme(false).fg);
+        assert!(!runs.is_empty());
+        let total: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, full.len());
+        for run in &runs {
+            assert_eq!(run.font.family.as_ref(), "Menlo", "run heads mono");
+            assert_eq!(run.font.fallbacks, resolved.fallbacks, "run keeps the tail");
+        }
+        let _ = gpui::StyledText::new(full).with_runs(runs);
+    }
+
+    #[test]
+    fn box_drawing_borders_occupy_single_columns() {
+        // Issue #53 falsifiable half at the grid level: every TUI
+        // border glyph takes exactly one cell (no wide continuation),
+        // so rows align in columns by construction — and the resolved
+        // head above is what keeps them aligned on pixels too.
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process("┌──┐\r\n│hi│\r\n└──┘".as_bytes());
+        let screen = parser.screen();
+        let contents = screen.contents();
+        assert!(contents.contains("┌──┐"), "top border: {contents:?}");
+        assert!(contents.contains("└──┘"), "bottom border: {contents:?}");
+        for r in 0..3u16 {
+            for c in 0..4u16 {
+                let cell = screen.cell(r, c).expect("border cell exists");
+                assert!(
+                    !cell.is_wide_continuation(),
+                    "border cell ({r}, {c}) is single-width"
+                );
+            }
+        }
+        assert_eq!(
+            super::super::terminal::row_content_range(screen, 0),
+            Some((0, 4))
+        );
+    }
+
+    #[test]
+    fn term_font_head_defaults_to_primary_before_the_probe() {
+        // Headless (no text system): the render font heads the
+        // configured primary. A stored probe head swaps only the head —
+        // the tail is untouched — which is also the debugging surface:
+        // `resolved_font_head` is what reaches the TextRuns.
+        use crate::config::TerminalConfig;
+        let view = ShellView::new();
+        assert_eq!(
+            view.resolved_font_head(),
+            TerminalConfig::default().font_family
+        );
+        assert_eq!(
+            view.term_font().family.as_ref(),
+            TerminalConfig::default().font_family
+        );
+        let mut probed = ShellView::new();
+        probed.font_probe = Some((TerminalConfig::default().font_family, "Menlo".to_string()));
+        assert_eq!(probed.resolved_font_head(), "Menlo");
+        let font = probed.term_font();
+        assert_eq!(font.family.as_ref(), "Menlo");
+        let tail = font.fallbacks.expect("tail").fallback_list().to_vec();
+        assert!(tail.contains(&"Apple Color Emoji".to_string()));
+        // A stale probe (different primary) never applies.
+        probed
+            .app
+            .set_terminal_font_family_for_test("Iosevka".to_string());
+        assert_eq!(probed.resolved_font_head(), "Iosevka");
     }
 
     #[test]

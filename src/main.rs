@@ -9,7 +9,7 @@
 //! (copy-on-select), Cmd+C copies, Cmd/Ctrl+V pastes.
 //! Keys (nav focus): j/k move, n new, y copy selection-or-screen, p paste,
 //! Tab/i type, ? help, q quit. Typing focus: keys go to `muse`; Tab/Esc back to
-//! the list.
+//! the list; Cmd+1/Cmd+2 jump to either pane from anywhere.
 
 mod app;
 mod config;

@@ -20,7 +20,6 @@ use super::layout::{
     STATUS_HEIGHT,
 };
 use super::shell::ShellView;
-use super::terminal_pane::terminal_font;
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -86,6 +85,17 @@ impl Render for ShellView {
                         .flex_col()
                         .flex_1()
                         .child(term_col)
+                        // Focus frame (issue #56): a constant 1px border
+                        // around the terminal pane, visible only while
+                        // it owns the keyboard. The width never changes,
+                        // so toggling focus never resizes the PTY grid;
+                        // the status-line tag carries the non-color cue.
+                        .border_1()
+                        .border_color(if self.app.is_terminal_focused() {
+                            rgb(super::shell::TERMINAL_FOCUS_BORDER)
+                        } else {
+                            rgb(0x11111b)
+                        })
                         // Tracked: clicking here must move real keyboard
                         // focus, or typed keys never reach `muse`. Drag
                         // highlights terminal text (copy-on-select);
@@ -180,7 +190,12 @@ impl ShellView {
     /// but never re-measure — unless the configured family/fallbacks/size
     /// changed, which drops the stale entry.
     fn cached_mono_metrics(&mut self, cx: &mut Context<ShellView>) -> (f32, f32) {
-        let term_font = terminal_font(self.app.terminal_config());
+        // The PTY grid measures the resolved font (issue #53): advances
+        // from a missing primary belong to gpui's proportional stand-in,
+        // not to the monospace face that renders. The probe fills the
+        // head on its first pass, so metrics converge by the next frame.
+        self.probe_terminal_font(cx);
+        let term_font = self.term_font();
         let size = self.term_font_size();
         let key = (mono_cache_key(&term_font), size.to_bits());
         if let Some((k, m)) = self.mono_metrics.as_ref() {
@@ -363,6 +378,7 @@ mod tests {
         FALLBACK_CHAR_W, FALLBACK_LINE_H, LEFT_WIDTH, MIN_COLS, MIN_ROWS, STATUS_HEIGHT,
     };
     use super::super::runs::test_shell;
+    use super::super::terminal_pane::terminal_font;
     use super::*;
 
     #[test]

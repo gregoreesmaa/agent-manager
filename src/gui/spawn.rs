@@ -226,6 +226,36 @@ mod tests {
     }
 
     #[test]
+    fn terminal_typing_reaches_the_live_pty() {
+        // Issue #56 falsifiable: with terminal focus, typed bytes arrive
+        // at the child — `cat` echoes them back onto the screen — and
+        // the input line tracks them for run titling.
+        let mut view = test_shell();
+        insert_test_pty(&mut view, "cat", &[]);
+        view.app.focus_terminal();
+        view.forward_key("h", Some("h"), false, false);
+        view.forward_key("i", Some("i"), false, false);
+        for _ in 0..100 {
+            view.refresh();
+            if let Some(live) = view.active_view() {
+                if live.screen.contents().contains("hi") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let live = view.active_view().expect("live pty has a view");
+        assert!(
+            live.screen.contents().contains("hi"),
+            "typed bytes echo from the child: {:?}",
+            live.screen.contents()
+        );
+        let id = view.active_id().unwrap();
+        let s = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(s.pending_input, "hi");
+    }
+
+    #[test]
     fn typed_line_becomes_run_title_on_enter_without_pty() {
         let mut view = test_shell();
         view.app.start_new_session();

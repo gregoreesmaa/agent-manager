@@ -51,6 +51,7 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | `Enter` | copy the focused link, or type into `muse` when none | newline to `muse` (first line titles the run) |
 | `i` | type into `muse` | types into `muse` |
 | `Tab` | type into `muse` | back to the list |
+| `Cmd+1` / `Cmd+2` | sessions list / type into `muse` | sessions list / type into `muse` |
 | `y`, `Cmd+C` | copy selection (or whole screen) | copy selection (or whole screen) |
 | `e` | export selected run to markdown (local file) | — (types `e`) |
 | `p`, `Cmd`/`Ctrl+V` | paste clipboard into `muse` | paste clipboard into `muse` |
@@ -78,9 +79,13 @@ reading source. `Tab` toggles which pane owns the keyboard.
   `PgUp`/`PgDn` page the list, `o` moves link focus across the selected
   run's links, and `Enter` copies the focused link (`Enter`/`i` with no
   link focused types into `muse`).
-- Click the terminal (or `Tab`/`i`) to type into `muse`; the status line
-  reads `typing in muse …` while it owns the keyboard. `muse` captures
-  keys **only** in this focus. `Tab`/`Esc` returns to the list, `q` quits.
+- Click the terminal (or `Tab`/`i`/`Cmd+2`) to type into `muse`; the
+  status line reads `▸ terminal · typing in muse …` while it owns the
+  keyboard (`▸ sessions …` otherwise, plus a frame around the terminal
+  pane — focus never depends on color alone). `muse` captures keys
+  **only** in this focus, and `/` types there instead of opening the
+  filter. `Tab`/`Esc` returns to the list, `Cmd+1`/`Cmd+2` jump
+  directly to either pane (even from inside the filter), `q` quits.
   There is no title bar: the terminal owns the full height, and status
   hints live in the sessions-panel footer (a slim bar under the terminal
   on narrow windows).

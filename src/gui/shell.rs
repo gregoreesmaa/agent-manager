@@ -22,7 +22,7 @@ use gpui::{App as GpuiApp, Bounds, FocusHandle, KeyDownEvent, Pixels, Window};
 use crate::app::{App, ChatSession};
 use crate::embedded::LiveView;
 
-use super::nav::NavAction;
+use super::nav::{KeyTarget, NavAction};
 use super::runs::Run;
 use super::terminal::{CellPos, Rgb8};
 
@@ -43,6 +43,9 @@ impl ShellView {
 pub const PUMP_INTERVAL: Duration = Duration::from_millis(50);
 /// Selection highlight behind terminal text (classic selection blue).
 pub(crate) const SELECTION_BG: u32 = 0x264f78;
+/// Terminal-pane focus frame (issue #56): 1px border while the terminal
+/// owns the keyboard, invisible (pane background) otherwise.
+pub(crate) const TERMINAL_FOCUS_BORDER: u32 = 0x585b70;
 /// Default terminal foreground when the child requests the default color.
 pub(crate) const DEFAULT_FG: Rgb8 = Rgb8(212, 212, 212);
 /// Caret color for the emulated cursor cell.
@@ -128,10 +131,15 @@ pub struct ShellView {
     /// (see [`super::terminal_pane::TermFrameCache`]): unchanged screens
     /// skip the `screen_rows` + `layout_text` rebuild every frame.
     pub(crate) term_frame: super::terminal_pane::TermFrameCache,
-    /// Missing-font probe (issue #41): the primary family last checked
-    /// plus whether it was installed. Checked once per configured
-    /// primary so the per-frame render never re-enumerates system fonts.
-    pub(crate) font_probe: Option<(String, bool)>,
+    /// Missing-font probe (issues #41/#53): the primary family last
+    /// checked plus the family actually heading the render stack. The
+    /// head equals the primary when it is installed and monospace;
+    /// otherwise it is the first installed known-monospace family (or
+    /// the primary as a warned last resort), so a missing primary can
+    /// never silently render proportionally. Checked once per
+    /// configured primary so the per-frame render never re-enumerates
+    /// system fonts.
+    pub(crate) font_probe: Option<(String, String)>,
     /// Mouse-drag selection in terminal cells (anchor, cursor). `None` while
     /// no drag is in progress / no selection exists.
     pub(crate) sel_anchor: Option<CellPos>,
@@ -237,27 +245,46 @@ impl ShellView {
             window.refresh();
             return;
         }
-        if self.filtering {
-            // Title-filter capture (issue #29) outranks every other
-            // binding, including Tab-focus and Esc-quit: printable keys
-            // extend the filter, Enter accepts, Esc clears. Repeats type.
-            self.quit_armed = false;
-            self.filter_key(key, key_char, ctrl);
+        // Global pane shortcuts (issue #56): Cmd+1 jumps to the sessions
+        // list, Cmd+2 to the terminal. They outrank captures (unlike
+        // Tab), so one chord always recovers a lost keyboard.
+        if platform && !ctrl && (key == "1" || key_char == Some("1")) {
+            self.switch_pane(false);
+            self.focus_list(window);
             window.refresh();
             return;
         }
-        if self.cwd_capture.is_some() {
-            // Folder-picker capture (issue #48): same precedence as the
-            // title filter — the typed path owns the keyboard until
-            // Enter starts the session or Esc cancels.
-            self.quit_armed = false;
-            self.cwd_key(key, key_char, ctrl, platform);
+        if platform && !ctrl && (key == "2" || key_char == Some("2")) {
+            self.switch_pane(true);
+            self.focus_term(window);
             window.refresh();
             return;
+        }
+        // Explicit focus model (issue #56): captures own every key —
+        // printable keys extend, Enter accepts, Esc cancels — outranking
+        // Tab-focus and Esc-quit exactly as before (issues #29/#48),
+        // now routed in one place. Repeats keep typing.
+        let target = self.key_target(key, key_char, ctrl);
+        match target {
+            KeyTarget::FilterCapture => {
+                self.quit_armed = false;
+                self.filter_key(key, key_char, ctrl);
+                window.refresh();
+                return;
+            }
+            KeyTarget::FolderCapture => {
+                self.quit_armed = false;
+                self.cwd_key(key, key_char, ctrl, platform);
+                window.refresh();
+                return;
+            }
+            _ => {}
         }
         if ev.is_held {
-            // Held-key repeats still type into the terminal; nav ignores them.
-            if !self.app.is_terminal_focused() {
+            // Held-key repeats still type into the terminal (captures
+            // routed above keep typing too); nav ignores them — a held
+            // `/` must never open the filter.
+            if target != KeyTarget::Terminal {
                 return;
             }
         }
@@ -271,7 +298,9 @@ impl ShellView {
             window.refresh();
             return;
         }
-        if self.app.is_terminal_focused() {
+        // `target` is Terminal exactly when the terminal owns the
+        // keyboard (issue #56): every typing key below reaches the PTY.
+        if target == KeyTarget::Terminal {
             // Typing means the user is staying: cancel an armed quit.
             self.quit_armed = false;
             if key == "escape" {
@@ -325,9 +354,11 @@ impl ShellView {
             window.refresh();
             return;
         }
-        // `/` opens title-filter capture (issue #29); `?` still toggles
-        // help via `nav_action` below.
-        if !ctrl && (key == "/" || key_char == Some("/")) {
+        // `/` in nav focus opens title-filter capture (issue #29);
+        // in terminal focus this arm is unreachable — `/` typed into
+        // `muse` via the Terminal branch above (issue #56). `?` still
+        // toggles help via `nav_action` below.
+        if target == KeyTarget::BeginFilter {
             self.quit_armed = false;
             self.begin_filter();
             window.refresh();

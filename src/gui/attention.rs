@@ -135,21 +135,23 @@ impl ShellView {
             return "run ready · r: start · n: new · ?: help · q: quit".to_string();
         }
         let narrow = viewport_w < NARROW_BREAKPOINT;
+        // Focus tag (issue #56): every default hint line names the
+        // keyboard owner in words, so focus never depends on color
+        // alone — in the sidebar footer (wide) and the slim bar
+        // (narrow) alike.
+        let tag = self.focus_indicator();
         if self.app.is_terminal_focused() {
             if narrow {
-                "typing · Tab/Esc: sessions · Cmd+C: copy · Cmd+V: paste · ?: help".to_string()
+                format!("{tag} · typing · Tab/Esc: sessions · Cmd+C: copy · Cmd+V: paste · ?: help")
             } else {
-                "typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help"
-                    .to_string()
+                format!("{tag} · typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help")
             }
         } else if self.app.sessions.is_empty() {
-            "n: new muse · ?: help · q: quit".to_string()
+            format!("{tag} · n: new muse · ?: help · q: quit")
         } else if narrow {
-            "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit"
-                .to_string()
+            format!("{tag} · n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit")
         } else {
-            "n: new · w: folder · j/k: move · PgUp/PgDn: page · o/Enter: open link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit"
-                .to_string()
+            format!("{tag} · n: new · w: folder · j/k: move · PgUp/PgDn: page · o/Enter: open link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit")
         }
     }
 }

@@ -13,6 +13,26 @@ use gpui::{App as GpuiApp, ClipboardItem};
 
 use super::shell::ShellView;
 
+/// Explicit focus model (issue #56): where the next key goes. The
+/// keyboard has exactly one owner at a time — a capture, the terminal
+/// PTY, or nav dispatch — and [`ShellView::key_target`] computes it
+/// from pure state so headless tests pin every route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyTarget {
+    /// Title-filter capture owns every key (the `filtering` flag).
+    FilterCapture,
+    /// Folder-picker capture owns every key (the `cwd_capture` buffer).
+    FolderCapture,
+    /// Terminal focus: every typing key reaches the PTY, including
+    /// `/`, `w`, and the comfort keys.
+    Terminal,
+    /// Nav focus: `/` starts filter capture, everything else dispatches.
+    Nav,
+    /// `/` in nav focus: begin filter capture (never reached while the
+    /// terminal owns the keyboard).
+    BeginFilter,
+}
+
 /// Outcome of a nav-focus keypress: state changes apply immediately,
 /// window/clipboard effects are applied by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +82,10 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
         ),
         ("i", "type in muse"),
         ("Tab", "switch sessions ↔ terminal focus"),
+        (
+            "Cmd+1 / Cmd+2",
+            "sessions list / type in muse (exits captures)",
+        ),
         (
             "w",
             "new session in a chosen folder (blank = current folder)",
@@ -250,6 +274,57 @@ impl ShellView {
         }
         self.clear_selection();
         self.link_cursor = None;
+    }
+
+    /// Route the next key to its keyboard owner (issue #56), pure
+    /// state (headlessly testable). Captures outrank focus; terminal
+    /// focus owns every typing key (`/` included, so it can never
+    /// hijack terminal input); nav focus routes `/` into a new filter
+    /// capture and everything else to nav dispatch. `ctrl` combos never
+    /// start the filter.
+    pub(crate) fn key_target(&self, key: &str, key_char: Option<&str>, ctrl: bool) -> KeyTarget {
+        if self.filtering {
+            return KeyTarget::FilterCapture;
+        }
+        if self.cwd_capture.is_some() {
+            return KeyTarget::FolderCapture;
+        }
+        if self.app.is_terminal_focused() {
+            return KeyTarget::Terminal;
+        }
+        if !ctrl && (key == "/" || key_char == Some("/")) {
+            return KeyTarget::BeginFilter;
+        }
+        KeyTarget::Nav
+    }
+
+    /// Global pane shortcut (Cmd+1 sessions / Cmd+2 terminal, issue
+    /// #56): exits any capture — filter text is kept (accepted), the
+    /// folder buffer is dropped — clears an armed quit, and moves app
+    /// focus. The caller applies window focus on top. Unlike Tab this
+    /// works from inside a capture, so a lost user can always jump
+    /// panes with one chord.
+    pub(crate) fn switch_pane(&mut self, terminal: bool) {
+        if self.filtering {
+            self.accept_filter();
+        }
+        self.cwd_capture = None;
+        self.quit_armed = false;
+        if terminal {
+            self.app.focus_terminal();
+        } else {
+            self.app.focus_nav();
+        }
+    }
+
+    /// Non-color focus indicator (issue #56): the status line names the
+    /// keyboard owner in words, so focus never depends on color alone.
+    pub(crate) fn focus_indicator(&self) -> &'static str {
+        if self.app.is_terminal_focused() {
+            "▸ terminal"
+        } else {
+            "▸ sessions"
+        }
     }
 
     /// Nav-focus key dispatch, pure state (headlessly testable). The caller
@@ -464,6 +539,117 @@ mod tests {
         assert_eq!(view.nav_action("p", false), NavAction::Paste);
         assert_eq!(view.nav_action("z", false), NavAction::None);
         assert_eq!(view.nav_action("j", true), NavAction::None);
+    }
+
+    #[test]
+    fn key_target_routes_by_focus_and_capture() {
+        // Issue #56 explicit focus model: one keyboard owner at a time.
+        use super::KeyTarget;
+        let mut view = test_shell();
+        view.app.focus_nav();
+        assert_eq!(view.key_target("a", Some("a"), false), KeyTarget::Nav);
+        assert_eq!(
+            view.key_target("/", Some("/"), false),
+            KeyTarget::BeginFilter
+        );
+        // Ctrl combos never start the filter.
+        assert_eq!(view.key_target("/", Some("/"), true), KeyTarget::Nav);
+        // Terminal focus owns every typing key, `/` included.
+        view.app.focus_terminal();
+        assert_eq!(view.key_target("/", Some("/"), false), KeyTarget::Terminal);
+        assert_eq!(view.key_target("w", Some("w"), false), KeyTarget::Terminal);
+        assert_eq!(view.key_target("a", Some("a"), false), KeyTarget::Terminal);
+        // Captures outrank focus either way.
+        view.begin_filter();
+        assert_eq!(
+            view.key_target("a", Some("a"), false),
+            KeyTarget::FilterCapture
+        );
+        view.app.focus_terminal();
+        assert_eq!(
+            view.key_target("a", Some("a"), false),
+            KeyTarget::FilterCapture
+        );
+        view.accept_filter();
+        view.begin_cwd_capture();
+        assert_eq!(
+            view.key_target("a", Some("a"), false),
+            KeyTarget::FolderCapture
+        );
+    }
+
+    #[test]
+    fn slash_types_in_terminal_and_filters_only_in_nav() {
+        // Issue #56: `/` focuses search without hijacking terminal
+        // input — in terminal focus it types, in nav focus it captures.
+        use super::KeyTarget;
+        let mut view = test_shell();
+        view.app.start_new_session();
+        let _ = view.app.take_pending_spawn();
+        assert!(view.app.is_terminal_focused());
+        assert_eq!(view.key_target("/", Some("/"), false), KeyTarget::Terminal);
+        view.forward_key("/", Some("/"), false, false);
+        assert!(!view.filtering, "no capture steals terminal input");
+        let id = view.active_id().unwrap();
+        let session = view.app.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(session.pending_input, "/");
+        // Nav focus: the same key opens capture instead of typing.
+        view.app.focus_nav();
+        assert_eq!(
+            view.key_target("/", Some("/"), false),
+            KeyTarget::BeginFilter
+        );
+        assert!(view.filter_key("/", Some("/"), false));
+        assert!(view.filtering);
+    }
+
+    #[test]
+    fn pane_shortcuts_move_focus_and_exit_captures() {
+        // Issue #56: Cmd+1/Cmd+2 jump panes from anywhere — filter text
+        // is kept (accepted), the folder buffer is dropped, an armed
+        // quit disarms.
+        let mut view = test_shell();
+        view.app.focus_nav();
+        view.begin_filter();
+        view.filter_type("fox");
+        view.quit_armed = true;
+        view.switch_pane(true);
+        assert!(view.app.is_terminal_focused());
+        assert!(!view.filtering);
+        assert_eq!(view.app.filter, "fox", "filter text kept");
+        assert!(!view.quit_armed);
+        view.switch_pane(false);
+        assert!(!view.app.is_terminal_focused());
+        // Folder capture drops its buffer instead of spawning.
+        view.begin_cwd_capture();
+        view.switch_pane(true);
+        assert!(view.cwd_capture.is_none());
+        assert!(view.app.is_terminal_focused());
+    }
+
+    #[test]
+    fn focus_indicator_names_the_keyboard_owner() {
+        // Issue #56 non-color cue: the status line tags the focused pane
+        // in words, at every width, so focus never depends on color.
+        let mut view = test_shell();
+        view.app.focus_nav();
+        assert_eq!(view.focus_indicator(), "▸ sessions");
+        view.app.focus_terminal();
+        assert_eq!(view.focus_indicator(), "▸ terminal");
+        assert!(
+            view.status_text_for_width(1280.0).starts_with("▸ terminal"),
+            "wide tags terminal: {:?}",
+            view.status_text_for_width(1280.0)
+        );
+        assert!(
+            view.status_text_for_width(600.0).starts_with("▸ terminal"),
+            "narrow tags terminal too"
+        );
+        view.app.focus_nav();
+        assert!(
+            view.status_text_for_width(1280.0).starts_with("▸ sessions"),
+            "wide tags sessions"
+        );
     }
 
     #[test]

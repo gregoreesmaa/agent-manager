@@ -475,6 +475,13 @@ impl App {
         size
     }
 
+    /// Test-only primary-family swap (issue #53): lets headless tests
+    /// age a stored font probe without a font enumeration roundtrip.
+    #[cfg(test)]
+    pub fn set_terminal_font_family_for_test(&mut self, family: String) {
+        self.config.terminal.font_family = family;
+    }
+
     /// Comfort-key mutation half for the panel width: same
     /// mutate/flash/persist split as [`App::set_terminal_font_size`].
     pub fn set_sidebar_width(&mut self, width: f32) -> f32 {
