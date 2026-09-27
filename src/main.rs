@@ -78,7 +78,7 @@ fn main() {
         // or the live OS appearance) so chrome renders in it immediately.
         cx.open_window(gui::view::window_options(), |window, cx| {
             Theme::change(
-                startup_theme.theme_mode(Some(window.appearance())),
+                gui::theme::theme_mode_for(startup_theme, window.appearance()),
                 Some(window),
                 cx,
             );

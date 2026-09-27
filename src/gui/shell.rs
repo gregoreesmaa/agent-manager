@@ -430,7 +430,7 @@ impl ShellView {
             NavAction::CycleTheme => {
                 // Issue #34: apply now, persist the choice, flash it.
                 let pref = self.app.cycle_theme();
-                let mode = pref.theme_mode(Some(window.appearance()));
+                let mode = super::theme::theme_mode_for(pref, window.appearance());
                 gpui_component::Theme::change(mode, None, cx);
                 match self.app.save_config() {
                     Ok(()) => self.app.set_status(format!("theme: {}", pref.label())),

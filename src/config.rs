@@ -17,8 +17,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gpui::WindowAppearance;
-use gpui_component::ThemeMode;
 use serde::{Deserialize, Serialize};
 
 /// Startup flags for one agent binary (keyed by program name, e.g.
@@ -159,19 +157,54 @@ impl ThemePreference {
         }
     }
 
-    /// Resolve to a concrete component theme. `appearance` is the live
-    /// window appearance; `None` (headless/tests) resolves system to dark,
-    /// preserving the pre-#34 default.
-    pub fn theme_mode(self, appearance: Option<WindowAppearance>) -> ThemeMode {
+    /// Resolve to a concrete theme. `System` follows `appearance`;
+    /// `Unknown` (headless/tests) resolves system to dark, preserving
+    /// the pre-#34 default.
+    pub fn resolve(self, appearance: OsAppearance) -> EffectiveTheme {
         match self {
-            Self::Dark => ThemeMode::Dark,
-            Self::Light => ThemeMode::Light,
+            Self::Dark => EffectiveTheme::Dark,
+            Self::Light => EffectiveTheme::Light,
             Self::System => match appearance {
-                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => ThemeMode::Dark,
-                Some(_) => ThemeMode::Light,
-                None => ThemeMode::Dark,
+                OsAppearance::Dark => EffectiveTheme::Dark,
+                OsAppearance::Light => EffectiveTheme::Light,
+                OsAppearance::Unknown => EffectiveTheme::Dark,
             },
         }
+    }
+
+    /// Convenience for shells and FFI bindings: true when
+    /// [`Self::resolve`] yields dark.
+    pub fn is_dark(self, appearance: OsAppearance) -> bool {
+        self.resolve(appearance).is_dark()
+    }
+}
+
+/// OS appearance in framework-free form (volatility shield: the core never
+/// names framework appearance types; the shell maps its live appearance
+/// onto this in `crate::gui::theme::theme_mode_for`, and native shells
+/// map their own appearance value the same way).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OsAppearance {
+    Dark,
+    Light,
+    /// Unknown / headless (tests, no window yet).
+    #[default]
+    Unknown,
+}
+
+/// Resolved theme in framework-free form: what a shell should actually
+/// render. Shells match on this (or [`EffectiveTheme::is_dark`]) instead
+/// of touching component theme types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveTheme {
+    Dark,
+    Light,
+}
+
+impl EffectiveTheme {
+    /// Convenience for FFI/SwiftUI (`ColorScheme`) bindings: dark or not.
+    pub fn is_dark(self) -> bool {
+        matches!(self, Self::Dark)
     }
 }
 
@@ -325,8 +358,6 @@ mod tests {
     #[test]
     fn theme_choice_cycles_parses_and_resolves() {
         // Issue #34: dark → light → system → dark.
-        use gpui::WindowAppearance;
-        use gpui_component::ThemeMode;
         assert_eq!(ThemePreference::Dark.cycle(), ThemePreference::Light);
         assert_eq!(ThemePreference::Light.cycle(), ThemePreference::System);
         assert_eq!(ThemePreference::System.cycle(), ThemePreference::Dark);
@@ -335,23 +366,28 @@ mod tests {
         let parsed: Config = serde_json::from_str(r#"{"theme": "light"}"#).unwrap();
         assert_eq!(parsed.theme, ThemePreference::Light);
         assert_eq!(
-            ThemePreference::Dark.theme_mode(Some(WindowAppearance::Light)),
-            ThemeMode::Dark
+            ThemePreference::Dark.resolve(OsAppearance::Light),
+            EffectiveTheme::Dark
         );
         assert_eq!(
-            ThemePreference::Light.theme_mode(Some(WindowAppearance::Dark)),
-            ThemeMode::Light
+            ThemePreference::Light.resolve(OsAppearance::Dark),
+            EffectiveTheme::Light
         );
         // System follows the OS; unknown stays on the historic dark.
         assert_eq!(
-            ThemePreference::System.theme_mode(Some(WindowAppearance::VibrantDark)),
-            ThemeMode::Dark
+            ThemePreference::System.resolve(OsAppearance::Dark),
+            EffectiveTheme::Dark
         );
         assert_eq!(
-            ThemePreference::System.theme_mode(Some(WindowAppearance::Light)),
-            ThemeMode::Light
+            ThemePreference::System.resolve(OsAppearance::Light),
+            EffectiveTheme::Light
         );
-        assert_eq!(ThemePreference::System.theme_mode(None), ThemeMode::Dark);
+        assert_eq!(
+            ThemePreference::System.resolve(OsAppearance::Unknown),
+            EffectiveTheme::Dark
+        );
+        assert!(ThemePreference::System.is_dark(OsAppearance::Dark));
+        assert!(!ThemePreference::System.is_dark(OsAppearance::Light));
     }
 
     #[test]

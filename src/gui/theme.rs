@@ -6,6 +6,7 @@
 //! text keeps a WCAG contrast ratio >= 4.5 against the dark surfaces.
 
 use crate::app::Status;
+use crate::config::{OsAppearance, ThemePreference};
 
 /// Dim secondary foreground. 0xAAAAAA on the 0x11111b terminal surface
 /// (and the 0x1e1e2e bars) clears the 4.5 floor the old 0x888888 missed;
@@ -45,6 +46,29 @@ pub(crate) fn row_marker(status: Status) -> &'static str {
 /// Section-group marker per status (same vocabulary as [`row_marker`]).
 pub(crate) fn group_marker(status: Status) -> &'static str {
     row_marker(status)
+}
+
+/// Map the configured theme choice plus the live gpui window appearance
+/// onto the component theme mode the chrome reads. This is the only place
+/// gpui's `WindowAppearance` meets `config`: both `main` (startup) and
+/// `shell` (the `t`-key cycle) funnel through here, so a gpui upgrade
+/// touches one function. Native shells do the same mapping against
+/// [`OsAppearance`] on their side (see `docs/native-core-seam.md`).
+pub(crate) fn theme_mode_for(
+    pref: ThemePreference,
+    appearance: gpui::WindowAppearance,
+) -> gpui_component::ThemeMode {
+    let os = match appearance {
+        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => OsAppearance::Dark,
+        gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => OsAppearance::Light,
+    };
+    // Dogfood the framework-free seam (`resolve`/`is_dark`) native shells
+    // will bind against, so it stays exercised outside tests.
+    if pref.is_dark(os) {
+        gpui_component::ThemeMode::Dark
+    } else {
+        gpui_component::ThemeMode::Light
+    }
 }
 
 /// WCAG 2.x contrast ratio of two 0xRRGGBB colors (1.0 – 21.0).
@@ -105,5 +129,30 @@ mod tests {
         }
         assert_ne!(row_marker(Status::Attention), row_marker(Status::Idle));
         assert_ne!(row_marker(Status::Attention), row_marker(Status::Working));
+    }
+
+    #[test]
+    fn vibrant_appearances_resolve_to_their_base_mode() {
+        // The gpui adapter preserves the old `theme_mode` contract:
+        // vibrant variants follow their base, explicit choices ignore
+        // the OS, and system-on-unknown is covered by the core test.
+        use gpui::WindowAppearance;
+        use gpui_component::ThemeMode;
+        assert_eq!(
+            super::theme_mode_for(ThemePreference::System, WindowAppearance::VibrantDark),
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            super::theme_mode_for(ThemePreference::System, WindowAppearance::VibrantLight),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            super::theme_mode_for(ThemePreference::Dark, WindowAppearance::Light),
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            super::theme_mode_for(ThemePreference::Light, WindowAppearance::Dark),
+            ThemeMode::Light
+        );
     }
 }
