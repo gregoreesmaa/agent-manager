@@ -71,6 +71,7 @@
       ResolveNuGetPackageAssets UAP check. Same line ships in PowerToys'
       unpackaged WinUI 3 C++ projects, which build green on hosted runners. -->
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+    <TargetFrameworks>UAP,Version=v10.0</TargetFrameworks>
     <!-- Do NOT set CppWinRTEnabled: 'true' flips the CppWinRT NuGet targets to
       VS-inbox mode (CppWinRTPackage=false), which runs cppwinrt from the package's
       build/native dir instead of bin and fails CppWinRTMakePlatformProjection
