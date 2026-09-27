@@ -417,4 +417,82 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn same_named_live_runs_operate_independently() {
+        // Issue #54 falsifiable: two same-titled rows are independent
+        // working rows — pump output, typed input, and close all route
+        // by the UUID row key, never by title.
+        let mut view = test_shell();
+        let first = insert_test_pty(
+            &mut view,
+            "printf",
+            &["see https://github.com/acme/app/pull/41\\n"],
+        );
+        let second = insert_test_pty(&mut view, "sleep", &["5"]);
+        assert_ne!(first, second);
+        // Force the reported collision: identical titles, distinct ids.
+        for s in view.app.sessions.iter_mut() {
+            s.title = "otter".into();
+        }
+        // Pump until the printf output lands — on the first run only.
+        for _ in 0..100 {
+            view.refresh();
+            let s = view.app.sessions.iter().find(|s| s.id == first).unwrap();
+            if !s.pr_links.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let a = view.app.sessions.iter().find(|s| s.id == first).unwrap();
+        assert_eq!(
+            a.pr_links,
+            vec!["https://github.com/acme/app/pull/41".to_string()]
+        );
+        let b = view.app.sessions.iter().find(|s| s.id == second).unwrap();
+        assert!(
+            b.pr_links.is_empty(),
+            "links leaked across same-named rows: {:?}",
+            b.pr_links
+        );
+        assert_eq!(b.title, "otter");
+        // Typed input reaches only the selected row: select the first
+        // and type — the same-named neighbor keeps its title.
+        view.app.selected = view
+            .app
+            .sessions
+            .iter()
+            .position(|s| s.id == first)
+            .unwrap();
+        view.app.focus_terminal();
+        for c in ["f", "i", "x"] {
+            view.forward_key(c, Some(c), false, false);
+        }
+        view.forward_key("enter", None, false, false);
+        assert_eq!(
+            view.app
+                .sessions
+                .iter()
+                .find(|s| s.id == first)
+                .unwrap()
+                .title,
+            "fix"
+        );
+        assert_eq!(
+            view.app
+                .sessions
+                .iter()
+                .find(|s| s.id == second)
+                .unwrap()
+                .title,
+            "otter"
+        );
+        // Closing the selected row drops exactly its entry + PTY; the
+        // neighbor keeps working.
+        view.close_run();
+        assert_eq!(view.app.sessions.len(), 1);
+        assert_eq!(view.app.sessions[0].id, second);
+        assert!(!view.runs.contains_key(&first));
+        assert!(view.runs.contains_key(&second));
+    }
 }

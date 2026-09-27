@@ -70,32 +70,59 @@ pub fn load_sessions_from(path: &Path) -> Vec<ChatSession> {
         .unwrap_or_default()
 }
 
+/// Fold `donor`'s retained state into `keep` without changing `keep`'s
+/// identity (issue #54): link lists union in first-seen order (so links
+/// that scrolled off keep surviving), an empty transcript fills from the
+/// donor, and the fresher activity stamp wins. Title, project, and status
+/// always stay `keep`'s — identity is the id, never the title.
+fn union_into(keep: &mut ChatSession, mut donor: ChatSession) {
+    keep.push_links(
+        std::mem::take(&mut donor.pr_links),
+        std::mem::take(&mut donor.related_links),
+    );
+    if keep.transcript.is_empty() && !donor.transcript.is_empty() {
+        keep.transcript = donor.transcript;
+        keep.transcript_truncated = donor.transcript_truncated;
+    }
+    if donor.last_active > keep.last_active {
+        keep.last_active = donor.last_active;
+    }
+}
+
 /// Merge persisted sessions under historic discovery: discovered entries
 /// win on title/project (fresher), link lists union in first-seen order
 /// (so links that scrolled off keep surviving), transcripts fill in when
 /// discovery has none. Persisted ids with no discovered counterpart return
 /// as [`Status::Idle`] — they own no live PTY after a restart.
+///
+/// One row per id (issue #54): the same provider session can surface more
+/// than once in discovery (e.g. resumed under a second date dir), and two
+/// same-titled rows must stay independent entries. Duplicate discoveries
+/// fold into the freshest entry (greatest `last_active`), so a stale dead
+/// copy never shadows the live row.
 pub fn merge_sessions(
     discovered: Vec<ChatSession>,
     persisted: Vec<ChatSession>,
 ) -> Vec<ChatSession> {
-    let mut out = discovered;
-    for mut saved in persisted {
-        match out.iter_mut().find(|s| s.id == saved.id) {
-            Some(live) => {
-                live.push_links(
-                    std::mem::take(&mut saved.pr_links),
-                    std::mem::take(&mut saved.related_links),
-                );
-                if live.transcript.is_empty() && !saved.transcript.is_empty() {
-                    live.transcript = saved.transcript;
-                    live.transcript_truncated = saved.transcript_truncated;
-                }
-                if saved.last_active > live.last_active {
-                    live.last_active = saved.last_active;
+    let mut out: Vec<ChatSession> = Vec::with_capacity(discovered.len());
+    for fresh in discovered {
+        match out.iter_mut().find(|s| s.id == fresh.id) {
+            Some(keep) => {
+                if fresh.last_active >= keep.last_active {
+                    let old = std::mem::replace(keep, fresh);
+                    union_into(keep, old);
+                } else {
+                    union_into(keep, fresh);
                 }
             }
+            None => out.push(fresh),
+        }
+    }
+    for saved in persisted {
+        match out.iter_mut().find(|s| s.id == saved.id) {
+            Some(live) => union_into(live, saved),
             None => {
+                let mut saved = saved;
                 saved.status = Status::Idle;
                 out.push(saved);
             }
@@ -281,6 +308,91 @@ mod tests {
         std::fs::write(&path, "[[[broken").unwrap();
         assert!(load_sessions_from(&path).is_empty());
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn generated_ids_survive_a_save_load_roundtrip() {
+        // Issue #54: the UUID row key is plain persisted state — a
+        // restart loads the same ids back, so rows keep their identity
+        // (and selection/PTY routing) instead of colliding by name.
+        let path = tmp_path("uuids.json");
+        let sessions: Vec<ChatSession> = (0..5)
+            .map(|_| {
+                let mut s = sess(&crate::app::new_session_id());
+                s.title = "otter".into();
+                s
+            })
+            .collect();
+        let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
+        save_sessions_to(&path, &sessions).unwrap();
+        let back = load_sessions_from(&path);
+        let back_ids: Vec<String> = back.iter().map(|s| s.id.clone()).collect();
+        assert_eq!(back_ids, ids);
+        assert_eq!(
+            back_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            5,
+            "ids stay unique across the roundtrip"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn duplicate_discoveries_fold_into_one_live_row() {
+        // Issue #54: the same provider session surfacing twice (e.g. a
+        // resumed session under a second date dir) renders a single row —
+        // the freshest entry wins, links union, and no stale dead copy
+        // shadows the live one.
+        let mut stale = sess("dup");
+        stale.title = "stale title".into();
+        stale.last_active = 3;
+        stale.status = Status::Idle;
+        stale.transcript.clear();
+        let mut fresh = sess("dup");
+        fresh.title = "fresh title".into();
+        fresh.last_active = 9;
+        fresh.status = Status::Working;
+        fresh.pr_links.clear();
+        let merged = merge_sessions(vec![stale, fresh], vec![]);
+        assert_eq!(merged.len(), 1);
+        let row = &merged[0];
+        assert_eq!(row.id, "dup");
+        assert_eq!(row.title, "fresh title");
+        assert_eq!(row.status, Status::Working);
+        assert_eq!(row.last_active, 9);
+        // Links union across both copies: the stale copy's PR link plus
+        // the fresh copy's related link.
+        assert_eq!(
+            row.pr_links,
+            vec!["https://github.com/acme/app/pull/1".to_string()]
+        );
+        assert_eq!(row.related_links, vec!["src/app.rs:9".to_string()]);
+        // Transcript fills from the copy that has one.
+        assert_eq!(row.transcript.len(), 1);
+    }
+
+    #[test]
+    fn same_titled_persisted_ghost_never_shadows_the_live_row() {
+        // Issue #54: a dead persisted entry sharing the live row's title
+        // parks alongside as its own idle row — identity is the id, so
+        // lookups by id always reach the live session.
+        let mut live = sess("live-uuid");
+        live.title = "otter".into();
+        live.status = Status::Working;
+        let mut ghost = sess("ghost-uuid");
+        ghost.title = "otter".into();
+        ghost.status = Status::Working;
+        let merged = merge_sessions(vec![live], vec![ghost]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            merged.iter().find(|s| s.id == "live-uuid").unwrap().status,
+            Status::Working
+        );
+        let parked = merged.iter().find(|s| s.id == "ghost-uuid").unwrap();
+        assert_eq!(parked.status, Status::Idle);
+        assert_eq!(parked.title, "otter");
     }
 
     #[test]

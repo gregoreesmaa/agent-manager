@@ -296,8 +296,8 @@ mod tests {
     #[test]
     fn close_kills_run_entry_and_pty_without_touching_neighbors() {
         let mut view = test_shell();
-        insert_test_pty(&mut view, "sleep", &["5"]);
-        insert_test_pty(&mut view, "sleep", &["5"]);
+        let first = insert_test_pty(&mut view, "sleep", &["5"]);
+        let _second = insert_test_pty(&mut view, "sleep", &["5"]);
         view.app.focus_nav();
         assert_eq!(view.app.sessions.len(), 2);
         assert_eq!(view.app.selected, 1);
@@ -306,9 +306,9 @@ mod tests {
         // The selected run is gone — entry and PTY — the neighbor keeps
         // both, and the flash names the closed run.
         assert_eq!(view.app.sessions.len(), 1);
-        assert_eq!(view.app.sessions[0].id, "run-1");
+        assert_eq!(view.app.sessions[0].id, first);
         assert_eq!(view.runs.len(), 1);
-        assert!(view.runs.contains_key("run-1"));
+        assert!(view.runs.contains_key(&first));
         assert!(view.status_text().contains("closed"));
         // Closing the last run empties the list without panicking.
         view.close_run();

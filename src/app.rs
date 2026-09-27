@@ -52,9 +52,63 @@ pub fn harness_badge(harness: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// Fresh stable row key for a session started in-app (issue #54).
+///
+/// UUID-shaped (`8-4-4-4-12` lowercase hex, version/variant bits set),
+/// minted from wall-clock time, the process id, and a process-wide
+/// counter — unique across restarts without coordination, std-only (no
+/// new dependency). Stored on [`ChatSession::id`] and persisted with run
+/// state, so a row keeps its identity (and its live PTY) across
+/// restarts; titles are display-only and may repeat. Legacy `run-N` ids
+/// from older state files keep loading untouched and never collide with
+/// these.
+pub fn new_session_id() -> String {
+    fn mix64(mut z: u64) -> u64 {
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id() as u64;
+    let lo_nanos = nanos as u64;
+    let hi_nanos = (nanos >> 64) as u64;
+    let hi = mix64(
+        lo_nanos
+            .wrapping_add(pid.rotate_left(17))
+            .wrapping_add(count.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+    );
+    let lo = mix64(
+        hi_nanos
+            .wrapping_add(pid.wrapping_mul(0x85EB_CA6B))
+            .wrapping_add(count ^ 0xC2B2_AE35_1752_7463),
+    );
+    // Version 4 + RFC-4122 variant bits on the top halves.
+    let hi = (hi & 0xFFFF_FFFF_FFFF_0FFF) | 0x0000_0000_0000_4000;
+    let lo = (lo & 0x3FFF_FFFF_FFFF_FFFF) | 0x8000_0000_0000_0000;
+    let v = ((hi as u128) << 64) | lo as u128;
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        (v >> 96) & 0xFFFF_FFFF,
+        (v >> 80) & 0xFFFF,
+        (v >> 64) & 0xFFFF,
+        (v >> 48) & 0xFFFF,
+        v & 0xFFFF_FFFF_FFFF,
+    )
+}
+
 /// One chat/agent conversation surfaced by a [`crate::providers::Provider`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatSession {
+    /// Stable row key (issue #54): a [`new_session_id`] UUID for runs
+    /// started in-app, the provider session id for discovered ones.
+    /// Persisted with run state, unique per row, and the key for every
+    /// roster lookup (selection pinning, PTY map, merge, actions) — the
+    /// title is display-only and may repeat across rows.
     pub id: String,
     pub title: String,
     pub project: String,
@@ -330,7 +384,7 @@ pub enum Focus {
 
 /// Application state: the live run list plus list selection, keyboard
 /// focus, the pending PTY spawn the main loop must start, and a counter for
-/// user-created run ids. The list starts empty: entries appear only when the
+/// placeholder animal titles. The list starts empty: entries appear only when the
 /// user starts a new `muse` session in-app.
 pub struct App {
     pub sessions: Vec<ChatSession>,
@@ -343,6 +397,8 @@ pub struct App {
     /// every launch, toggled by click/`h`. In-memory for the session.
     pub history_expanded: bool,
     pending_spawn: Option<SpawnKind>,
+    /// Placeholder-title counter (row identity is the UUID on
+    /// [`ChatSession::id`): the n-th run starts titled [`animal_name`]`(n)`.
     next_run: usize,
     status_msg: Option<(String, std::time::Instant)>,
     sticky_error: Option<String>,
@@ -700,7 +756,9 @@ impl App {
         self.next_run += 1;
         let n = self.next_run;
         self.sessions.push(ChatSession {
-            id: format!("run-{n}"),
+            // UUID row key (issue #54): never reused, so a restart can
+            // never mint an id that collides with a persisted row.
+            id: new_session_id(),
             title: animal_name(n),
             project: current_dir_name(),
             status: Status::Working,
@@ -916,14 +974,17 @@ mod tests {
         assert!(!app.is_terminal_focused());
         app.start_new_session();
         assert_eq!(app.sessions.len(), 1);
-        assert_eq!(app.sessions[0].id, "run-1");
+        let first_id = app.sessions[0].id.clone();
+        assert!(!first_id.is_empty());
         assert_eq!(app.selected, 0);
         assert_eq!(app.take_pending_spawn(), Some(SpawnKind::New));
         assert!(app.is_terminal_focused());
         app.focus_nav();
         app.start_new_session();
         assert_eq!(app.sessions.len(), 2);
-        assert_eq!(app.sessions[1].id, "run-2");
+        // UUID row keys (issue #54): every run mints a fresh id, so two
+        // rows never share an identity even with equal titles.
+        assert_ne!(app.sessions[1].id, first_id);
         assert_eq!(app.selected, 1);
     }
 
@@ -956,15 +1017,17 @@ mod tests {
         let mut app = App::new(vec![]);
         app.start_new_session();
         assert_eq!(app.sessions[0].title, "otter");
-        app.note_submitted_prompt("run-1", "  fix the login redirect  ");
+        let id = app.sessions[0].id.clone();
+        app.note_submitted_prompt(&id, "  fix the login redirect  ");
         assert_eq!(app.sessions[0].title, "fix the login redirect");
         // Second prompt does not rename: the first summary sticks.
-        app.note_submitted_prompt("run-1", "something else entirely");
+        app.note_submitted_prompt(&id, "something else entirely");
         assert_eq!(app.sessions[0].title, "fix the login redirect");
         // Blank lines never rename.
         let mut app2 = App::new(vec![]);
         app2.start_new_session();
-        app2.note_submitted_prompt("run-1", "   ");
+        let id2 = app2.sessions[0].id.clone();
+        app2.note_submitted_prompt(&id2, "   ");
         assert_eq!(app2.sessions[0].title, "otter");
     }
 
@@ -1017,14 +1080,15 @@ mod tests {
         let mut app = App::new(vec![]);
         app.start_new_session();
         assert_eq!(app.status_text(), None);
-        app.note_submitted_prompt("run-1", "  fix the login redirect  ");
+        let id = app.sessions[0].id.clone();
+        app.note_submitted_prompt(&id, "  fix the login redirect  ");
         assert_eq!(app.sessions[0].title, "fix the login redirect");
         assert_eq!(
             app.status_text(),
             Some("renamed to 'fix the login redirect'")
         );
         // Second prompt keeps the first title and leaves the flash alone.
-        app.note_submitted_prompt("run-1", "something else entirely");
+        app.note_submitted_prompt(&id, "something else entirely");
         assert_eq!(app.sessions[0].title, "fix the login redirect");
         assert_eq!(
             app.status_text(),
@@ -1033,7 +1097,8 @@ mod tests {
         // Blank lines and unknown ids flash nothing.
         let mut app2 = App::new(vec![]);
         app2.start_new_session();
-        app2.note_submitted_prompt("run-1", "   ");
+        let id2 = app2.sessions[0].id.clone();
+        app2.note_submitted_prompt(&id2, "   ");
         assert_eq!(app2.status_text(), None);
         app2.note_submitted_prompt("run-9", "hello");
         assert_eq!(app2.status_text(), None);
@@ -1169,7 +1234,6 @@ mod tests {
         assert_eq!(app.take_pending_spawn(), Some(SpawnKind::New));
         // Retry reuses the same run id: no extra entry.
         assert_eq!(app.sessions.len(), 1);
-        assert_eq!(app.sessions[0].id, "run-1");
     }
 
     #[test]
@@ -1260,12 +1324,14 @@ mod tests {
         app.start_new_session();
         let _ = app.take_pending_spawn();
         assert_eq!(app.sessions[0].cwd, None);
-        assert_eq!(app.session_cwd("run-1"), None);
+        let plain_id = app.sessions[0].id.clone();
+        assert_eq!(app.session_cwd(&plain_id), None);
         app.start_new_session_in(Some("/tmp/demo-proj".to_string()));
         let _ = app.take_pending_spawn();
         assert_eq!(app.sessions[1].cwd.as_deref(), Some("/tmp/demo-proj"));
+        let dir_id = app.sessions[1].id.clone();
         assert_eq!(
-            app.session_cwd("run-2"),
+            app.session_cwd(&dir_id),
             Some(std::path::PathBuf::from("/tmp/demo-proj"))
         );
         assert_eq!(app.session_cwd("missing"), None);
@@ -1305,5 +1371,87 @@ mod tests {
         assert_eq!(expand_cwd_input("~/proj"), Some(format!("{home}/proj")));
         // `~other` is a real relative name, not a home: untouched.
         assert_eq!(expand_cwd_input("~other"), Some("~other".to_string()));
+    }
+
+    #[test]
+    fn new_session_ids_are_unique_uuid_shaped_and_restart_safe() {
+        // Issue #54: row keys are UUIDs, unique per run, so a restart can
+        // never mint an id that collides with a persisted row (the old
+        // `run-N` counter reset to 0 on every launch and shadowed the
+        // persisted row with a same-titled dead duplicate).
+        fn is_uuid(id: &str) -> bool {
+            let parts: Vec<&str> = id.split('-').collect();
+            if parts.len() != 5 {
+                return false;
+            }
+            let lens = [8, 4, 4, 4, 12];
+            for (part, len) in parts.iter().zip(lens) {
+                if part.len() != len || !part.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return false;
+                }
+            }
+            // Version 4 + RFC-4122 variant bits.
+            parts[2].starts_with('4')
+                && matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b'))
+        }
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let id = new_session_id();
+            assert!(is_uuid(&id), "not UUID-shaped: {id}");
+            assert!(seen.insert(id), "duplicate id minted");
+        }
+        // Simulated restart: previously persisted ids (UUIDs and legacy
+        // `run-N`) load, then a fresh run mints an id outside both sets.
+        let mut app = App::new(vec![sess("run-1", Status::Idle, 1)]);
+        app.start_new_session();
+        let fresh = app.sessions.last().unwrap().id.clone();
+        assert!(is_uuid(&fresh));
+        assert_ne!(fresh, "run-1");
+        assert!(!app.sessions[0].id.is_empty());
+    }
+
+    #[test]
+    fn same_named_sessions_operate_independently() {
+        // Issue #54 falsifiable: two rows sharing a title are still
+        // independent rows — prompts, removal, cwd, and selection
+        // pinning all route by id, never by title.
+        let mut app = App::new(vec![]);
+        app.start_new_session();
+        app.start_new_session();
+        let (a, b) = (app.sessions[0].id.clone(), app.sessions[1].id.clone());
+        assert_ne!(a, b);
+        for s in app.sessions.iter_mut() {
+            s.title = "otter".into();
+            s.title_locked = false;
+        }
+        // A prompt submitted to one renames only that row.
+        app.note_submitted_prompt(&b, "fix the login redirect");
+        assert_eq!(
+            app.sessions.iter().find(|s| s.id == b).unwrap().title,
+            "fix the login redirect"
+        );
+        assert_eq!(
+            app.sessions.iter().find(|s| s.id == a).unwrap().title,
+            "otter"
+        );
+        // Per-run folders resolve per id.
+        app.sessions.iter_mut().find(|s| s.id == a).unwrap().cwd = Some("/tmp/a-proj".to_string());
+        assert_eq!(
+            app.session_cwd(&a),
+            Some(std::path::PathBuf::from("/tmp/a-proj"))
+        );
+        assert_eq!(app.session_cwd(&b), None);
+        // Re-sorting with duplicate titles keeps the selection pinned to
+        // the same row by id.
+        app.selected = app.sessions.iter().position(|s| s.id == b).unwrap();
+        app.sessions.iter_mut().find(|s| s.id == a).unwrap().status = Status::Attention;
+        app.resort_keep_selection();
+        assert_eq!(app.sessions[app.selected].id, b);
+        // Closing one removes exactly that row; the neighbor is untouched.
+        assert_eq!(app.remove_session(&a), Some("otter".to_string()));
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].id, b);
+        assert_eq!(app.sessions[0].title, "fix the login redirect");
+        assert_eq!(app.remove_session(&a), None);
     }
 }
