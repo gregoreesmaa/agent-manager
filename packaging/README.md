@@ -13,3 +13,37 @@ no notarization/signing setup, no store submission, no shell features.
 Proposing a stubbed format means adding its manifest + a CI step that
 builds it on its own runner only (per-shell gating, issue #65), and
 updating this table.
+
+## WinUI MSBuild packaging (dev machine only)
+
+The WinUI 3 shell (`native/windows/AgentManagerWinUI.vcxproj`) does not
+build on hosted `windows-latest` runners: the NuGet UAP handshake
+(`ResolveNuGetPackageAssets` / `does not reference "UAP,Version=v10.0"`)
+fails identically with and without the UWP workload installed, so the
+CI `windows` job no longer attempts it. Build it on a dev machine instead.
+
+Prerequisites:
+
+- Visual Studio 2022 17.x+ **with** the Universal Windows Platform
+  build-tools workload (`Microsoft.VisualStudio.Workload.UniversalBuildTools`)
+- WindowsAppSDK 1.6 (`Microsoft.WindowsAppSDK 1.6.250602001`, pinned in
+  the vcxproj)
+- CppWinRT 2.0.250303.1 (`Microsoft.Windows.CppWinRT`, pinned in the vcxproj)
+
+Build (restore and build in a single evaluation, from the repo root):
+
+```powershell
+msbuild native/windows/AgentManagerWinUI.vcxproj /restore `
+  /p:Configuration=Release /p:Platform=x64 `
+  "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/debug"
+```
+
+(This is the exact invocation the removed CI step used, copied from the
+`ci.yml` history — on a dev machine, replace `$env:GITHUB_WORKSPACE`
+with the repo root.)
+
+To re-enable the CI step, restore the removed `WinUI build (unpackaged
+exe, no MSIX)` step (plus its `install UWP build-tools workload`
+prerequisite) in `.github/workflows/ci.yml`.
+
+See #64 for the 13-attempt hosted-runner history.

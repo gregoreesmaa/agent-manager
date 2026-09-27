@@ -163,28 +163,6 @@ jobs:
           powershell -ExecutionPolicy Bypass
           -File native/windows/tests/smoke_live.ps1
           -Smoke ./native/windows/build/Release/am-win-smoke.exe
-      - name: install UWP build-tools workload # refs #64
-        shell: pwsh
-        # windows-latest lacks the UWP C++ tools, so ResolveNuGetPackageAssets
-        # fails on UAP imports (run 36335189997, refs #64). Provision the
-        # Universal workload on the runner via the stock VS Installer.
-        run: |
-          $installPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe" modify --installPath "$installPath" --add Microsoft.VisualStudio.Workload.UniversalBuildTools --quiet --norestart --wait
-      - name: WinUI build (unpackaged exe, no MSIX)
-        shell: pwsh
-        # Restore MUST share one evaluation with the build (runs 36331814809
-        # and 36332622155, refs #64): even with matching
-        # Configuration/Platform, separate `msbuild -t:restore` + `msbuild`
-        # invocations re-evaluate the vcxproj (the build additionally passes
-        # CoreLibDir), so project.assets.json drifts from the Release|x64
-        # build's UAP expectation and ResolveNuGetPackageAssets fails with
-        # `does not reference "UAP,Version=v10.0"`. A single `msbuild /restore`
-        # restores then builds in one evaluation with identical properties.
-        run: |
-          msbuild native/windows/AgentManagerWinUI.vcxproj /restore `
-            /p:Configuration=Release /p:Platform=x64 `
-            "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/debug"
       - name: package (unpackaged zip; MSIX stubbed — see packaging/README.md)
         shell: pwsh
         run: |
