@@ -8,9 +8,12 @@
 //! in [`super::layout`].
 
 use gpui::{
-    div, font, px, rgb, Context, ElementId, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Size,
+    div, font, px, rgb, Context, ElementId, Font, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, Size,
     StatefulInteractiveElement, Styled, Window, WindowControlArea, WindowOptions,
+    div, px, rgb, Context, ElementId, Font, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, Size,
+    StatefulInteractiveElement, Styled, Window, WindowOptions,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::Sizable as _;
@@ -20,6 +23,7 @@ use super::layout::{
     STATUS_HEIGHT,
 };
 use super::shell::ShellView;
+use super::terminal_pane::terminal_font;
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -173,34 +177,48 @@ impl ShellView {
 }
 
 impl ShellView {
-    /// Font-system metrics, cached per configured font (issue #35): the
-    /// text system is app-global rather than per-window, so resizes and
-    /// display moves change the grid math in [`Self::fit_pty`] but never
-    /// re-measure — unless the configured family/size changed, which
-    /// drops the stale entry.
+    /// Font-system metrics, cached per configured font (issues #35,
+    /// #41): the text system is app-global rather than per-window, so
+    /// resizes and display moves change the grid math in [`Self::fit_pty`]
+    /// but never re-measure — unless the configured family/fallbacks/size
+    /// changed, which drops the stale entry.
     fn cached_mono_metrics(&mut self, cx: &mut Context<ShellView>) -> (f32, f32) {
-        let family = self.app.terminal_config().font_family.clone();
+        let term_font = terminal_font(self.app.terminal_config());
         let size = self.term_font_size();
-        let key = (family.clone(), size.to_bits());
+        let key = (mono_cache_key(&term_font), size.to_bits());
         if let Some((k, m)) = self.mono_metrics.as_ref() {
             if *k == key {
                 return *m;
             }
         }
-        let metrics = mono_metrics(cx, &family, size);
+        let metrics = mono_metrics(cx, &term_font, size);
         self.mono_metrics = Some((key, metrics));
         metrics
     }
 }
 
-/// Monospace cell metrics for PTY sizing, with sane fallbacks.
-/// `family`/`size` come from the terminal config (issue #35) via
-/// [`ShellView::cached_mono_metrics`] so the PTY grid matches what the
-/// pane actually renders.
-pub(crate) fn mono_metrics(cx: &mut Context<ShellView>, family: &str, size: f32) -> (f32, f32) {
+/// Cache key for the measured terminal font (issue #41): the primary
+/// family plus the fallback tail, so a changed stack re-measures.
+pub(crate) fn mono_cache_key(font: &Font) -> String {
+    let mut key = font.family.to_string();
+    if let Some(fallbacks) = font.fallbacks.as_ref() {
+        for fallback in fallbacks.fallback_list() {
+            key.push('\0');
+            key.push_str(fallback);
+        }
+    }
+    key
+}
+
+/// Monospace cell metrics for PTY sizing, with sane fallbacks. The full
+/// terminal [`Font`] (issue #41) comes from the terminal config via
+/// [`ShellView::cached_mono_metrics`], so the PTY grid measures the same
+/// font the pane renders — including the fallback resolution when the
+/// primary family is missing.
+pub(crate) fn mono_metrics(cx: &mut Context<ShellView>, font: &Font, size: f32) -> (f32, f32) {
     let size = px(size);
     let system = cx.text_system();
-    let fid = system.resolve_font(&font(family.to_string()));
+    let fid = system.resolve_font(font);
     let char_w = system
         .advance(fid, size, ' ')
         .map(|s| f32::from(s.width))
@@ -360,6 +378,26 @@ mod tests {
         );
         assert!(cols >= MIN_COLS, "min width fits {cols} cols");
         assert!(rows >= MIN_ROWS, "min height fits {rows} rows");
+    }
+
+    #[test]
+    fn mono_cache_key_covers_primary_and_fallback_tail() {
+        // Issue #41: the metrics cache re-measures when the rendered
+        // font changes — a swapped primary or a changed tail drops the
+        // stale entry, while identical configs reuse it.
+        use crate::config::TerminalConfig;
+        let base = terminal_font(&TerminalConfig::default());
+        assert_eq!(mono_cache_key(&base), mono_cache_key(&base));
+        let custom = terminal_font(&TerminalConfig {
+            font_family: "Iosevka Nerd Font".to_string(),
+            ..TerminalConfig::default()
+        });
+        assert_ne!(mono_cache_key(&base), mono_cache_key(&custom));
+        let retailed = terminal_font(&TerminalConfig {
+            fallback_fonts: vec!["Menlo".to_string()],
+            ..TerminalConfig::default()
+        });
+        assert_ne!(mono_cache_key(&base), mono_cache_key(&retailed));
     }
 
     #[test]

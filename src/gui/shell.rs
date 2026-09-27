@@ -47,6 +47,51 @@ pub(crate) const SELECTION_BG: u32 = 0x264f78;
 pub(crate) const DEFAULT_FG: Rgb8 = Rgb8(212, 212, 212);
 /// Caret color for the emulated cursor cell.
 pub(crate) const CURSOR_BG: Rgb8 = Rgb8(180, 180, 180);
+/// Dark terminal surface (the historic pane background).
+pub(crate) const DARK_TERMINAL_BG: u32 = 0x11111b;
+/// Light terminal surface (issue #43): dark-on-light pane.
+pub(crate) const LIGHT_TERMINAL_BG: u32 = 0xf5f5f5;
+/// Light-mode default foreground: near-black, clears the 4.5 contrast
+/// floor on [`LIGHT_TERMINAL_BG`].
+pub(crate) const LIGHT_DEFAULT_FG: Rgb8 = Rgb8(30, 30, 30);
+/// Light-mode caret: dark block, visible on the light surface.
+pub(crate) const LIGHT_CURSOR_BG: Rgb8 = Rgb8(70, 70, 70);
+/// Light-mode selection highlight behind terminal text.
+pub(crate) const LIGHT_SELECTION_BG: u32 = 0xb2d7ff;
+
+/// Terminal-pane colors resolved from the active theme mode (issue #43).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TermTheme {
+    /// Pane background.
+    pub bg: u32,
+    /// Foreground for child output using the default color.
+    pub fg: Rgb8,
+    /// Emulated cursor cell background.
+    pub cursor: Rgb8,
+    /// Mouse-selection highlight behind the text.
+    pub selection: u32,
+}
+
+/// Terminal colors for the resolved theme mode: dark is the historic
+/// palette unchanged; light is dark-on-light with default text clearing
+/// the 4.5 contrast floor (same bar as issue #8).
+pub(crate) fn term_theme(light: bool) -> TermTheme {
+    if light {
+        TermTheme {
+            bg: LIGHT_TERMINAL_BG,
+            fg: LIGHT_DEFAULT_FG,
+            cursor: LIGHT_CURSOR_BG,
+            selection: LIGHT_SELECTION_BG,
+        }
+    } else {
+        TermTheme {
+            bg: DARK_TERMINAL_BG,
+            fg: DEFAULT_FG,
+            cursor: CURSOR_BG,
+            selection: SELECTION_BG,
+        }
+    }
+}
 
 pub struct ShellView {
     pub(crate) app: App,
@@ -83,6 +128,10 @@ pub struct ShellView {
     /// (see [`super::terminal_pane::TermFrameCache`]): unchanged screens
     /// skip the `screen_rows` + `layout_text` rebuild every frame.
     pub(crate) term_frame: super::terminal_pane::TermFrameCache,
+    /// Missing-font probe (issue #41): the primary family last checked
+    /// plus whether it was installed. Checked once per configured
+    /// primary so the per-frame render never re-enumerates system fonts.
+    pub(crate) font_probe: Option<(String, bool)>,
     /// Mouse-drag selection in terminal cells (anchor, cursor). `None` while
     /// no drag is in progress / no selection exists.
     pub(crate) sel_anchor: Option<CellPos>,
@@ -139,6 +188,7 @@ impl ShellView {
             line_h: 18.0,
             mono_metrics: None,
             term_frame: super::terminal_pane::TermFrameCache::default(),
+            font_probe: None,
             sel_anchor: None,
             sel_active: None,
             selecting: false,

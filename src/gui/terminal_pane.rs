@@ -14,12 +14,13 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use crate::config::TerminalConfig;
 use crate::embedded::LiveView;
 
-use super::shell::{ShellView, CURSOR_BG, DEFAULT_FG, SELECTION_BG};
+use super::shell::{term_theme, ShellView, TermTheme};
 use super::terminal::{
-    point_to_cell, screen_fingerprint, screen_rows, selection_rows, selection_text, to_hsla,
-    CellPos,
+    point_to_cell, screen_fingerprint, screen_rows, selection_highlight_rows, selection_rows,
+    selection_text, snap_drag_to_content, snap_press_to_content, to_hsla, CellPos,
 };
 use gpui_component::Sizable as _;
+use gpui_component::Theme;
 
 /// Cursor cell the frame renders, if any: exited runs and hidden cursors
 /// paint no caret. Shared by the render path and the cache fingerprint
@@ -33,11 +34,13 @@ pub(crate) fn resolved_cursor(view: &LiveView) -> Option<CellPos> {
 }
 
 /// One cached terminal frame: the flattened text + gpui runs for a
-/// (run id, screen fingerprint) key. Single-entry: a miss overwrites, so
-/// memory stays flat and run switches invalidate by construction.
+/// (run id, screen fingerprint, light-mode) key. Single-entry: a miss
+/// overwrites, so memory stays flat and run switches invalidate by
+/// construction. The theme mode joins the key because a theme flip
+/// repaints identical screens in different colors (issue #43).
 #[derive(Default)]
 pub(crate) struct TermFrameCache {
-    key: Option<(String, u64)>,
+    key: Option<(String, u64, bool)>,
     full: String,
     runs: Vec<TextRun>,
 }
@@ -46,11 +49,16 @@ impl TermFrameCache {
     /// Hit: hand back a clone of the cached frame. `StyledText` takes
     /// ownership per repaint, so one `String` + one `Vec` clone is the
     /// per-frame price — not a full grid rebuild.
-    pub(crate) fn get(&self, run_id: &str, fingerprint: u64) -> Option<(String, Vec<TextRun>)> {
+    pub(crate) fn get(
+        &self,
+        run_id: &str,
+        fingerprint: u64,
+        light: bool,
+    ) -> Option<(String, Vec<TextRun>)> {
         if self
             .key
             .as_ref()
-            .is_some_and(|(id, f)| id == run_id && *f == fingerprint)
+            .is_some_and(|(id, f, l)| id == run_id && *f == fingerprint && *l == light)
         {
             Some((self.full.clone(), self.runs.clone()))
         } else {
@@ -63,10 +71,11 @@ impl TermFrameCache {
         &mut self,
         run_id: String,
         fingerprint: u64,
+        light: bool,
         full: String,
         runs: Vec<TextRun>,
     ) {
-        self.key = Some((run_id, fingerprint));
+        self.key = Some((run_id, fingerprint, light));
         self.full = full;
         self.runs = runs;
     }
@@ -119,8 +128,12 @@ impl ShellView {
         ))
     }
 
+    /// Start a drag: arms only when the press lands on a shown character
+    /// (issue #42). A mousedown on empty padding or an empty row clears
+    /// any selection instead of arming a void one.
     pub(crate) fn begin_selection(&mut self, pos: Point<Pixels>) {
-        if let Some(cell) = self.mouse_cell(pos) {
+        let snapped = self.mouse_cell(pos).and_then(|cell| self.snap_press(cell));
+        if let Some(cell) = snapped {
             self.sel_anchor = Some(cell);
             self.sel_active = Some(cell);
             self.selecting = true;
@@ -133,9 +146,23 @@ impl ShellView {
         if !self.selecting {
             return;
         }
-        if let Some(cell) = self.mouse_cell(pos) {
+        // Void drag positions keep the previous endpoint, so a drag that
+        // leaves the text block stops at the last shown character.
+        if let Some(cell) = self.mouse_cell(pos).and_then(|c| self.snap_drag(c)) {
             self.sel_active = Some(cell);
         }
+    }
+
+    /// Snap a mousedown cell to shown characters, if a live grid exists.
+    fn snap_press(&self, cell: CellPos) -> Option<CellPos> {
+        let view = self.active_view()?;
+        snap_press_to_content(view.screen, cell)
+    }
+
+    /// Snap a drag cell to shown characters, if a live grid exists.
+    fn snap_drag(&self, cell: CellPos) -> Option<CellPos> {
+        let view = self.active_view()?;
+        snap_drag_to_content(view.screen, cell)
     }
 
     /// Finish a drag: copy-on-select when the drag covered text, mirroring
@@ -145,7 +172,7 @@ impl ShellView {
             return;
         }
         self.selecting = false;
-        if let Some(cell) = self.mouse_cell(pos) {
+        if let Some(cell) = self.mouse_cell(pos).and_then(|c| self.snap_drag(c)) {
             self.sel_active = Some(cell);
         }
         // A paged run copies from the visible pager slice (issue #25).
@@ -160,42 +187,69 @@ impl ShellView {
     }
 
     pub(crate) fn render_terminal(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        // Missing-primary probe (issue #41): one status hint per
+        // configured family, never a per-frame font enumeration.
+        self.probe_terminal_font(cx);
+        // Resolved theme mode (issue #43): the live global theme already
+        // folds dark / light / system-follows-OS, so the pane tracks the
+        // `t`-key cycle and OS changes with no extra plumbing.
+        let light = term_is_light(cx);
+        let theme = term_theme(light);
         // Pager (issue #25): a scrolled-up run shows its retained slice
         // instead of the live grid. The offset moves with no screen
-        // change, so this bypasses the fingerprint cache below.
+        // change, so this bypasses the fingerprint cache below. The
+        // pager keeps grid highlight spans (plain retained rows, no
+        // emulator grid to snap against).
         if let Some(spans) = self.pager_spans() {
             let cols = self
                 .active_view()
                 .map(|v| v.screen.size().1)
                 .unwrap_or(self.cols);
             let term_font = terminal_font(self.app.terminal_config());
-            let (full, runs) = layout_text(&spans, &term_font);
-            return self.assemble_live_terminal(full, runs, cols);
+            let (full, runs) = layout_text(&spans, &term_font, theme.fg);
+            let highlight = match self.selection_pair() {
+                Some((s, e)) => selection_rows(s, e, cols),
+                None => Vec::new(),
+            };
+            return self.assemble_live_terminal(full, runs, highlight, &theme);
         }
-        // Cache the flattened frame per (run, screen fingerprint): an
-        // unchanged screen skips the `screen_rows` + `layout_text` rebuild
-        // (thousands of allocations) on every repaint and reuses the
-        // cloned text + runs instead.
-        let (run_id, fingerprint, cols) = match (self.active_id(), self.active_view()) {
+        // Cache the flattened frame per (run, screen fingerprint, theme):
+        // an unchanged screen skips the `screen_rows` + `layout_text`
+        // rebuild (thousands of allocations) on every repaint and reuses
+        // the cloned text + runs instead.
+        let (run_id, fingerprint) = match (self.active_id(), self.active_view()) {
             (Some(id), Some(view)) => {
                 let fingerprint = screen_fingerprint(view.screen, resolved_cursor(&view));
-                let (_, cols) = view.screen.size();
-                (id, fingerprint, cols)
+                (id, fingerprint)
             }
             _ => return self.render_empty_pane(cx),
         };
-        if let Some((full, runs)) = self.term_frame.get(&run_id, fingerprint) {
-            return self.assemble_live_terminal(full, runs, cols);
+        if let Some((full, runs)) = self.term_frame.get(&run_id, fingerprint, light) {
+            let highlight = self.live_highlight();
+            return self.assemble_live_terminal(full, runs, highlight, &theme);
         }
         let Some(view) = self.active_view() else {
             return self.render_empty_pane(cx);
         };
-        let rows = screen_rows(view.screen, resolved_cursor(&view), CURSOR_BG);
+        let rows = screen_rows(view.screen, resolved_cursor(&view), theme.cursor, light);
         let term_font = terminal_font(self.app.terminal_config());
-        let (full, runs) = layout_text(&rows, &term_font);
+        let (full, runs) = layout_text(&rows, &term_font, theme.fg);
         self.term_frame
-            .store(run_id, fingerprint, full.clone(), runs.clone());
-        self.assemble_live_terminal(full, runs, cols)
+            .store(run_id, fingerprint, light, full.clone(), runs.clone());
+        let highlight = self.live_highlight();
+        self.assemble_live_terminal(full, runs, highlight, &theme)
+    }
+
+    /// Content-aware highlight spans for the live grid (issue #42):
+    /// shown characters only, via the emulator screen.
+    fn live_highlight(&self) -> Vec<(u16, u16, u16)> {
+        let Some((s, e)) = self.selection_pair() else {
+            return Vec::new();
+        };
+        let Some(view) = self.active_view() else {
+            return Vec::new();
+        };
+        selection_highlight_rows(view.screen, s, e)
     }
 
     /// Assemble the terminal element from flattened text + runs: the
@@ -203,18 +257,20 @@ impl ShellView {
     /// no window context so headless tests can build the element without
     /// a gpui harness; production always reaches it through the cached
     /// [`Self::render_terminal`] path.
-    fn assemble_live_terminal(&self, full: String, runs: Vec<TextRun>, cols: u16) -> gpui::Div {
+    fn assemble_live_terminal(
+        &self,
+        full: String,
+        runs: Vec<TextRun>,
+        highlight: Vec<(u16, u16, u16)>,
+        theme: &TermTheme,
+    ) -> gpui::Div {
         let text = StyledText::new(full).with_runs(runs);
         // Mouse selection highlight: cell rectangles behind the text. The
         // inner wrapper has no padding, so overlay origin == text origin and
         // no padding constant is needed.
-        let spans = match self.selection_pair() {
-            Some((s, e)) => selection_rows(s, e, cols),
-            None => Vec::new(),
-        };
         let slot = std::rc::Rc::clone(&self.term_text_bounds);
         let mut inner = div().relative().h_full().w_full();
-        for (row, sc, ec) in spans {
+        for (row, sc, ec) in highlight {
             if ec <= sc {
                 continue;
             }
@@ -225,7 +281,7 @@ impl ShellView {
                     .top(px(row as f32 * self.line_h))
                     .w(px((ec - sc) as f32 * self.char_w))
                     .h(px(self.line_h))
-                    .bg(rgb(SELECTION_BG)),
+                    .bg(rgb(theme.selection)),
             );
         }
         inner = inner.child(
@@ -237,13 +293,17 @@ impl ShellView {
                     }
                 }),
         );
-        let stack = self.app.terminal_config().font_stack();
+        // Full monospace stack (issue #41): the primary family plus the
+        // emoji/CJK/system fallback tail, so TextRuns and the element
+        // agree on one font and box-drawing/emoji/CJK never fall back to
+        // a proportional face mid-row.
+        let term_font = terminal_font(self.app.terminal_config());
         div()
             .flex_1()
             .h_full()
-            .bg(rgb(0x11111b))
+            .bg(rgb(theme.bg))
             .p_2()
-            .font_family(stack[0].clone())
+            .font(term_font)
             .text_size(px(self.term_font_size()))
             .child(inner)
     }
@@ -307,17 +367,67 @@ pub(crate) fn terminal_font(cfg: &TerminalConfig) -> Font {
     }
 }
 
+/// Whether the terminal pane renders the light palette (issue #43):
+/// true when a global component theme exists and is not dark. Headless
+/// (no theme global) stays dark, preserving the historic default.
+pub(crate) fn term_is_light(cx: &gpui::App) -> bool {
+    cx.try_global::<Theme>().is_some_and(|t| !t.is_dark())
+}
+
+/// One-line hint naming a missing terminal primary font (issue #41):
+/// `Some` when `primary` matches no installed family (case-insensitive),
+/// so the pane can say which font fell back to the monospace chain.
+pub(crate) fn missing_font_hint(installed: &[String], primary: &str) -> Option<String> {
+    let present = installed
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(primary));
+    if present {
+        None
+    } else {
+        Some(format!(
+            "terminal font '{primary}' not installed — using fallback monospace"
+        ))
+    }
+}
+
+impl ShellView {
+    /// Probe the installed families for the configured primary (issue
+    /// #41): on a first-seen missing primary, flash the one-line hint on
+    /// the status line. Runs once per configured family so the per-frame
+    /// render never re-enumerates system fonts.
+    pub(crate) fn probe_terminal_font(&mut self, cx: &gpui::App) {
+        let primary = self.app.terminal_config().font_family.clone();
+        if self
+            .font_probe
+            .as_ref()
+            .is_some_and(|(checked, _)| *checked == primary)
+        {
+            return;
+        }
+        let installed = cx.text_system().all_font_names();
+        let hint = missing_font_hint(&installed, &primary);
+        self.font_probe = Some((primary, hint.is_none()));
+        if let Some(hint) = hint {
+            self.app.set_status(hint);
+        }
+    }
+}
+
 /// Flatten screen rows into one string plus gpui text runs. Every byte of
 /// the string belongs to exactly one non-empty run — gpui validates this
-/// partition and panics otherwise (crashed the first launch).
+/// partition and panics otherwise (crashed the first launch). Every run
+/// carries the monospace stack `mono` (issue #41), so no span can fall
+/// back to a proportional face mid-row; `default_fg` resolves
+/// default-color spans against the active theme (issue #43).
 pub(crate) fn layout_text(
     rows: &[Vec<super::terminal::TermSpan>],
     mono: &Font,
+    default_fg: super::terminal::Rgb8,
 ) -> (String, Vec<TextRun>) {
     let plain = || TextRun {
         len: 0,
         font: mono.clone(),
-        color: to_hsla(DEFAULT_FG),
+        color: to_hsla(default_fg),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -345,7 +455,7 @@ pub(crate) fn layout_text(
                 .style
                 .fg
                 .map(to_hsla)
-                .unwrap_or_else(|| to_hsla(DEFAULT_FG));
+                .unwrap_or_else(|| to_hsla(default_fg));
             let bg = span.style.bg.map(to_hsla);
             push_text(
                 &mut full,
@@ -372,7 +482,7 @@ pub(crate) fn layout_text(
 #[cfg(test)]
 mod tests {
     use super::super::runs::{insert_test_pty, test_shell};
-    use super::super::shell::ShellView;
+    use super::super::shell::{term_theme, ShellView};
     use super::super::terminal::{screen_rows, Rgb8};
     use super::*;
 
@@ -385,8 +495,8 @@ mod tests {
         let mono = terminal_font(&TerminalConfig::default());
         let mut parser = vt100::Parser::new(24, 80, 0);
         parser.process(b"\x1b[2J\x1b[1;1Htop \x1b[31mred\x1b[0m \xc3\xa9\xe2\x9d\xaf");
-        let rows = screen_rows(parser.screen(), Some((0, 0)), Rgb8(200, 200, 200));
-        let (full, runs) = layout_text(&rows, &mono);
+        let rows = screen_rows(parser.screen(), Some((0, 0)), Rgb8(200, 200, 200), false);
+        let (full, runs) = layout_text(&rows, &mono, term_theme(false).fg);
         let total: usize = runs.iter().map(|r| r.len).sum();
         assert_eq!(total, full.len(), "runs must cover every byte");
         assert!(runs.iter().all(|r| r.len > 0), "no empty runs");
@@ -394,8 +504,8 @@ mod tests {
         // Empty screen still partitions (single covered space per row).
         let mut empty = vt100::Parser::new(24, 80, 0);
         empty.process(b"");
-        let rows = screen_rows(empty.screen(), None, Rgb8(0, 0, 0));
-        let (full, runs) = layout_text(&rows, &mono);
+        let rows = screen_rows(empty.screen(), None, Rgb8(0, 0, 0), false);
+        let (full, runs) = layout_text(&rows, &mono, term_theme(false).fg);
         let total: usize = runs.iter().map(|r| r.len).sum();
         assert_eq!(total, full.len());
         let _ = gpui::StyledText::new(full).with_runs(runs);
@@ -469,8 +579,8 @@ mod tests {
         }
         assert!(saw_continuation, "wide chars take two cells");
         // And the whole grid still partitions for gpui.
-        let grid = screen_rows(screen, None, Rgb8(200, 200, 200));
-        let (full, runs) = layout_text(&grid, &mono);
+        let grid = screen_rows(screen, None, Rgb8(200, 200, 200), false);
+        let (full, runs) = layout_text(&grid, &mono, term_theme(false).fg);
         let total: usize = runs.iter().map(|r| r.len).sum();
         assert_eq!(total, full.len());
         let _ = gpui::StyledText::new(full).with_runs(runs);
@@ -480,27 +590,31 @@ mod tests {
     fn frame_cache_hits_reuse_output_and_misses_on_change_or_run() {
         use super::super::terminal::screen_fingerprint;
         let mut cache = TermFrameCache::default();
-        assert!(cache.get("run-1", 42).is_none());
+        assert!(cache.get("run-1", 42, false).is_none());
         let mut parser = vt100::Parser::new(24, 80, 0);
         parser.process(b"hello");
         let fp = screen_fingerprint(parser.screen(), Some((0, 5)));
-        let rows = screen_rows(parser.screen(), Some((0, 5)), Rgb8(0, 0, 0));
+        let rows = screen_rows(parser.screen(), Some((0, 5)), Rgb8(0, 0, 0), false);
         let mono = terminal_font(&TerminalConfig::default());
-        let (full, runs) = layout_text(&rows, &mono);
-        cache.store("run-1".to_string(), fp, full.clone(), runs.clone());
-        // Same run + fingerprint: the cached text and runs come back
-        // byte-identical (the repaint reuses them instead of rebuilding).
-        let (hit_full, hit_runs) = cache.get("run-1", fp).expect("cache hit");
+        let (full, runs) = layout_text(&rows, &mono, term_theme(false).fg);
+        cache.store("run-1".to_string(), fp, false, full.clone(), runs.clone());
+        // Same run + fingerprint + theme: the cached text and runs come
+        // back byte-identical (the repaint reuses them instead of
+        // rebuilding).
+        let (hit_full, hit_runs) = cache.get("run-1", fp, false).expect("cache hit");
         assert_eq!(hit_full, full);
         assert_eq!(hit_runs, runs);
+        // A theme flip misses under the same screen: identical text
+        // repaints in the other palette (issue #43).
+        assert!(cache.get("run-1", fp, true).is_none());
         // A different run never aliases, even with an identical screen.
-        assert!(cache.get("run-2", fp).is_none());
+        assert!(cache.get("run-2", fp, false).is_none());
         // New output misses under the old key: the caller rebuilds and
         // the store drops the stale frame.
         parser.process(b"!");
         let fp2 = screen_fingerprint(parser.screen(), Some((0, 6)));
         assert_ne!(fp2, fp);
-        assert!(cache.get("run-1", fp2).is_none());
+        assert!(cache.get("run-1", fp2, false).is_none());
     }
 
     #[test]
@@ -528,11 +642,16 @@ mod tests {
         }
         let live = view.active_view().expect("live pty has a view");
         // Same pieces the cached path assembles: rows, layout, element.
-        let rows = screen_rows(live.screen, resolved_cursor(&live), CURSOR_BG);
-        let mono = terminal_font(&TerminalConfig::default());
-        let (full, runs) = layout_text(&rows, &mono);
-        let (_, cols) = live.screen.size();
-        let _ = view.assemble_live_terminal(full, runs, cols);
+        // Both themes assemble without panic (issue #43).
+        for light in [false, true] {
+            let theme = term_theme(light);
+            let rows = screen_rows(live.screen, resolved_cursor(&live), theme.cursor, light);
+            let mono = terminal_font(&TerminalConfig::default());
+            let (full, runs) = layout_text(&rows, &mono, theme.fg);
+            let highlight =
+                selection_highlight_rows(live.screen, (0, 0), (0, live.screen.size().1));
+            let _ = view.assemble_live_terminal(full, runs, highlight, &theme);
+        }
     }
 
     #[test]
@@ -567,5 +686,91 @@ mod tests {
         assert_eq!(view.selected_text().as_deref(), Some("hello"));
         view.clear_selection();
         assert!(view.selected_text().is_none());
+    }
+
+    #[test]
+    fn layout_runs_all_carry_the_monospace_stack() {
+        // Issue #41: every TextRun (default spans, styled spans, plain
+        // newlines and padding) renders in the full monospace stack, so
+        // no run can fall back to a proportional face mid-row.
+        use crate::config::TerminalConfig;
+        let mono = terminal_font(&TerminalConfig::default());
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"plain \x1b[1mbold\x1b[0m \x1b[31mred\x1b[0m");
+        let rows = screen_rows(parser.screen(), None, Rgb8(0, 0, 0), false);
+        let (full, runs) = layout_text(&rows, &mono, term_theme(false).fg);
+        assert!(!runs.is_empty());
+        let total: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, full.len());
+        for run in &runs {
+            assert_eq!(run.font.family, mono.family, "run keeps the primary");
+            assert_eq!(
+                run.font.fallbacks, mono.fallbacks,
+                "run keeps the fallback tail"
+            );
+        }
+        // The styled (bold) run keeps the same chain as the plain runs.
+        assert!(runs.len() >= 2);
+        let _ = gpui::StyledText::new(full).with_runs(runs);
+    }
+
+    #[test]
+    fn missing_font_hint_names_the_absent_primary() {
+        // Issue #41: a missing primary yields a one-line hint naming it;
+        // an installed primary (any case) yields none, and a user
+        // override is checked by its own name with the same tail.
+        let installed = vec![
+            "Menlo".to_string(),
+            "Apple Color Emoji".to_string(),
+            "JetBrainsMono Nerd Font".to_string(),
+        ];
+        assert_eq!(
+            missing_font_hint(&installed, "JetBrainsMono Nerd Font"),
+            None
+        );
+        assert_eq!(
+            missing_font_hint(&installed, "jetbrainsmono nerd font"),
+            None
+        );
+        let hint =
+            missing_font_hint(&installed, "Iosevka Nerd Font").expect("absent primary hints");
+        assert!(hint.contains("Iosevka Nerd Font"), "names it: {hint}");
+        assert!(missing_font_hint(&[], "Menlo").is_some());
+    }
+
+    #[test]
+    fn begin_selection_arms_only_on_shown_text() {
+        // Issue #42 end-to-end: a mousedown on shown characters arms a
+        // selection; a mousedown past end-of-line or on an empty row
+        // clears instead of arming.
+        let mut view = test_shell();
+        let _ = insert_test_pty(&mut view, "printf", &["hi"]);
+        for _ in 0..100 {
+            view.refresh();
+            if let Some(v) = view.active_view() {
+                if v.screen.contents().contains("hi") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // Text bounds captured each frame; the mapping only needs the
+        // origin, so any plausible pane bounds will do.
+        *view.term_text_bounds.borrow_mut() = Some(gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: gpui::size(px(800.0), px(600.0)),
+        });
+        // Default metrics: 8px cells, 18px rows.
+        view.begin_selection(gpui::point(px(4.0), px(9.0)));
+        assert_eq!(view.sel_anchor, Some((0, 0)));
+        assert!(view.selecting);
+        // Past end-of-line on the same row: no selection arms.
+        view.begin_selection(gpui::point(px(400.0), px(9.0)));
+        assert!(view.selection_pair().is_none());
+        assert!(!view.selecting);
+        // An empty row arms nothing either.
+        view.begin_selection(gpui::point(px(4.0), px(99.0)));
+        assert!(view.selection_pair().is_none());
+        assert!(!view.selecting);
     }
 }
