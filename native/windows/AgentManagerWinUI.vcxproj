@@ -112,6 +112,10 @@
     <!-- Floating 1.6 servicing line: CI restores the latest 1.6 patch,
       so no exact build number is pinned here. -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
+    <!-- C++/WinRT MSBuild support (midlrt.exe + cppwinrt.exe): without this,
+      MIDL 3.0 .idl files fall through to the classic COM MIDL compiler,
+      which fails with MIDL2025 near "namespace" (run 36328939162). -->
+    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="2.0.250303.1" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
