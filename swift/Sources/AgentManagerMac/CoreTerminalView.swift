@@ -40,7 +40,7 @@ struct CoreTerminalView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, TerminalViewDelegate {
+    final class Coordinator: NSObject, @MainActor TerminalViewDelegate {
         private let state: AppState
         private let rowId: String
         fileprivate var lastFedSeq: UInt64 = 0
