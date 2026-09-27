@@ -8,7 +8,7 @@ tests/fake_muse.c with the runner's MSVC first (msvc-dev-cmd on CI).
 
 Usage (from the repo root, inside an MSVC environment):
   powershell -ExecutionPolicy Bypass -File native/windows/tests/smoke_live.ps1 `
-    -Smoke native/windows/build/Release/am-win-smoke.exe
+    -Smoke ./native/windows/build/Release/am-win-smoke.exe
 #>
 param(
   [Parameter(Mandatory = $true)][string]$Smoke

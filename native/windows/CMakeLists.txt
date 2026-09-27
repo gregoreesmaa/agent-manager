@@ -30,8 +30,8 @@ include_directories(
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
 
-# The Rust staticlib's Windows link closure (sockets, env, crypto).
-set(SYS_LIBS ${CORE_LIB} ws2_32 userenv bcrypt)
+# The Rust staticlib's Windows link closure (sockets, env, crypto, ntdll).
+set(SYS_LIBS ${CORE_LIB} ws2_32 userenv bcrypt ntdll)
 
 # Pure-logic reconciler unit tests: no WinUI needed, runs anywhere.
 add_executable(am-win-feed-test src/feed.c src/feed_test.c)

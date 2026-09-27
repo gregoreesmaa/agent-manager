@@ -162,7 +162,7 @@ jobs:
         run: >
           powershell -ExecutionPolicy Bypass
           -File native/windows/tests/smoke_live.ps1
-          -Smoke native/windows/build/Release/am-win-smoke.exe
+          -Smoke ./native/windows/build/Release/am-win-smoke.exe
       - name: WinUI build (unpackaged exe, no MSIX)
         shell: pwsh
         run: |
