@@ -5,3 +5,6 @@ swift/.swiftpm
 *.pdb
 agent-manager-state.json
 agent-manager-prefs.json
+
+# crash dumps (e.g. Linux core dump from a crashed test binary)
+/core
