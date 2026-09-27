@@ -5,7 +5,8 @@
 //! window focus and clipboard effects for the returned action. `muse`
 //! captures keys if and only if focus is Terminal — nav keys never reach
 //! the PTY. Parsed-link rows are keyboard-operable too: `o` cycles link
-//! focus across the selected run's links, `Enter` copies the focused link,
+//! focus across the selected run's links, `Enter` opens the focused link
+//! in the default browser (and copies it), `y` copies it without opening,
 //! and `PgUp`/`PgDn` page the run list.
 
 use gpui::{App as GpuiApp, ClipboardItem};
@@ -26,6 +27,10 @@ pub(crate) enum NavAction {
     Dismiss,
     /// Copy the keyboard-focused parsed link (see `link_cursor`).
     CopyLink,
+    /// Open the keyboard-focused parsed link in the default browser
+    /// (issue #49). The caller also copies it, so open and yank stay
+    /// one key apart: `Enter` opens + copies, `y` copies only.
+    OpenLink,
     /// Advance the theme choice (dark → light → system); the caller
     /// applies, persists, and flashes it.
     CycleTheme,
@@ -47,10 +52,24 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
             "scroll the run's retained output (pager)",
         ),
         ("o", "cycle link focus across the selected run's links"),
-        ("Enter", "copy the focused link, or type in muse when none"),
+        (
+            "Enter",
+            "open the focused link in the browser (+ copy), or type in muse when none",
+        ),
         ("i", "type in muse"),
         ("Tab", "switch sessions ↔ terminal focus"),
-        ("y", "copy selection (or whole screen)"),
+        (
+            "w",
+            "new session in a chosen folder (blank = current folder)",
+        ),
+        (
+            "y",
+            "copy the focused link, else selection (or whole screen)",
+        ),
+        (
+            "click link",
+            "open in browser + copy · ⌘/Ctrl-click copies only",
+        ),
         ("p", "paste clipboard into muse"),
         ("e", "export selected run to markdown (local file)"),
         ("r", "restart ended run / retry failed spawn"),
@@ -70,16 +89,36 @@ pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
 
 impl ShellView {
     /// URL of the keyboard-focused parsed link, if the selected run has
-    /// one at [`Self::link_cursor`].
+    /// one at [`Self::link_cursor`]. The cursor walks PR links first,
+    /// then related (issue/commit/commit) links, so every openable row
+    /// the panel shows is keyboard-reachable (issue #49).
     pub(crate) fn focused_link_url(&self) -> Option<String> {
         let cursor = self.link_cursor?;
         let id = self.active_id()?;
+        self.app.sessions.iter().find(|s| s.id == id).and_then(|s| {
+            s.pr_links
+                .iter()
+                .chain(s.related_links.iter())
+                .nth(cursor)
+                .cloned()
+        })
+    }
+
+    /// True when the keyboard-focused link is a PR link (rather than a
+    /// related link): picks the "opened + copied PR link" vs "… link"
+    /// status wording.
+    pub(crate) fn focused_link_is_pr(&self) -> bool {
+        let Some(cursor) = self.link_cursor else {
+            return false;
+        };
+        let Some(id) = self.active_id() else {
+            return false;
+        };
         self.app
             .sessions
             .iter()
             .find(|s| s.id == id)
-            .and_then(|s| s.pr_links.get(cursor))
-            .cloned()
+            .is_some_and(|s| cursor < s.pr_links.len())
     }
 
     /// Advance link focus through the selected run's parsed links,
@@ -92,7 +131,7 @@ impl ShellView {
                 .sessions
                 .iter()
                 .find(|s| s.id == id)
-                .map(|s| s.pr_links.len())
+                .map(|s| s.pr_links.len() + s.related_links.len())
                 .unwrap_or(0),
             None => 0,
         };
@@ -152,8 +191,12 @@ impl ShellView {
                 NavAction::None
             }
             ("i", false) => NavAction::FocusTerm,
-            ("enter", _) if self.focused_link_url().is_some() => NavAction::CopyLink,
+            ("enter", _) if self.focused_link_url().is_some() => NavAction::OpenLink,
             ("enter", _) => NavAction::FocusTerm,
+            // Yank (issue #49): with a link focused this copies the
+            // link without opening it; otherwise it copies the
+            // selection/screen exactly as before.
+            ("y", false) if self.focused_link_url().is_some() => NavAction::CopyLink,
             ("y", false) => NavAction::Copy,
             ("p", false) => NavAction::Paste,
             ("e", false) => NavAction::Export,
@@ -197,6 +240,73 @@ impl ShellView {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             self.app
                 .set_status(format!("yanked {lines} lines to clipboard"));
+        }
+    }
+
+    /// Platform command that opens `url` in the default browser
+    /// (issue #49): `open` on macOS, `xdg-open` on Linux/Unix, `cmd /c
+    /// start` on Windows. Pure construction so tests assert the exact
+    /// URL is passed through without launching anything.
+    pub(crate) fn browser_command(url: &str) -> std::process::Command {
+        #[cfg(target_os = "macos")]
+        {
+            let mut cmd = std::process::Command::new("open");
+            cmd.arg(url);
+            cmd
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let mut cmd = std::process::Command::new("xdg-open");
+            cmd.arg(url);
+            cmd
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.args(["/c", "start", "", url]);
+            cmd
+        }
+        #[cfg(not(any(unix, target_os = "windows")))]
+        {
+            let mut cmd = std::process::Command::new("xdg-open");
+            cmd.arg(url);
+            cmd
+        }
+    }
+
+    /// Open `url` in the default browser (issue #49). Best effort like
+    /// every other local spawn here: the caller reports the error in
+    /// the status line instead of failing.
+    pub(crate) fn open_url(url: &str) -> Result<(), String> {
+        Self::browser_command(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Open-or-copy split for a link click (issue #49): a plain click
+    /// opens the URL in the browser and copies it ("opened + copied");
+    /// a modifier-click (Cmd/Ctrl/Shift) copies only ("copied"). The
+    /// caller applies the clipboard write and the status flash for the
+    /// returned outcome; opening itself runs here.
+    pub(crate) fn activate_link(
+        &mut self,
+        url: &str,
+        is_pr: bool,
+        copy_only: bool,
+        cx: &mut GpuiApp,
+    ) {
+        cx.write_to_clipboard(ClipboardItem::new_string(url.to_string()));
+        let kind = if is_pr { "PR link" } else { "link" };
+        if copy_only {
+            self.app.set_status(format!("copied {kind}"));
+            return;
+        }
+        match Self::open_url(url) {
+            Ok(()) => self.app.set_status(format!("opened + copied {kind}")),
+            Err(e) => self
+                .app
+                .set_status(format!("copied {kind} (open failed: {e})")),
         }
     }
 
@@ -352,15 +462,20 @@ mod tests {
     }
 
     #[test]
-    fn o_cycles_link_focus_and_enter_copies_the_focused_link() {
+    fn o_cycles_link_focus_enter_opens_y_copies() {
+        // Issue #49: Enter opens the focused link (OpenLink), `y`
+        // copies it without opening (CopyLink); with no link focused
+        // both fall back to the old behavior.
         let mut view = test_shell();
         view.app.start_new_session();
         let _ = view.app.take_pending_spawn();
         view.app.focus_nav();
-        // No links: `o` stays unfocused, Enter focuses the terminal.
+        // No links: `o` stays unfocused, Enter focuses the terminal,
+        // `y` copies the screen.
         assert_eq!(view.nav_action("o", false), NavAction::None);
         assert_eq!(view.link_cursor, None);
         assert_eq!(view.nav_action("enter", false), NavAction::FocusTerm);
+        assert_eq!(view.nav_action("y", false), NavAction::Copy);
 
         let id = view.active_id().unwrap();
         let s = view.app.sessions.iter_mut().find(|s| s.id == id).unwrap();
@@ -368,21 +483,38 @@ mod tests {
             .push("https://github.com/acme/app/pull/42".to_string());
         s.pr_links
             .push("https://github.com/acme/app/pull/43".to_string());
+        s.related_links
+            .push("https://github.com/acme/app/issues/9".to_string());
 
         assert_eq!(view.nav_action("o", false), NavAction::None);
         assert_eq!(view.link_cursor, Some(0));
-        assert_eq!(view.nav_action("enter", false), NavAction::CopyLink);
+        assert!(view.focused_link_is_pr());
+        assert_eq!(view.nav_action("enter", false), NavAction::OpenLink);
+        assert_eq!(view.nav_action("y", false), NavAction::CopyLink);
         assert_eq!(
             view.focused_link_url().as_deref(),
             Some("https://github.com/acme/app/pull/42")
         );
         assert_eq!(view.nav_action("o", false), NavAction::None);
         assert_eq!(view.link_cursor, Some(1));
-        assert_eq!(view.nav_action("enter", false), NavAction::CopyLink);
-        // Past the last link focus wraps back to unfocused: Enter types.
+        assert_eq!(view.nav_action("enter", false), NavAction::OpenLink);
+        // Link focus walks related links after the PRs, so every
+        // openable row is keyboard-reachable.
+        assert_eq!(view.nav_action("o", false), NavAction::None);
+        assert_eq!(view.link_cursor, Some(2));
+        assert!(!view.focused_link_is_pr());
+        assert_eq!(
+            view.focused_link_url().as_deref(),
+            Some("https://github.com/acme/app/issues/9")
+        );
+        assert_eq!(view.nav_action("enter", false), NavAction::OpenLink);
+        assert_eq!(view.nav_action("y", false), NavAction::CopyLink);
+        // Past the last link focus wraps back to unfocused: Enter
+        // types, `y` copies the screen again.
         assert_eq!(view.nav_action("o", false), NavAction::None);
         assert_eq!(view.link_cursor, None);
         assert_eq!(view.nav_action("enter", false), NavAction::FocusTerm);
+        assert_eq!(view.nav_action("y", false), NavAction::Copy);
         // `i` always focuses the terminal, even with a link focused.
         assert_eq!(view.nav_action("o", false), NavAction::None);
         assert_eq!(view.link_cursor, Some(0));
@@ -390,5 +522,27 @@ mod tests {
         // Moving the run selection clears link focus.
         assert_eq!(view.nav_action("j", false), NavAction::None);
         assert_eq!(view.link_cursor, None);
+    }
+
+    #[test]
+    fn browser_command_passes_the_exact_url_through() {
+        // Issue #49 falsifiable check: activating a PR row opens that
+        // exact `github.com/<owner>/<repo>/pull/<n>` URL. Construction
+        // is pure, so this asserts the argv without launching anything.
+        let url = "https://github.com/acme/app/pull/42";
+        let cmd = super::ShellView::browser_command(url);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.contains(&url.to_string()),
+            "exact URL in argv: {args:?}"
+        );
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        #[cfg(target_os = "macos")]
+        assert_eq!(program, "open");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(program, "xdg-open");
     }
 }

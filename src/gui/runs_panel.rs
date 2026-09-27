@@ -1,13 +1,18 @@
 //! Sessions-panel render for [`super::shell::ShellView`].
 //!
 //! Library chrome: a `Sidebar` with one group per status section (Needs
-//! input / Idle / Active), session rows, and every accumulated parsed
-//! link as a click-to-copy child row — display-capped with an `N more`
-//! disclosure over fully retained data. Keyboard link focus (`o`/Enter)
-//! highlights the focused row via `active`.
+//! input / Idle / Active), session rows (each with its folder tail when
+//! the session picked one, issue #48), and every accumulated parsed
+//! link as a child row — display-capped with an `N more` disclosure
+//! over fully retained data. Clicking a link opens it in the default
+//! browser and copies it; modifier-click copies only (issue #49).
+//! Keyboard link focus (`o`/Enter/`y`) highlights the focused row via
+//! `active`. The header doubles as the window drag region now that the
+//! OS title bar is hidden (issue #44).
 
 use gpui::{
-    div, px, rgb, AnyElement, ClipboardItem, Context, ElementId, IntoElement, ParentElement, Styled,
+    div, px, rgb, AnyElement, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
+    ParentElement, Styled, WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -53,6 +58,17 @@ impl ShellView {
                     .child("No sessions yet.".to_string()),
             );
         }
+        // Folder detail (issue #48): the selected run's full working
+        // directory — the row itself shows only the glanceable tail.
+        if let Some(dir) = self.app.selected_session().and_then(|s| s.cwd.as_deref()) {
+            footer = footer.child(
+                div()
+                    .text_color(rgb(super::theme::SECONDARY_FG))
+                    .text_xs()
+                    .truncate()
+                    .child(format!("in {dir}")),
+            );
+        }
         footer.child(
             div()
                 .text_color(rgb(super::theme::SECONDARY_FG))
@@ -67,19 +83,25 @@ impl ShellView {
         // The footer carries the status line (issue #32), so the app name
         // and hints live in the panel, not in their own bar.
         // Width follows the persisted comfort setting (issue #29).
+        // Issue #44: with the OS title bar hidden the header is the
+        // window drag region (traffic lights float over the content).
+        // Child controls keep their own hitboxes, so `+ New` still
+        // clicks while the bare header drags the window.
         let mut sidebar = Sidebar::left().w(px(self.app.sidebar_width())).header(
-            SidebarHeader::new().child("Sessions".to_string()).child(
-                Button::new(ElementId::Name("new-run-btn".into()))
-                    .label("+ New")
-                    .primary()
-                    .small()
-                    .on_click(cx.listener(|this, _ev, window, _cx| {
-                        // Same live-run cap as the `n` key (issue #31):
-                        // a refused 11th run never steals focus.
-                        if this.request_new_run() {
-                            this.focus_term(window);
-                        }
-                    })),
+            div().window_control_area(WindowControlArea::Drag).child(
+                SidebarHeader::new().child("Sessions".to_string()).child(
+                    Button::new(ElementId::Name("new-run-btn".into()))
+                        .label("+ New")
+                        .primary()
+                        .small()
+                        .on_click(cx.listener(|this, _ev, window, _cx| {
+                            // Same live-run cap as the `n` key (issue #31):
+                            // a refused 11th run never steals focus.
+                            if this.request_new_run() {
+                                this.focus_term(window);
+                            }
+                        })),
+                ),
             ),
         );
         if self.app.sessions.is_empty() {
@@ -100,13 +122,14 @@ impl ShellView {
                     // with color removed (see theme::row_marker).
                     let row_marker = super::theme::row_marker(s.status);
                     let row_id = s.id.clone();
-                    // Parsed links as child items: click copies the full
-                    // URL. Display-capped: the first MAX_VISIBLE_LINKS
-                    // rows stay live and the rest fold behind an N more
+                    // Parsed links as child items: click opens the URL
+                    // and copies it, modifier-click copies only.
+                    // Display-capped: the first MAX_VISIBLE_LINKS rows
+                    // stay live and the rest fold behind an N more
                     // disclosure; the full lists stay retained (and
-                    // copyable via yank) in the session. `o`/Enter does
-                    // the same from the keyboard when a PR row holds link
-                    // focus (highlighted via `active`).
+                    // copyable via yank) in the session. `o` focuses,
+                    // Enter opens, `y` copies from the keyboard when a
+                    // row holds link focus (highlighted via `active`).
                     let short_of = |link: &str| {
                         link.trim_start_matches("https://")
                             .trim_start_matches("http://")
@@ -119,24 +142,36 @@ impl ShellView {
                         let short = short_of(link);
                         let url = link.clone();
                         let focused = i == self.app.selected && self.link_cursor == Some(li);
+                        // Issue #49: plain click opens the exact URL in
+                        // the default browser and copies it;
+                        // Cmd/Ctrl/Shift-click copies without opening.
                         links.push(SidebarMenuItem::new(short).active(focused).on_click(
-                            cx.listener(move |this, _ev, _window, cx| {
+                            cx.listener(move |this, ev: &ClickEvent, _window, cx| {
                                 this.link_cursor = Some(li);
-                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                                this.app.set_status("copied PR link");
+                                let m = ev.modifiers();
+                                let copy_only = m.platform || m.control || m.shift;
+                                this.activate_link(&url, true, copy_only, cx);
                             }),
                         ));
                     }
                     let (shown_rel, hidden_rel) = crate::app::visible_links(&s.related_links);
-                    for link in shown_rel {
+                    // Related (issue/commit/file) links share the same
+                    // open/copy treatment; their link-cursor indices
+                    // follow the PR rows so `o`/Enter reaches them too.
+                    let pr_count = s.pr_links.len();
+                    for (ri, link) in shown_rel.iter().enumerate() {
                         let short = short_of(link);
                         let url = link.clone();
-                        links.push(SidebarMenuItem::new(short).on_click(cx.listener(
-                            move |this, _ev, _window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                                this.app.set_status("copied link");
-                            },
-                        )));
+                        let cursor = pr_count + ri;
+                        let focused = i == self.app.selected && self.link_cursor == Some(cursor);
+                        links.push(SidebarMenuItem::new(short).active(focused).on_click(
+                            cx.listener(move |this, ev: &ClickEvent, _window, cx| {
+                                this.link_cursor = Some(cursor);
+                                let m = ev.modifiers();
+                                let copy_only = m.platform || m.control || m.shift;
+                                this.activate_link(&url, false, copy_only, cx);
+                            }),
+                        ));
                     }
                     let hidden = hidden_prs + hidden_rel;
                     if hidden > 0 {
@@ -145,7 +180,16 @@ impl ShellView {
                     if s.links_truncated {
                         links.push(SidebarMenuItem::new("(capped at 50 per list)".to_string()));
                     }
-                    SidebarMenuItem::new(format!("{row_marker} {}", s.title))
+                    // Issue #48: the session's folder tail rides the row
+                    // so multi-folder work is glanceable; the full path
+                    // lives in the footer detail line.
+                    let row_label = match s.cwd.as_deref() {
+                        Some(dir) => {
+                            format!("{row_marker} {} · {}", s.title, crate::app::short_cwd(dir))
+                        }
+                        None => format!("{row_marker} {}", s.title),
+                    };
+                    SidebarMenuItem::new(row_label)
                         .active(i == self.app.selected)
                         .default_open(true)
                         .on_click(cx.listener(move |this, _ev, window, _cx| {

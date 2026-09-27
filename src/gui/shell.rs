@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{App as GpuiApp, Bounds, ClipboardItem, FocusHandle, KeyDownEvent, Pixels, Window};
+use gpui::{App as GpuiApp, Bounds, FocusHandle, KeyDownEvent, Pixels, Window};
 
 use crate::app::{App, ChatSession};
 use crate::embedded::LiveView;
@@ -98,6 +98,10 @@ pub struct ShellView {
     /// Title-filter capture (issue #29): while true, printable keys extend
     /// [`App::filter`] instead of dispatching nav actions.
     pub(crate) filtering: bool,
+    /// Folder-picker capture (issue #48): while `Some`, printable keys
+    /// extend the buffer instead of dispatching nav actions; Enter
+    /// starts a session in the typed folder, Esc cancels.
+    pub(crate) cwd_capture: Option<String>,
     /// Last run-state persist (issue #26); `None` until the first save.
     /// Throttles refresh-time saves so a streaming run doesn't rewrite
     /// the file every 50 ms tick; quitting and closing always save.
@@ -119,6 +123,7 @@ impl ShellView {
         Self {
             app: App::new(sessions),
             filtering: false,
+            cwd_capture: None,
             last_persist: None,
             runs: HashMap::new(),
             quit_armed: false,
@@ -188,6 +193,15 @@ impl ShellView {
             // extend the filter, Enter accepts, Esc clears. Repeats type.
             self.quit_armed = false;
             self.filter_key(key, key_char, ctrl);
+            window.refresh();
+            return;
+        }
+        if self.cwd_capture.is_some() {
+            // Folder-picker capture (issue #48): same precedence as the
+            // title filter — the typed path owns the keyboard until
+            // Enter starts the session or Esc cancels.
+            self.quit_armed = false;
+            self.cwd_key(key, key_char, ctrl, platform);
             window.refresh();
             return;
         }
@@ -269,6 +283,15 @@ impl ShellView {
             window.refresh();
             return;
         }
+        // `w` opens the folder picker (issue #48): the next session
+        // spawns in the typed folder. Nav focus only — in terminal
+        // focus `w` must type into `muse`.
+        if !ctrl && !platform && key == "w" {
+            self.quit_armed = false;
+            self.begin_cwd_capture();
+            window.refresh();
+            return;
+        }
         // Comfort keys (issue #29): nav focus only — in terminal focus
         // these must type into `muse`, and filter capture owns them.
         if self.comfort_key(key_char) {
@@ -306,9 +329,21 @@ impl ShellView {
                 self.app.clear_error();
             }
             NavAction::CopyLink => {
+                // Yank (issue #49): copy the focused link without
+                // opening — the keyboard copy path for mouse
+                // modifier-click parity.
                 if let Some(url) = self.focused_link_url() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(url));
-                    self.app.set_status("copied PR link");
+                    let is_pr = self.focused_link_is_pr();
+                    self.activate_link(&url, is_pr, true, cx);
+                }
+            }
+            NavAction::OpenLink => {
+                // Enter on a focused link (issue #49): open the exact
+                // URL in the default browser and copy it, so the
+                // browser tab and the clipboard agree.
+                if let Some(url) = self.focused_link_url() {
+                    let is_pr = self.focused_link_is_pr();
+                    self.activate_link(&url, is_pr, false, cx);
                 }
             }
             NavAction::CycleTheme => {

@@ -61,6 +61,11 @@ pub struct ChatSession {
     /// runs). Survives save/load so restarts resume the same transcript.
     #[serde(default)]
     pub provider_session_id: Option<String>,
+    /// Working directory the child spawns in (issue #48). `None` means
+    /// the current behavior: inherit the app's own directory. Survives
+    /// save/load with the rest of run state (local-only, plain file).
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 impl ChatSession {
@@ -227,6 +232,48 @@ fn current_dir_name() -> String {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "muse".to_string())
+}
+
+/// Glanceable tail of a session folder for the runs list (issue #48):
+/// the last two path components (`repo/sub`), falling back to fewer
+/// when the path is short. The full path stays on the session for the
+/// footer detail line, so this never has to be unique — just short.
+pub fn short_cwd(cwd: &str) -> String {
+    const MAX: usize = 28;
+    let parts: Vec<&str> = cwd.split('/').filter(|p| !p.is_empty()).collect();
+    let tail = if parts.len() >= 2 {
+        format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    } else {
+        parts.join("/")
+    };
+    if tail.chars().count() > MAX {
+        let mut cut: String = tail
+            .chars()
+            .skip(tail.chars().count() - (MAX - 1))
+            .collect();
+        cut.insert(0, '…');
+        cut
+    } else {
+        tail
+    }
+}
+
+/// Normalize folder-picker input (issue #48): blank means the default
+/// (inherit, `None`); a leading `~` expands to `$HOME`; anything else
+/// passes through untouched (existence is checked at confirm time).
+pub fn expand_cwd_input(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('~') {
+        if rest.is_empty() || rest.starts_with('/') {
+            if let Ok(home) = std::env::var("HOME") {
+                return Some(format!("{home}{rest}"));
+            }
+        }
+    }
+    Some(trimmed.to_string())
 }
 
 /// Current Unix time in seconds, for run bookkeeping.
@@ -601,6 +648,14 @@ impl App {
     /// main loop keeps one live PTY per entry. The entry starts with a
     /// placeholder animal title until the first submitted prompt renames it.
     pub fn start_new_session(&mut self) {
+        self.start_new_session_in(None);
+    }
+
+    /// Same as [`App::start_new_session`] but spawning the child in
+    /// `cwd` (issue #48): `None` keeps the current behavior (inherit the
+    /// app's directory). The folder rides on the session so the runs
+    /// list, restarts, and persisted state all see it.
+    pub fn start_new_session_in(&mut self, cwd: Option<String>) {
         self.next_run += 1;
         let n = self.next_run;
         self.sessions.push(ChatSession {
@@ -617,10 +672,22 @@ impl App {
             provider_session_id: None,
             title_locked: false,
             pending_input: String::new(),
+            cwd,
         });
         self.selected = self.sessions.len() - 1;
         self.pending_spawn = Some(SpawnKind::New);
         self.focus = Focus::Terminal;
+    }
+
+    /// Working directory recorded on `run_id`, if the session picked one
+    /// (issue #48). The spawn seam reads this so every backend launches
+    /// in the chosen folder without per-backend handling.
+    pub fn session_cwd(&self, run_id: &str) -> Option<std::path::PathBuf> {
+        self.sessions
+            .iter()
+            .find(|s| s.id == run_id)
+            .and_then(|s| s.cwd.as_deref())
+            .map(std::path::PathBuf::from)
     }
 
     /// Record a prompt line the user submitted to `run_id`: the first one
@@ -684,6 +751,7 @@ mod tests {
             provider_session_id: None,
             title_locked: true,
             pending_input: String::new(),
+            cwd: None,
         }
     }
 
@@ -1072,5 +1140,61 @@ mod tests {
         app.focus_terminal();
         app.focus_nav();
         assert_eq!(app.focus, Focus::Nav);
+    }
+
+    #[test]
+    fn new_session_in_folder_records_cwd_default_stays_unset() {
+        // Issue #48: the plain path keeps the current behavior (no
+        // folder recorded); the folder path sticks it on the session
+        // for the spawn seam, the list, and persistence.
+        let mut app = App::new(vec![]);
+        app.start_new_session();
+        let _ = app.take_pending_spawn();
+        assert_eq!(app.sessions[0].cwd, None);
+        assert_eq!(app.session_cwd("run-1"), None);
+        app.start_new_session_in(Some("/tmp/demo-proj".to_string()));
+        let _ = app.take_pending_spawn();
+        assert_eq!(app.sessions[1].cwd.as_deref(), Some("/tmp/demo-proj"));
+        assert_eq!(
+            app.session_cwd("run-2"),
+            Some(std::path::PathBuf::from("/tmp/demo-proj"))
+        );
+        assert_eq!(app.session_cwd("missing"), None);
+    }
+
+    #[test]
+    fn short_cwd_shows_the_tail_and_caps_length() {
+        // Issue #48: rows stay glanceable — last two components, with
+        // an ellipsis cap for absurd tails.
+        assert_eq!(short_cwd("/tmp/demo-proj"), "tmp/demo-proj");
+        assert_eq!(
+            short_cwd("/Users/greg/projects/agent-manager"),
+            "projects/agent-manager"
+        );
+        assert_eq!(short_cwd("/tmp"), "tmp");
+        assert_eq!(short_cwd("/"), "");
+        let long = "/a/very-long-directory-name-here/another-long-one";
+        let short = short_cwd(long);
+        assert!(short.chars().count() <= 28, "capped: {short:?}");
+        assert!(short.starts_with('…'), "ellipsis marks the cut: {short:?}");
+        assert!(short.ends_with("another-long-one"));
+    }
+
+    #[test]
+    fn cwd_input_blank_means_default_tilde_expands() {
+        // Issue #48: the picker normalizes — blank/whitespace is the
+        // default folder, `~` grows to $HOME, the rest passes through
+        // for the is-dir check at confirm time.
+        assert_eq!(expand_cwd_input(""), None);
+        assert_eq!(expand_cwd_input("   "), None);
+        assert_eq!(
+            expand_cwd_input("/tmp/demo-proj"),
+            Some("/tmp/demo-proj".to_string())
+        );
+        assert_eq!(expand_cwd_input("  /tmp/x  "), Some("/tmp/x".to_string()));
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert_eq!(expand_cwd_input("~/proj"), Some(format!("{home}/proj")));
+        // `~other` is a real relative name, not a home: untouched.
+        assert_eq!(expand_cwd_input("~other"), Some("~other".to_string()));
     }
 }

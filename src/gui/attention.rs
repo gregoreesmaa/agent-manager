@@ -92,6 +92,15 @@ impl ShellView {
     /// (only the default key-hint lines compact — the bar also truncates
     /// with an ellipsis, so long messages never push the layout).
     fn base_status_text_for_width(&self, viewport_w: f32) -> String {
+        // Folder-picker capture (issue #48) outranks everything while
+        // it owns the keyboard: the typed path plus its two exits.
+        if let Some(buf) = self.cwd_capture.as_deref() {
+            if buf.is_empty() {
+                return "new session folder: (blank = current) · Enter: start · Esc: cancel"
+                    .to_string();
+            }
+            return format!("new session folder: {buf} · Enter: start · Esc: cancel");
+        }
         // An armed quit outranks everything: the user asked to leave.
         if self.quit_armed {
             return "Live runs active — q again to quit · any other key cancels".to_string();
@@ -139,7 +148,7 @@ impl ShellView {
             "n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit"
                 .to_string()
         } else {
-            "n: new · j/k: move · PgUp/PgDn: page · o/Enter: copy link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit"
+            "n: new · w: folder · j/k: move · PgUp/PgDn: page · o/Enter: open link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit"
                 .to_string()
         }
     }

@@ -126,6 +126,20 @@ pub struct EmbeddedPty {
 impl EmbeddedPty {
     /// Spawn `program` with `args` in a PTY of `cols` x `rows`.
     pub fn spawn(program: &str, args: &[String], cols: u16, rows: u16) -> Result<Self> {
+        Self::spawn_with_cwd(program, args, cols, rows, None)
+    }
+
+    /// Same as [`EmbeddedPty::spawn`] but starting the child in `cwd`
+    /// (issue #48): the single spawn seam every backend funnels through,
+    /// so a picked folder applies agent-neutrally. `None` inherits the
+    /// app's own directory (the behavior before per-session folders).
+    pub fn spawn_with_cwd(
+        program: &str,
+        args: &[String],
+        cols: u16,
+        rows: u16,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<Self> {
         let spawn_desc = if args.is_empty() {
             program.to_string()
         } else {
@@ -142,6 +156,9 @@ impl EmbeddedPty {
             .context("openpty failed")?;
         let mut cmd = portable_pty::CommandBuilder::new(program);
         cmd.args(args);
+        if let Some(dir) = cwd {
+            cmd.cwd(dir);
+        }
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -356,6 +373,36 @@ mod tests {
                 vec!["--resume".to_string(), "sess-abc".to_string()]
             )
         );
+    }
+
+    #[test]
+    fn spawn_with_cwd_runs_the_child_in_the_picked_folder() {
+        // Issue #48 falsifiable check: a session started with folder
+        // `/tmp/demo-proj` runs its agent with that cwd (`pwd` prints
+        // it). `None` keeps the old inherit behavior.
+        let dir = std::env::temp_dir().join(format!(
+            "agent-manager-cwd-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        let want = canon.to_string_lossy().into_owned();
+        let mut pty = EmbeddedPty::spawn_with_cwd("pwd", &[], 80, 24, Some(canon.as_path()))
+            .expect("pwd must spawn");
+        assert!(pump_until(&mut pty, &want, Duration::from_secs(5)));
+        assert!(wait_exit(&mut pty, Duration::from_secs(5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spawn_without_cwd_inherits_as_before() {
+        // The old seam is the new seam with `None`: still works.
+        let mut pty =
+            EmbeddedPty::spawn("echo", &["hi".to_string()], 80, 24).expect("echo must spawn");
+        assert!(pump_until(&mut pty, "hi", Duration::from_secs(5)));
     }
 
     #[test]

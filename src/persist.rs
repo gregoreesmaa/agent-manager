@@ -118,6 +118,11 @@ pub fn export_markdown(session: &ChatSession, body: &str) -> String {
             .map(|d| d.as_secs())
             .unwrap_or(0),
     );
+    // Issue #48: the session folder is part of the run detail, next to
+    // the header — a re-opened export still says where the run lived.
+    if let Some(dir) = session.cwd.as_deref() {
+        out.push_str(&format!("\n- folder: `{dir}`\n"));
+    }
     out.push_str("\n## Terminal\n\n```text\n");
     out.push_str(body);
     if !body.ends_with('\n') {
@@ -208,6 +213,7 @@ mod tests {
             transcript_truncated: false,
             title_locked: true,
             pending_input: String::new(),
+            cwd: None,
         }
     }
 
@@ -219,6 +225,38 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn session_folder_survives_a_save_load_roundtrip() {
+        // Issue #48: the picked folder is run state — it persists
+        // local-only with everything else, and pre-folder files (no
+        // `cwd` key) still load as the default.
+        let mut with_dir = sess("a");
+        with_dir.cwd = Some("/tmp/demo-proj".to_string());
+        let path = tmp_path("runs.json");
+        save_sessions_to(&path, &[with_dir]).unwrap();
+        let back = load_sessions_from(&path);
+        assert_eq!(back[0].cwd.as_deref(), Some("/tmp/demo-proj"));
+        let legacy = r#"[{"id":"old","title":"old","project":"p","status":"Idle",
+            "last_active":1,"pr_links":[],"related_links":[]}]"#;
+        let legacy_path = tmp_path("legacy.json");
+        std::fs::write(&legacy_path, legacy).unwrap();
+        let legacy_back = load_sessions_from(&legacy_path);
+        assert_eq!(legacy_back.len(), 1);
+        assert_eq!(legacy_back[0].cwd, None);
+    }
+
+    #[test]
+    fn export_names_the_session_folder() {
+        // Issue #48: the run detail (markdown export) says where the
+        // run lived; folder-less runs export exactly as before.
+        let mut with_dir = sess("a");
+        with_dir.cwd = Some("/tmp/demo-proj".to_string());
+        let with = export_markdown(&with_dir, "body\n");
+        assert!(with.contains("- folder: `/tmp/demo-proj`"), "{with:?}");
+        let without = export_markdown(&sess("b"), "body\n");
+        assert!(!without.contains("folder:"), "{without:?}");
     }
 
     #[test]

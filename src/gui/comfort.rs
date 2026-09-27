@@ -70,6 +70,83 @@ impl ShellView {
         self.filtering = true;
     }
 
+    /// Enter folder-picker capture (`w` in nav focus, issue #48): the
+    /// buffer starts empty — Enter on empty keeps the default folder.
+    pub(crate) fn begin_cwd_capture(&mut self) {
+        self.cwd_capture = Some(String::new());
+    }
+
+    /// Accept the typed folder and start the session in it (Enter).
+    /// Blank means the default folder; a missing folder refuses with a
+    /// flash and stays in capture so the typo can be fixed. Returns
+    /// true when a session started.
+    pub(crate) fn accept_cwd(&mut self) -> bool {
+        let raw = self.cwd_capture.clone().unwrap_or_default();
+        let picked = crate::app::expand_cwd_input(&raw);
+        if let Some(dir) = &picked {
+            if !std::path::Path::new(dir).is_dir() {
+                self.app.set_status(format!("no such folder: {dir}"));
+                return false;
+            }
+        }
+        self.cwd_capture = None;
+        self.link_cursor = None;
+        if !self.request_new_run_in(picked.clone()) {
+            return false;
+        }
+        if let Some(dir) = picked {
+            self.app.set_status(format!("new session in {dir}"));
+        }
+        true
+    }
+
+    /// Cancel folder capture (Esc): no session starts.
+    pub(crate) fn cancel_cwd(&mut self) {
+        self.cwd_capture = None;
+    }
+
+    /// Folder-picker capture dispatch (issue #48). Returns true when the
+    /// key was consumed: printable keys extend the path buffer,
+    /// Backspace edits, Enter starts the session, Esc cancels (and must
+    /// not quit — capture outranks nav keys). `ctrl`/`platform` combos
+    /// never count as path text.
+    pub(crate) fn cwd_key(
+        &mut self,
+        key: &str,
+        key_char: Option<&str>,
+        ctrl: bool,
+        platform: bool,
+    ) -> bool {
+        if self.cwd_capture.is_none() {
+            return false;
+        }
+        match key {
+            "enter" => {
+                self.accept_cwd();
+            }
+            "escape" => {
+                self.cancel_cwd();
+            }
+            "backspace" => {
+                if let Some(buf) = self.cwd_capture.as_mut() {
+                    buf.pop();
+                }
+            }
+            _ => {
+                if !ctrl && !platform {
+                    if let Some(c) = key_char {
+                        if c.chars().count() == 1 {
+                            if let Some(buf) = self.cwd_capture.as_mut() {
+                                buf.push_str(c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// Append to the live filter, snapping selection into the matches.
     pub(crate) fn filter_type(&mut self, text: &str) {
         let mut next = self.app.filter.clone();
@@ -194,6 +271,68 @@ mod tests {
         assert!(!view.filtering);
         assert!(view.app.filter.is_empty());
         assert_eq!(view.app.visible_indices().len(), 3);
+    }
+
+    #[test]
+    fn cwd_capture_starts_a_session_in_the_typed_folder() {
+        // Issue #48: `w` opens the picker; typing + Enter starts the
+        // session in that folder; Esc cancels with nothing started.
+        let mut view = test_shell();
+        view.app.focus_nav();
+        assert!(view.cwd_capture.is_none());
+        view.begin_cwd_capture();
+        assert_eq!(view.cwd_capture.as_deref(), Some(""));
+        // Capture owns the keyboard: the status line shows the picker.
+        assert!(view
+            .status_text_for_width(1280.0)
+            .contains("new session folder"));
+        for c in ["/", "t", "m", "p"] {
+            assert!(view.cwd_key(c, Some(c), false, false));
+        }
+        assert_eq!(view.cwd_capture.as_deref(), Some("/tmp"));
+        assert!(view.cwd_key("backspace", None, false, false));
+        assert_eq!(view.cwd_capture.as_deref(), Some("/tm"));
+        assert!(view.cwd_key("p", Some("p"), false, false));
+        // Ctrl combos never count as path text.
+        assert!(view.cwd_key("c", Some("c"), true, false));
+        assert_eq!(view.cwd_capture.as_deref(), Some("/tmp"));
+        assert!(view.cwd_key("enter", None, false, false));
+        assert!(view.cwd_capture.is_none());
+        let s = view.app.selected_session().unwrap();
+        assert_eq!(s.cwd.as_deref(), Some("/tmp"));
+        assert!(view.app.has_pending_spawn());
+    }
+
+    #[test]
+    fn cwd_capture_blank_keeps_default_missing_folder_refuses() {
+        // Issue #48: Enter on empty is the plain `n` path; a missing
+        // folder flashes and stays in capture for a fix; Esc bails.
+        let mut view = test_shell();
+        view.app.focus_nav();
+        view.begin_cwd_capture();
+        assert!(view.cwd_key("enter", None, false, false));
+        assert!(view.cwd_capture.is_none());
+        assert_eq!(view.app.selected_session().unwrap().cwd, None);
+
+        view.app.focus_nav();
+        view.begin_cwd_capture();
+        for c in ["/", "n", "o", "-", "s", "u", "c", "h"] {
+            assert!(view.cwd_key(c, Some(c), false, false));
+        }
+        assert!(view.cwd_key("enter", None, false, false));
+        // Refused: no session, still capturing, flash names it.
+        assert_eq!(view.app.sessions.len(), 1);
+        assert!(view.cwd_capture.is_some());
+        assert!(
+            view.app
+                .status_text()
+                .is_some_and(|m| m.contains("no such folder")),
+            "flash: {:?}",
+            view.app.status_text()
+        );
+        assert!(view.cwd_key("escape", None, false, false));
+        assert!(view.cwd_capture.is_none());
+        assert_eq!(view.app.sessions.len(), 1);
     }
 
     #[test]

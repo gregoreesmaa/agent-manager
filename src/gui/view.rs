@@ -9,8 +9,8 @@
 
 use gpui::{
     div, font, px, rgb, Context, ElementId, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, Size,
-    StatefulInteractiveElement, Styled, Window, WindowOptions,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Size,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, WindowOptions,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::Sizable as _;
@@ -124,10 +124,14 @@ impl Render for ShellView {
 impl ShellView {
     /// Status line element: the same text the sidebar footer shows in
     /// wide mode, kept as a slim bar under the terminal only where no
-    /// sidebar exists to host it (narrow mode, issue #32).
+    /// sidebar exists to host it (narrow mode, issue #32). It doubles
+    /// as the window drag region there (issue #44): the hidden title
+    /// bar leaves narrow mode no other draggable chrome, and the bar
+    /// itself has no clickable children to conflict with.
     pub(crate) fn render_status_bar(&self, viewport_w: f32) -> impl IntoElement {
         div()
             .h(px(STATUS_HEIGHT))
+            .window_control_area(WindowControlArea::Drag)
             .px_2()
             .bg(rgb(0x1e1e2e))
             .text_color(rgb(super::theme::SECONDARY_FG))
@@ -291,12 +295,18 @@ impl ShellView {
 /// Window options for the main window. The minimum size is derived from
 /// the PTY floors (see [`MIN_WINDOW_WIDTH`]/[`MIN_WINDOW_HEIGHT`]) so the
 /// OS never shrinks the window past what the terminal grid can display.
+///
+/// Issue #44: no OS title bar — `titlebar: None` puts the window in the
+/// native overlay mode (transparent titlebar on macOS/Windows), so the
+/// terminal owns the title-bar row's pixels too and the content runs
+/// edge-to-edge. The traffic lights stay native (floating over the
+/// content at the OS position), and dragging still works through the
+/// custom drag regions (sidebar header in wide mode, slim status bar in
+/// narrow mode). Nothing in-window is taller than before: wide mode
+/// gains a row, narrow mode keeps exactly its slim bar.
 pub fn window_options() -> WindowOptions {
     WindowOptions {
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("Agent Manager")),
-            ..Default::default()
-        }),
+        titlebar: None,
         window_min_size: Some(Size {
             width: px(MIN_WINDOW_WIDTH),
             height: px(MIN_WINDOW_HEIGHT),
@@ -312,6 +322,23 @@ mod tests {
     };
     use super::super::runs::test_shell;
     use super::*;
+
+    #[test]
+    fn hidden_titlebar_frees_the_os_row_without_touching_the_minimum() {
+        // Issue #44: no OS title bar — the content runs edge-to-edge
+        // behind the native overlay (traffic lights float over it), so
+        // the terminal gains the title-bar row's pixels. The minimum
+        // geometry is unchanged (narrow mode keeps its slim bar).
+        assert!(
+            super::window_options().titlebar.is_none(),
+            "OS title bar must stay hidden"
+        );
+        let min = super::window_options()
+            .window_min_size
+            .expect("main window sets a minimum size");
+        assert_eq!(f32::from(min.width), MIN_WINDOW_WIDTH);
+        assert_eq!(f32::from(min.height), MIN_WINDOW_HEIGHT);
+    }
 
     #[test]
     fn window_min_size_matches_pty_floors() {

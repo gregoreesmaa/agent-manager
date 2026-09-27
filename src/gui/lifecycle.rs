@@ -67,15 +67,22 @@ impl ShellView {
     /// entry, no PTY, no unbounded growth — with a flash pointing at
     /// per-run close (`x`).
     pub(crate) fn request_new_run(&mut self) -> bool {
+        self.request_new_run_in(None)
+    }
+
+    /// Same as [`Self::request_new_run`] but spawning in `cwd`
+    /// (issue #48): the folder-picker (`w`) path. `None` is the plain
+    /// `n` path exactly.
+    pub(crate) fn request_new_run_in(&mut self, cwd: Option<String>) -> bool {
         if self.runs.len() < super::runs::MAX_LIVE_RUNS {
-            self.app.start_new_session();
+            self.app.start_new_session_in(cwd);
             self.clear_selection();
             self.link_cursor = None;
             return true;
         }
         match self.evict_oldest_exited() {
             Some(title) => {
-                self.app.start_new_session();
+                self.app.start_new_session_in(cwd);
                 self.clear_selection();
                 self.link_cursor = None;
                 self.app
@@ -231,6 +238,7 @@ mod tests {
             provider_session_id: Some("sess-abc".into()),
             title_locked: true,
             pending_input: String::new(),
+            cwd: None,
         };
         let mut view = ShellView::new_with_sessions(vec![historic]);
         // Visible without any run; resume offered; status names it.

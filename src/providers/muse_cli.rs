@@ -145,6 +145,7 @@ impl Provider for MuseCliProvider {
                     provider_session_id: Some(id.to_string()),
                     title_locked: true,
                     pending_input: String::new(),
+                    cwd: None,
                 });
             }
         }

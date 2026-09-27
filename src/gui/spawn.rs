@@ -41,9 +41,17 @@ impl ShellView {
                     }
                 }
             }
-            // Configured per-agent flags ride along (issue #33).
+            // Configured per-agent flags ride along (issue #33). The
+            // session's folder rides along too (issue #48): one seam,
+            // every backend, restarts included.
             let (program, args) = self.app.spawn_command_for(&kind);
-            match EmbeddedPty::spawn(&program, &args, self.cols, self.rows) {
+            let spawned = match self.app.session_cwd(&run_id) {
+                Some(dir) => {
+                    EmbeddedPty::spawn_with_cwd(&program, &args, self.cols, self.rows, Some(&dir))
+                }
+                None => EmbeddedPty::spawn(&program, &args, self.cols, self.rows),
+            };
+            match spawned {
                 Ok(pty) => {
                     self.runs.insert(run_id.clone(), Run::new(pty));
                     self.note_spawn_success(&run_id);
