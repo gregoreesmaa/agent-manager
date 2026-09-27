@@ -1022,9 +1022,12 @@ mod tests {
         let tail = font.fallbacks.expect("tail").fallback_list().to_vec();
         assert!(tail.contains(&"Apple Color Emoji".to_string()));
         // A stale probe (different primary) never applies.
-        probed
-            .app
-            .set_terminal_font_family_for_test("Iosevka".to_string());
+        let mut term = probed.app.terminal_config().clone();
+        term.font_family = "Iosevka".to_string();
+        probed.app.set_config(crate::config::Config {
+            terminal: term,
+            ..Default::default()
+        });
         assert_eq!(probed.resolved_font_head(), "Iosevka");
     }
 

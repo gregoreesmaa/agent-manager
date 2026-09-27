@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[lib]
+name = "agent_manager"
+path = "src/lib.rs"
+
 [[bin]]
 name = "agent-manager"
 path = "src/main.rs"

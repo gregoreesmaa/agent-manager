@@ -475,13 +475,6 @@ impl App {
         size
     }
 
-    /// Test-only primary-family swap (issue #53): lets headless tests
-    /// age a stored font probe without a font enumeration roundtrip.
-    #[cfg(test)]
-    pub fn set_terminal_font_family_for_test(&mut self, family: String) {
-        self.config.terminal.font_family = family;
-    }
-
     /// Comfort-key mutation half for the panel width: same
     /// mutate/flash/persist split as [`App::set_terminal_font_size`].
     pub fn set_sidebar_width(&mut self, width: f32) -> f32 {
@@ -1270,11 +1263,13 @@ mod tests {
         assert_eq!(harness_badge(""), ("○", "??"));
         // Badge glyphs never collide with the status row markers, so
         // the icon and the status cue stay distinguishable in
-        // monochrome (issue #8 bar).
-        for status in [Status::Attention, Status::Idle, Status::Working] {
-            let marker = crate::gui::theme::row_marker(status);
+        // monochrome (issue #8 bar). Markers are owned by the shell
+        // layer (`gui::theme::row_marker`); mirrored literally here so
+        // the framework-free core keeps zero shell/toolkit references
+        // (issue #60: core builds as a library without `gui/`).
+        for marker in ["!", "·", ">"] {
             for (glyph, _) in [muse, codex, claude, unknown] {
-                assert_ne!(glyph, marker, "harness glyph vs {status:?} marker");
+                assert_ne!(glyph, marker, "harness glyph vs {marker} marker");
             }
         }
     }

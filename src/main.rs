@@ -11,15 +11,14 @@
 //! Tab/i type, ? help, q quit. Typing focus: keys go to `muse`; Tab/Esc back to
 //! the list; Cmd+1/Cmd+2 jump to either pane from anywhere.
 
-mod app;
-mod config;
-mod embedded;
+// Core lives in the library target (`src/lib.rs`, issue #60) so native
+// shells bind one crate; this binary consumes it like any other client.
+// The re-export keeps the existing `crate::<module>` paths in `gui/`
+// working with no module moves.
+pub use agent_manager::{
+    app, config, embedded, parsers, persist, providers, scrollback, transcript,
+};
 mod gui;
-mod parsers;
-mod persist;
-mod providers;
-mod scrollback;
-mod transcript;
 
 use gpui::{AppContext, Application, Entity};
 use gpui_component::{Root, Theme};
