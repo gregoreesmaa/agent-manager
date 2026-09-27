@@ -266,6 +266,58 @@ pub struct EmbeddedPty {
     exited: bool,
 }
 
+/// Resolve a bare command name against explicit search dirs, trying the
+/// exact name first and then each `exts` suffix (Windows `PATHEXT`
+/// probing). Pure so unit tests cover it on every OS.
+///
+/// Background (issue #64): on Windows portable-pty rebuilds its spawn
+/// environment from the machine/user registry, discarding process-local
+/// `PATH` entries — so a bare `muse` that only exists via this process's
+/// `PATH` (direnv-style shells, the smoke harness's fake `muse.exe` dir)
+/// never resolves and `CreateProcessW` fails with "file not found".
+/// Pre-resolving to an absolute path honors the process environment on
+/// every backend. Names carrying a directory, or resolving nowhere, yield
+/// `None` so the backend keeps its own lookup and error.
+fn resolve_bare_program(
+    program: &str,
+    path_value: &std::ffi::OsStr,
+    exts: &[&str],
+) -> Option<std::path::PathBuf> {
+    if program.is_empty() || program.contains('/') || program.contains('\\') {
+        return None;
+    }
+    for dir in std::env::split_paths(path_value) {
+        let base = dir.join(program);
+        if base.is_file() {
+            return Some(base);
+        }
+        for ext in exts {
+            let candidate = dir.join(format!("{program}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve `program` against the live process `PATH`/`PATHEXT`, exactly
+/// what the backend should have searched. `None` means "not a bare name
+/// or not found": pass the original through untouched.
+fn resolve_against_process_path(program: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let pathext = std::env::var_os("PATHEXT")
+        .map(|v| {
+            std::env::split_paths(&v)
+                .filter_map(|e| e.to_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![".exe".to_owned()]);
+    let exts: Vec<&str> = pathext.iter().map(String::as_str).collect();
+    resolve_bare_program(program, &path, &exts)
+}
+
 impl EmbeddedPty {
     /// Spawn `program` with `args` in a PTY of `cols` x `rows`.
     pub fn spawn(program: &str, args: &[String], cols: u16, rows: u16) -> Result<Self> {
@@ -297,7 +349,20 @@ impl EmbeddedPty {
                 pixel_height: 0,
             })
             .context("openpty failed")?;
-        let mut cmd = portable_pty::CommandBuilder::new(program);
+        // Windows only (issue #64): the backend searches the registry
+        // PATH instead of this process's, so pre-resolve bare names
+        // against the live environment. Everywhere else (and for names
+        // with a directory, or misses) the original passes through, so
+        // behavior and error text are unchanged there.
+        let resolved: Option<std::path::PathBuf> = if cfg!(windows) {
+            resolve_against_process_path(program)
+        } else {
+            None
+        };
+        let mut cmd = match &resolved {
+            Some(abs) => portable_pty::CommandBuilder::new(abs),
+            None => portable_pty::CommandBuilder::new(program),
+        };
         cmd.args(args);
         if let Some(dir) = cwd {
             cmd.cwd(dir);
@@ -682,6 +747,44 @@ mod tests {
                 assert!(joined.contains(line), "spans must cover {line:?}");
             }
         }
+    }
+
+    #[test]
+    fn bare_name_resolves_via_search_dirs() {
+        // Issue #64: the Windows backend searches the registry PATH, so
+        // the seam pre-resolves bare names against the process PATH.
+        let dir = std::env::temp_dir().join(format!(
+            "agent-manager-resolve-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("muse"), b"fake").unwrap();
+        let path = std::ffi::OsString::from(dir.as_os_str());
+        assert_eq!(
+            resolve_bare_program("muse", &path, &[]),
+            Some(dir.join("muse"))
+        );
+        // PATHEXT probing: `muse` finds `muse.exe` when only that exists.
+        std::fs::remove_file(dir.join("muse")).unwrap();
+        std::fs::write(dir.join("muse.exe"), b"fake").unwrap();
+        assert_eq!(
+            resolve_bare_program("muse", &path, &[".exe"]),
+            Some(dir.join("muse.exe"))
+        );
+        // Exact name still wins when spelled with its extension.
+        assert_eq!(
+            resolve_bare_program("muse.exe", &path, &[".exe"]),
+            Some(dir.join("muse.exe"))
+        );
+        // Misses and directory-carrying names pass through as None.
+        assert_eq!(resolve_bare_program("nope-xyz", &path, &[".exe"]), None);
+        assert_eq!(resolve_bare_program("sub/muse", &path, &[".exe"]), None);
+        assert_eq!(resolve_bare_program(r"sub\muse", &path, &[".exe"]), None);
+        assert_eq!(resolve_bare_program("", &path, &[".exe"]), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
