@@ -6,8 +6,20 @@ on:
   pull_request:
 
 jobs:
-  check:
-    runs-on: macos-latest
+  core:
+    # Shared-core gate (issue #65): fmt+clippy+test fan out over all
+    # three OSes so the framework-free core promise cannot rot on any
+    # platform. The gpui binary is macOS-gated in src/main.rs (stub
+    # main elsewhere, macOS-scoped deps in Cargo.toml), so
+    # `cargo test --all-targets` is the full GUI suite on macOS and
+    # the portable lib suite plus a stub bin off macOS; each native
+    # shell proves itself in its own per-OS job below. fail-fast is
+    # off so one red OS never hides the other two (fail visible).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,11 +34,50 @@ jobs:
       - name: test
         run: cargo test --all-targets
 
+  macos:
+    # Native macOS Swift shell (issue #62): SPM build + unit tests +
+    # headless C ABI smoke against the real staticlib, then a zip
+    # artifact (dmg/notarization are explicit non-goals — see
+    # packaging/README.md). Runs on macos-latest only and touches
+    # nothing outside swift/ + the core staticlib.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: core staticlib
+        run: cargo build --lib
+      - name: no gpui in the macOS shell
+        run: |
+          ! grep -rni gpui swift/Sources swift/Tests swift/Package.swift
+      - name: swift build
+        run: swift build --package-path swift
+      - name: swift test
+        run: swift test --package-path swift
+      - name: headless smoke (real C ABI)
+        run: swift/.build/debug/AgentManagerMac --smoke
+      - name: package (zip; dmg stubbed — see packaging/README.md)
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            swift/.build/debug/AgentManagerMac \
+            dist/AgentManagerMac-macos.zip
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentManagerMac-macos
+          path: dist/AgentManagerMac-macos.zip
+
   linux:
     # Native Linux GTK shell (issue #63): the core library plus the
     # meson-built GTK4/libadwaita/VTE shell against the real C ABI.
     # The gpui binary is macOS-only (macOS-scoped deps in Cargo.toml),
     # so this job gates the lib and the meson suite, never --all-targets.
+    # Runs on ubuntu-latest only and touches nothing outside
+    # native/linux + the core staticlib. Ships a tarball; .deb/flatpak
+    # are stubbed with a tracking note (see packaging/README.md).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,8 +97,7 @@ jobs:
         run: cargo test --lib
       - name: no gpui in the Linux shell
         run: |
-          grep -rni gpui native/linux/
-          test $? -eq 1
+          ! grep -rni gpui native/linux/
       - name: meson build
         run: >
           meson setup native/linux/build native/linux
@@ -60,16 +110,29 @@ jobs:
           timeout -s TERM 15 xvfb-run -a ./native/linux/build/agent-manager-gtk > /tmp/app.log 2>&1 || true
           grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' /tmp/app.log | head -n 20
           ! grep -E 'Adwaita-ERROR|Gtk-CRITICAL|SMOKE-FAIL' /tmp/app.log
+      - name: package (tarball; .deb/flatpak stubbed — see packaging/README.md)
+        run: |
+          mkdir -p dist
+          tar -czf dist/agent-manager-linux.tar.gz \
+            -C native/linux/build agent-manager-gtk
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-manager-linux
+          path: dist/agent-manager-linux.tar.gz
 
   windows:
     # Native Windows WinUI shell (issue #64): the core library plus the
     # CMake-built C suite against the real C ABI, plus the MSVC-built
     # WinUI 3 + ConPTY shell (unpackaged exe, no MSIX — packaging lives
-    # with the CI/packaging issue). Unlike the Linux job this one runs
-    # `cargo test --all-targets`, per the issue's acceptance criteria:
-    # the gpui binary is macOS-gated in src/main.rs, so on this runner
-    # that exercises the full portable lib suite plus a stub bin, while
-    # the per-shell proof lives in the CMake/CTest and WinUI steps.
+    # with the CI/packaging issue, see packaging/README.md). Unlike the
+    # Linux job this one runs `cargo test --all-targets`, per the
+    # issue's acceptance criteria: the gpui binary is macOS-gated in
+    # src/main.rs, so on this runner that exercises the full portable
+    # lib suite plus a stub bin, while the per-shell proof lives in the
+    # CMake/CTest and WinUI steps. Runs on windows-latest only and
+    # touches nothing outside native/windows + the core staticlib.
+    # Ships an unpackaged zip of the C suite + WinUI exe.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,3 +170,15 @@ jobs:
           msbuild native/windows/AgentManagerWinUI.vcxproj `
             /p:Configuration=Release /p:Platform=x64 `
             "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/debug"
+      - name: package (unpackaged zip; MSIX stubbed — see packaging/README.md)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path native/windows/build/Release/*, native/windows/bin/x64/Release/* `
+            -DestinationPath dist/AgentManagerWindows.zip
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentManagerWindows
+          path: dist/AgentManagerWindows.zip
