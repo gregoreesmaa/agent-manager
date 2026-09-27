@@ -21,3 +21,42 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test --all-targets
+
+  linux:
+    # Native Linux GTK shell (issue #63): the core library plus the
+    # meson-built GTK4/libadwaita/VTE shell against the real C ABI.
+    # The gpui binary is macOS-only (macOS-scoped deps in Cargo.toml),
+    # so this job gates the lib and the meson suite, never --all-targets.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: system deps
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends
+          libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev
+          meson ninja-build pkg-config gcc xvfb
+      - name: core staticlib
+        run: cargo build --lib
+      - name: core tests
+        run: cargo test --lib
+      - name: no gpui in the Linux shell
+        run: |
+          grep -rni gpui native/linux/
+          test $? -eq 1
+      - name: meson build
+        run: >
+          meson setup native/linux/build native/linux
+          -Dcore_lib_dir=$PWD/target/debug &&
+          meson compile -C native/linux/build
+      - name: meson tests
+        run: meson test -C native/linux/build --print-errorlogs
+      - name: headless UI run
+        run: |
+          timeout -s TERM 15 xvfb-run -a ./native/linux/build/agent-manager-gtk > /tmp/app.log 2>&1 || true
+          grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' /tmp/app.log | head -n 20
+          ! grep -E 'Adwaita-ERROR|Gtk-CRITICAL|SMOKE-FAIL' /tmp/app.log

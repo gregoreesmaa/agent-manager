@@ -1,10 +1,12 @@
 # Native core seam (proposal)
 
-Status: proposal only — except for the first consumer: `swift/`
+Status: proposal only — except for the first two consumers: `swift/`
 (`AgentManagerMac`, #62) binds the C ABI below via SwiftTerm + SwiftUI
-(see `swift/README.md` for its wiring table). The rest of this doc
-records the audit result, the decoupling already landed, and the exact
-core API a future per-OS shell binds against.
+(see `swift/README.md` for its wiring table), and `native/linux/`
+(`agent-manager-gtk`, #63) binds the same C ABI via GTK4/libadwaita +
+VTE (see `native/linux/README.md` for its wiring table). The rest of
+this doc records the audit result, the decoupling already landed, and
+the exact core API a future per-OS shell binds against.
 
 Volatility-shield rule (from `VISION-TECHNICAL.md`): no framework types
 in the core. Core = everything except `src/gui/` and `src/main.rs`.
@@ -226,6 +228,29 @@ paths want the same two prerequisites (§5), so nothing is thrown away.
   helpers take framework contexts; they are render-layer adapters with no
   core equivalent needed (native shells read `EffectiveTheme::is_dark`
   and `TerminalConfig::font_stack` directly).
+
+### Linux notes (`native/linux/`, #63)
+
+The Linux shell is the portability proof: it links only the core
+`staticlib` plus system GTK libs. Two things future shells should copy:
+
+- The `gpui` / `gpui-component` deps in `Cargo.toml` are
+  `[target.'cfg(target_os = "macos")'.dependencies]`-scoped. The core
+  library compiles (and `cargo test --lib` passes) on Linux without ever
+  building the macOS GUI stack; the `agent-manager` binary stays
+  macOS-only. On Linux the gates are `cargo build --lib`,
+  `cargo test --lib`, and the meson suite — `cargo test --all-targets`
+  stays the macOS gate.
+- One emulator only: no PTY is spawned inside VTE. The shell encodes keys
+  itself (`bridge_write`) and feeds core snapshots as a stream
+  (`src/feed.c`, a C port of Swift's `TerminalFeed`, unit-pinned by
+  `am-feed-test` mirroring `TerminalFeedTests`). A second line discipline
+  would double-echo.
+- Reconciler parity is deliberate: `feed.c` ports
+  `swift/Sources/ShellSupport/TerminalFeed.swift` case for case
+  (append-suffix hot path, scroll overlap, clear-and-replay, CRLF
+  normalization), so both shells show identical screens from identical
+  snapshots.
 
 ## 5. Prerequisites before any shell links the core
 

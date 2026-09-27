@@ -1,0 +1,4 @@
+option('core_lib_dir',
+  type: 'string',
+  value: '',
+  description: 'Directory holding libagent_manager.a (default: <repo>/target/debug). Build it first with: cargo build --lib')
