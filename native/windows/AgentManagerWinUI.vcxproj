@@ -31,16 +31,21 @@
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
     <ProjectName>AgentManagerWinUI</ProjectName>
-    <!-- Native XAML rules (runs 36330128827/36330973198, refs #64):
-      MarkupCompilePass1/CompileXaml for a desktop WinUI 3 C++ app come
-      from the Microsoft.WindowsAppSDK PackageReference below
-      (Microsoft.UI.Xaml.Markup.Compiler.*.targets, auto-imported; needs
-      no VS UWP workload). Do NOT set ApplicationType=Windows Store to
-      get the VS-inbox Microsoft.Windows.UI.Xaml.Cpp.targets: that flips
-      Microsoft.CppBuild.targets into demanding the absent UWP v143
-      build tools (error MSB8020). Unpackaged desktop is
-      AppContainerApplication=false + AppxPackage=false/WindowsPackageType=None. -->
+    <!-- Native XAML rules (runs 36330973198/36331376776, refs #64):
+      *.xaml.g.h codegen comes from VS's inbox
+      Microsoft.Windows.UI.Xaml.Cpp.targets, imported only when
+      ApplicationType is Windows Store (without it: C1083 on
+      App.xaml.g.h/MainWindow.xaml.g.h). windows-latest is a VS 2026
+      (v18) image whose native toolset is v145 (MSVC 14.51, in-box);
+      the v143 UWP overlay is absent and uninstallable there
+      (actions/runner-images#14101: installer modify adding
+      ComponentGroup.UWP.VC.v143 exits 0 yet installs nothing), so the
+      project tracks v145 instead of v143. Unpackaged desktop exe (no
+      MSIX) is kept via AppContainerApplication=false +
+      AppxPackage=false/WindowsPackageType=None. -->
     <AppContainerApplication>false</AppContainerApplication>
+    <ApplicationType>Windows Store</ApplicationType>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
     <!-- WinUI 3, unpackaged: a plain exe, no MSIX (non-goal in #64). -->
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
@@ -57,7 +62,7 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
     <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup>
