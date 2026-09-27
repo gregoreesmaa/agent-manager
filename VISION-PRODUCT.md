@@ -1,7 +1,7 @@
 <!-- Aligned Product vision from 5 product subagents (2026-09-26). Constraint: app remains free and open-source; no paywalls or paid tiers. Generic deltas applied (approach B: vision-only; per-CLI adapters deferred, brands additive). -->
 # Product Vision
 
-agent-manager is a **free and open-source native GUI harness** (gpui, no webview) for managing and chatting with live `muse` agent CLI sessions. Each run is a real interactive `muse` process behind an embedded PTY; the window shows the run list beside the live terminal of the selected run. Background runs keep streaming and never die on switch.
+agent-manager is a **free and open-source native harness** (native per-OS shells over the shared Rust core, no webview; see #60) for managing and chatting with live `muse` agent CLI sessions. Each run is a real interactive `muse` process behind an embedded PTY; the window shows the run list beside the live terminal of the selected run. Background runs keep streaming and never die on switch.
 
 The vision: the fastest, most trustworthy way to triage and work with many concurrent `muse` runs — every run visible, every approval prompt noticed within 60 seconds, every useful link kept — with **zero account, zero paywall, zero telemetry, forever**. Comfort features (fonts, filters, export), lifecycle features (close, restart, reattach), and extension points (parsers, providers) are all free, local-only capabilities, never monetized gates.
 
@@ -12,7 +12,9 @@ The vision: the fastest, most trustworthy way to triage and work with many concu
 3. **Live PTY fidelity.** The terminal renders full vt100 state (cursor, colors, alt-screen) exactly as `muse` draws it, polling at 20Hz so background runs keep streaming.
 4. **Triage by urgency.** Needs input > Idle > Active ordering with per-group counts; attention must be visible from the status bar and window title when the window is in the background.
 5. **Links never lost.** Every GitHub URL seen in a run accumulates first-seen-ordered under its title and survives relaunch; scrolled-off content stays reachable via scrollback.
-6. **Framework-volatility protection is a deliverable.** Terminal/keys/pump logic stays framework-free and unit-tested; gpui 0.2.2 and gpui-component 0.5.x pins fail loudly on drift.
+6. **Native shells over a shared core (#60).** Terminal/keys/pump logic stays framework-free and unit-tested in the shared Rust core; shells go native per-OS: macOS SwiftUI → Linux GTK4/VTE → WinUI/ConPTY.
+
+> Historical note (superseded-by-#60): this principle was previously worded as framework-volatility protection with pinned gpui 0.2.2 / gpui-component 0.5.x pins failing loudly on drift (superseded-by-#60).
 7. **Maintainer-leverage extensibility.** Parser (`Parser` trait + `RegistryParser::with_strategies`) and Provider (`Provider` trait) seams stay documented extension points so contributors add parsers/providers without maintainer help.
 
 ## Top 10 Improvements (ranked)
@@ -42,12 +44,12 @@ The vision: the fastest, most trustworthy way to triage and work with many concu
 - Single maintainer today (`gregoreesmaa`, repo `gregoreesmaa/agent-manager`, one local commit); grow via low-friction volunteering, not revenue.
 - Ladder: good-first-issues in the parser garden and provider seam → triage/docs roles → release-shepherd rotation, documented in `docs/` and `ROADMAP.md`.
 - Health artifacts only: `CHANGELOG.md` (dated entries), `ROADMAP.md` (this vision's Top 10), CI green checks on every PR, CoC with a listed contact.
-- Regression shield stays a community contract: framework-free tested core plus loud pin tests, so dependency churn never silently breaks new sessions.
+- Shared-core contract stays a community commitment: framework-free tested core with headless coverage as the cross-platform contract for the native shells (#60), so dependency churn never silently breaks new sessions.
 
 ## Open Questions
 
 1. **License choice:** MIT vs Apache-2.0 — maintainer's single pick, then close.
-2. **OS support:** document a Linux support path or keep the macOS-only label explicit? Needs a stated supported-OS list plus a `cargo build` result on that OS.
+2. **OS support:** per-OS shell order is macOS SwiftUI → Linux GTK4/VTE → WinUI/ConPTY (#60). Needs a stated supported-OS list plus a build result on each shipped OS.
 3. **Persistence format:** one JSON file per run vs a single sessions file — which shape, and does transcript persist fully or tail-only?
 4. **Resume UX:** does a resumed historic session replay transcript into the PTY view or start live-only with links restored?
 5. **Attention UX:** status-bar count plus bell, or badge-only? What silences the bell (selecting the run)?

@@ -1,12 +1,14 @@
 <!-- Aligned Technical vision from 5 technical subagents (2026-09-26). Conflicts resolved by synthesis vote; see Conflicts resolved section. Generic deltas applied (approach B: vision-only; per-CLI adapters deferred). -->
 # Technical Vision
 
-agent-manager is a **live-first native terminal harness**: one real interactive `muse` PTY per run, a thin gpui shell over a framework-free core, pinned by headless + byte-exact regression tests. The north star: **idle costs ~zero, live stays faithful, framework volatility can't leak into the core, and every parked abstraction either ships or dies.**
+agent-manager is a **live-first native terminal harness**: one real interactive `muse` PTY per run, thin native per-OS shells over a framework-free shared core (#60), pinned by headless + byte-exact regression tests. The north star: **idle costs ~zero, live stays faithful, framework volatility can't leak into the core, and every parked abstraction either ships or dies.**
+
+The exact core API a native shell binds against is documented in `docs/native-core-seam.md`.
 
 ## Principles
 
-1. **Volatility shield** — `app` / `gui/keys` / `gui/terminal` stay framework-free and unit-tested; `gui/shell.rs` is layout + events + pump only. No gpui types in the core.
-2. **Live-first, headless-proven** — real PTYs in tests (`echo` fakes, no window needed); pump/spawn/refresh covered without a gpui harness.
+1. **Shared core, framework-free** — `app` / `gui/keys` / `gui/terminal` stay framework-free and unit-tested; `gui/shell.rs` is layout + events + pump only. No UI-framework types in the core.
+2. **Live-first, headless-proven** — real PTYs in tests (`echo` fakes, no window needed); pump/spawn/refresh covered without a UI-framework harness.
 3. **Dirty-gated work** — no per-frame, per-tick, or per-run work unless something is fresh. `fresh_any`/selection/focus changes gate `notify()` and recompute.
 4. **Bounded by construction** — every accumulate-forever structure (PTY count, pr_links, channels, scrollback) has a cap or eviction rule.
 5. **One classifier, one regex, one title chain** — status/PR/title heuristics live in exactly one module; duplicates are bugs.
@@ -42,7 +44,7 @@ Explicitly deferred: generalizing single-variant `SpawnKind` (collapse to a plai
 1. **Historic attach: ship or cut?** Does v1 need provider-discovered past sessions alongside live runs, or live-runs-only with the parked tree deleted?
 2. **Missing researchers:** input claimed 5 outputs but carried 3 (plus an empty researcher-8 ref). Any dropped claims (notably the `dedupe-fnv64` thread) need re-supply before final roadmap lock.
 3. **Run eviction UX:** refuse the 11th run, reap oldest-exited, or user-driven close-run? Needs a product pick before #8.
-4. **gpui upgrade path:** stay pinned on gpui 0.2.2 / gpui-component 0.5.1 with loud pin tests, or schedule the 0.6+ fork migration? Affects toolchain/Xcode recording in #10.
+4. **Shell direction, decided by #60 (superseded-by-#60):** the former gpui upgrade-path question — stay pinned on gpui 0.2.2 / gpui-component 0.5.1 vs schedule the 0.6+ fork migration — is closed (superseded-by-#60); shells go native per-OS over the shared core, so no gpui upgrade will happen (superseded-by-#60).
 5. **Parsed-link scope:** full `…/pull/<n>` URLs only (current default registry) vs issues/commits/file refs — confirm per-type before touching the parser; brand adapters stay additive, and the generic `Provider` trait needs no new seam for brand swap.
 6. **Build weight:** `target/` at ~9 GB with Metal-shader builds — worth `sccache`/CI-cache guidance in README?
 7. **Brand plumbing:** single `{agent-brand}` source for title/header/empty/error copy (default `muse`); transcript + parsed-link retention across a mid-run brand switch is undecided — no storage change proposed.

@@ -27,8 +27,8 @@ Drawn from `VISION.md` / `VISION-UX.md` / `VISION-TECHNICAL.md` /
 ## Later (3-year VISION.md)
 
 - Native per-OS shells over the shared Rust core C ABI (#60): macOS
-  SwiftUI → Linux GTK4/VTE → WinUI/ConPTY.
+  SwiftUI → Linux GTK4/VTE → WinUI/ConPTY (core API: `docs/native-core-seam.md`).
 - Brand-swappable backends (muse/claude/opencode/codex) behind the
   single `Provider` seam; per-CLI adapters stay additive.
-- Framework-volatility shield stays: pinned gpui 0.2.2 line, loud pin
-  tests, framework-free core with headless coverage.
+- Historical note (superseded-by-#60): the framework-volatility shield as a pinned gpui 0.2.2 line with loud pin tests is superseded-by-#60;
+  the framework-free core with headless coverage continues as the cross-platform contract for the native shells.

@@ -19,7 +19,7 @@ In three years, success looks like this: a new user goes from clean checkout to 
 ## Promises
 
 - **Triage promise:** spawn, switch, type, copy, paste, and recover stay keyboard-operable. Any background run needing input surfaces within 60s. Runs, links, and scrollback survive switch, resize, narrow widths, and relaunch.
-- **Fidelity promise:** live PTY is the moat. Framework churn never breaks live runs: framework-free tested core, loud dependency pins, green CI per commit.
+- **Fidelity promise:** live PTY is the moat. Shells go native per-OS over the shared Rust core (#60): framework-free tested core, green CI per commit.
 - **Local-only promise:** everything works with no account and no network. Session state is plain local files. `grep paywall|billing|telemetry src/` stays empty.
 - **Free-OSS promise:** every capability is free forever under an OSI license. No tiers, paywalls, or entitlements. Health artifacts (CHANGELOG, ROADMAP, templates, CoC) and CI (test/fmt/clippy) stay green.
 
