@@ -9,7 +9,9 @@ import SwiftUI
 /// SGR snapshot delta -> `view.feed(text:)`; keystrokes flow view ->
 /// `send` delegate ->
 /// `am_write`; window resizes flow view -> `sizeChanged` -> `am_resize`.
-/// No terminal grid is drawn here; the view owns all of that.
+/// The view follows the theme (text colors resolved against an explicit
+/// light/dark appearance) and owns all of the terminal grid; no terminal
+/// grid is drawn here.
 struct CoreTerminalView: NSViewRepresentable {
     @ObservedObject var state: AppState
     var rowId: String
@@ -22,7 +24,7 @@ struct CoreTerminalView: NSViewRepresentable {
     func makeNSView(context: Context) -> TerminalView {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let view = TerminalView(frame: .zero, font: font)
-        view.configureNativeColors()
+        applyThemeColors(to: view, darkMode: darkMode)
         view.terminalDelegate = context.coordinator
         context.coordinator.lastDarkMode = darkMode
         // Become key so keystrokes reach the child right away.
@@ -36,8 +38,26 @@ struct CoreTerminalView: NSViewRepresentable {
         context.coordinator.drainFeed(into: view)
         if context.coordinator.lastDarkMode != darkMode {
             context.coordinator.lastDarkMode = darkMode
-            view.configureNativeColors()
+            applyThemeColors(to: view, darkMode: darkMode)
         }
+    }
+
+    /// Terminal colors as a pure function of the theme prop — never of
+    /// ambient appearance. Snapshotting ambient colors can catch the
+    /// pre-flip mode (e.g. a fresh view still on the system appearance
+    /// under a forced theme), and the change gate above would then lock
+    /// those stale colors in, leaving the terminal one mode behind the
+    /// sidebar forever. Background is pure terminal black/white, not
+    /// the dark-gray system fill.
+    private func applyThemeColors(to view: TerminalView, darkMode: Bool) {
+        var fg: NSColor?
+        if let appearance = NSAppearance(named: darkMode ? .darkAqua : .aqua) {
+            appearance.performAsCurrentDrawingAppearance {
+                fg = NSColor.textColor.usingColorSpace(.sRGB)
+            }
+        }
+        view.nativeForegroundColor = fg ?? .textColor
+        view.nativeBackgroundColor = darkMode ? .black : .white
     }
 
     @MainActor

@@ -16,7 +16,7 @@ func libDir(_ config: String) -> String {
 
 let package = Package(
     name: "AgentManagerMac",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS("26.0")],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.20.0"),
     ],

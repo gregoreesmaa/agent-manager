@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Roster sidebar + session terminal.
 ///
-/// - Roster: core rows grouped by urgency (needs-input first), with a
-///   native search field filtering title/project/id.
+/// - Roster: core rows grouped by urgency (needs-input first), with an
+///   inline sidebar filter field matching title/project/id.
 /// - Spawn: sidebar footer button (or the empty-state button) starts
 ///   the selected row's child via `am_spawn`; typing in the terminal
 ///   converses through `am_write`.
@@ -12,9 +12,6 @@ import SwiftUI
 ///   they survive relaunches.
 /// - Theme: System/Dark/Light picker persisted in UserDefaults.
 /// - Persistence: Save writes the core config; it also runs on quit.
-/// - Sidebar: Finder-style glass (`.listStyle(.sidebar)` sections over
-///   AppKit sidebar vibrancy); row/header text keeps the default
-///   primary/secondary styles for 4.5:1 contrast over the material.
 struct ContentView: View {
     @ObservedObject var state: AppState
     @AppStorage("appearance") private var appearance = "system"
@@ -24,6 +21,10 @@ struct ContentView: View {
         NavigationSplitView {
             VStack(spacing: 0) {
                 List(selection: $state.selection) {
+                    Text(title)
+                        .font(.headline)
+                    TextField("Filter sessions", text: $state.filter)
+                        .textFieldStyle(.roundedBorder)
                     if state.filteredRows.isEmpty {
                         Text("No sessions match.").foregroundStyle(.secondary)
                     }
@@ -47,15 +48,19 @@ struct ContentView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .searchable(text: $state.filter, prompt: "Filter sessions")
                 Divider()
                 sidebarFooter
             }
-            .background(SidebarVibrancy())
-            .navigationTitle(title)
         } detail: {
-            detailView
+            // SwiftUI counts the toolbar height as detail safe area,
+            // leaving a toolbar-tall dead gap above the terminal: ignore
+            // only the top container inset so the terminal starts at the
+            // window edge. Keyboard safe area is untouched.
+            detailView.ignoresSafeArea(.container, edges: .top)
+        }
+        // Repaint the window background when the theme changes mid-run.
+        .onChange(of: colorScheme) { _, scheme in
+            WindowPaint.set(darkMode: scheme == .dark)
         }
         .alert("Session error", isPresented: errorPresented) {
             Button("OK", role: .cancel) { state.pendingError = nil }
@@ -66,11 +71,9 @@ struct ContentView: View {
 
     // MARK: - Sidebar
 
-    /// Spawn/Save/Theme live in the sidebar footer so the window has no
-    /// toolbar and the detail terminal owns the full height. The
-    /// keyboard shortcuts stay on the buttons, so Cmd-N / Cmd-S keep
-    /// working; Cmd-S is additionally wired app-wide in
-    /// `AgentManagerMacApp.commands`.
+    /// Spawn/Save/Theme live in the sidebar footer with keyboard
+    /// shortcuts (Cmd-N / Cmd-S); Cmd-S is additionally wired app-wide
+    /// in `AgentManagerMacApp.commands`.
     private var sidebarFooter: some View {
         VStack(spacing: 8) {
             HStack {
@@ -198,20 +201,4 @@ struct ContentView: View {
             set: { if !$0 { state.pendingError = nil } }
         )
     }
-}
-
-/// Finder-style glass behind the roster sidebar: AppKit vibrancy pinned to
-/// the `.sidebar` material so the desktop tint shows through like Finder.
-/// `NavigationSplitView` already prefers a translucent sidebar; this makes
-/// the material explicit rather than relying on the default.
-private struct SidebarVibrancy: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

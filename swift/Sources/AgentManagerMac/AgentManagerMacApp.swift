@@ -26,6 +26,10 @@ struct AgentManagerMacApp: App {
                 .preferredColorScheme(scheme)
                 .frame(minWidth: 720, minHeight: 460)
         }
+        // No title bar and no toolbar: the window keeps only the
+        // floating traffic lights, so the sidebar and terminal own the
+        // full height.
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .saveItem) {
                 Button("Save Core Config", action: appState.save)
@@ -53,15 +57,46 @@ struct AgentManagerMacApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var state: AppState?
 
+    private var windowObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        WindowPaint.set(darkMode: WindowPaint.current())
+        // The WindowGroup window may not exist yet at launch, so paint
+        // on every main-window change too.
+        windowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification,
+            object: nil, queue: .main
+        ) { _ in WindowPaint.set(darkMode: WindowPaint.current()) }
     }
 
     func applicationWillTerminate(_: Notification) {
         // Best effort on the way out; errors have nowhere to show.
         MainActor.assumeIsolated {
             self.state?.save()
+        }
+    }
+}
+
+/// Window background = terminal background (pure black in Dark Mode,
+/// white in Light Mode), so any gap around the terminal reads as
+/// terminal instead of window gray.
+enum WindowPaint {
+    static func set(darkMode: Bool) {
+        for window in NSApp.windows {
+            window.backgroundColor = darkMode ? .black : .white
+        }
+    }
+
+    /// Resolve the theme the same way ContentView does: a forced
+    /// appearance wins, otherwise the system appearance.
+    static func current() -> Bool {
+        switch UserDefaults.standard.string(forKey: "appearance") {
+        case "dark": return true
+        case "light": return false
+        default:
+            return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         }
     }
 }

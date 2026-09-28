@@ -13,22 +13,22 @@
 # shows its window thanks to the #67 activation fix (regular activation
 # policy + activate on launch in the AppDelegate).
 #
-# Usage: ./build-and-run.sh [--debug] [--build-only] [--help|-h]
+# Usage: ./build-and-run.sh [--release] [--build-only] [--help|-h]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG="release"   # default; --debug switches to a debug build
+CONFIG="debug"   # default; --release switches to a release build
 BUILD_ONLY=0
 
 usage() {
     cat <<'EOF'
-Usage: ./build-and-run.sh [--debug] [--build-only] [--help]
+Usage: ./build-and-run.sh [--release] [--build-only] [--help]
 
 Build the Rust core staticlib and the AgentManagerMac Swift shell,
 then launch the built app so its window appears.
 
-  (no flags)   release build (cargo --release, swift -c release) + launch
-  --debug      debug build instead (cargo, swift default config) + launch
+  (no flags)   debug build (cargo, swift default config) + launch
+  --release    release build instead (cargo --release, swift -c release) + launch
   --build-only build without launching; prints the app binary path
   --help, -h   show this help and exit
 EOF
@@ -36,7 +36,7 @@ EOF
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --debug) CONFIG="debug"; shift ;;
+        --release) CONFIG="release"; shift ;;
         --build-only) BUILD_ONLY=1; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "build-and-run.sh: unknown argument: $1" >&2; usage >&2; exit 1 ;;
