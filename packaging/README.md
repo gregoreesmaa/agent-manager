@@ -26,9 +26,9 @@ Prerequisites:
 
 - Visual Studio 2022 17.x+ **with** the Universal Windows Platform
   build-tools workload (`Microsoft.VisualStudio.Workload.UniversalBuildTools`)
-- WindowsAppSDK 1.6 (`Microsoft.WindowsAppSDK 1.6.250602001`, pinned in
+- WindowsAppSDK 2.5.1 (`Microsoft.WindowsAppSDK`, pinned in
   the vcxproj)
-- CppWinRT 2.0.250303.1 (`Microsoft.Windows.CppWinRT`, pinned in the vcxproj)
+- CppWinRT 3.0.260818.1 (`Microsoft.Windows.CppWinRT`, pinned in the vcxproj)
 
 Build (restore and build in a single evaluation, from the repo root):
 

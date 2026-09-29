@@ -20,6 +20,10 @@
 #ifndef AM_FEED_H
 #define AM_FEED_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ANSI reset VTE understands: clear screen, home cursor. */
 #define AM_FEED_CLEAR "\x1b[2J\x1b[H"
 
@@ -32,5 +36,9 @@ char *am_feed_delta(const char *old_text, const char *new_text);
 /* Largest k such that the last k lines of `old_lines[0..old_n]` equal the
  * first k lines of `new_lines[0..new_n]`. Exposed for tests. */
 int am_feed_overlap(char **old_lines, int old_n, char **new_lines, int new_n);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* AM_FEED_H */

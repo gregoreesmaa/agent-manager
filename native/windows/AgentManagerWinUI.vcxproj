@@ -9,14 +9,15 @@
     <!-- Native restore contract, mirroring the official unpackaged C++ sample
       (WindowsAppSDK-Samples Samples/Unpackaged/cpp-console-unpackaged,
       refs #64): without NuGetTargetMoniker, restore writes a framework the
-      build's ResolveNuGetPackageAssets does not expect (run 36332867325:
-      `does not reference "UAP,Version=v10.0"`). The sample uses
+      build's ResolveNuGetPackageAssets must agree with: restore ignores every
+      UAP moniker spelling here and always writes native,v0.0. The sample uses
       native,Version=v0.0 (plain Win32 console); this project keeps
       ApplicationType=Windows Store for native XAML codegen, so the build
-      demands UAP v10.0 and restore must write it. All four restored packages
-      accept UAP10.0 (WebView2 declares empty native0.0 + UAP10.0 groups;
+      would demand a UAP restore can never produce, so this project speaks native end to end. All four restored packages
+      restore cleanly under native (WebView2 declares empty native0.0 + UAP10.0 groups;
       AppSDK/CppWinRT/BuildTools are framework-agnostic). -->
-    <NuGetTargetMoniker>UAP,Version=v10.0</NuGetTargetMoniker>
+    <NuGetTargetMoniker>native,Version=v0.0</NuGetTargetMoniker>
+    <RuntimeIdentifiers>win10-x64;win10-arm64</RuntimeIdentifiers>
     <NuGetTargetPlatformIdentifier>Windows</NuGetTargetPlatformIdentifier>
     <NuGetTargetPlatformVersion>$(WindowsTargetPlatformVersion)</NuGetTargetPlatformVersion>
   </PropertyGroup>
@@ -62,18 +63,23 @@
     <AppContainerApplication>false</AppContainerApplication>
     <ApplicationType>Windows Store</ApplicationType>
     <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
-    <!-- WinUI 3, unpackaged: a plain exe, no MSIX (non-goal in #64). -->
+    <!-- WinUI 3, unpackaged + self-contained: a plain exe folder, no MSIX
+      (non-goal in #64), and no Windows App Runtime MSIX preinstalled on
+      the target machine — the runtime payload is copied next to the exe.
+      Without self-contained, launch pops the "requires the Windows App
+      Runtime Version 1.6" installer prompt. Distribute the whole output
+      folder, never the exe alone. -->
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>false</EnableMsixTooling>
     <AppxPackage>false</AppxPackage>
-    <!-- Tell NuGet this is PackageReference style (run 36331814809, refs #64):
-      without it, restore-style auto-detection can drift from the build-time
-      ResolveNuGetPackageAssets UAP check. Same line ships in PowerToys'
-      unpackaged WinUI 3 C++ projects, which build green on hosted runners. -->
+    <!-- PackageReference style + native-only restore contract (refs #64):
+      restore ignores every UAP moniker spelling and always writes
+      native,v0.0, so the build must speak native too (see NuGetTargetMoniker
+      above). Declaring UAP TargetFrameworks only re-creates the
+      restore/build framework mismatch; keep them out. -->
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
-    <TargetFrameworks>UAP,Version=v10.0</TargetFrameworks>
-    <TargetFramework>UAP,Version=v10.0</TargetFramework>
     <!-- Do NOT set CppWinRTEnabled: 'true' flips the CppWinRT NuGet targets to
       VS-inbox mode (CppWinRTPackage=false), which runs cppwinrt from the package's
       build/native dir instead of bin and fails CppWinRTMakePlatformProjection
@@ -104,22 +110,32 @@
     <ClCompile>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)src\winui;$(ProjectDir)..\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)src\winui;$(ProjectDir)..\..\include;$(ProjectDir)Generated Files\src\winui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>$(CoreLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>agent_manager.lib;ws2_32.lib;userenv.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>agent_manager.lib;ws2_32.lib;userenv.lib;bcrypt.lib;user32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- /BREPRO: deterministic link, so release binaries are reproducible
+        bit-for-bit from the same inputs (same MVID/timestamps every
+        build). Not related to the XAML Pass1 stash (that trigger is the
+        2.x compiler's own unconditional ApplicationDefinition regen). -->
+
+
+
+
+
+      <AdditionalOptions>/BREPRO %(AdditionalOptions)</AdditionalOptions>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>$(ProjectDir)app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Midl>
-      <HeaderFileName>%(Filename).g.h</HeaderFileName>
+      <HeaderFileName>$(IntDir)%(Filename).h</HeaderFileName>
     </Midl>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -142,6 +158,36 @@
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="src\winui\App.xaml.cpp" />
+    <!-- Pass2 page codegen (.g.hpp) compiles in the stock post-Pass2 batch:
+         CompilerIteration=XamlGenerated keeps these items out of the first
+         CL run and into CompileXamlGeneratedFiles, which runs after
+         MarkupCompilePass2 rewrites them — so Pass1's stash (.backup) can
+         never race the compiler, no Exists condition is needed (missing
+         files are pruned post-Pass2 by ComputeInvalidXamlGenerated), and
+         even clean checkouts go green on the first build. -->
+
+
+
+
+
+
+
+
+
+
+
+
+    <ClCompile Include="$(ProjectDir)Generated Files\src\winui\App.xaml.g.hpp">
+      <CompilerIteration>XamlGenerated</CompilerIteration>
+    </ClCompile>
+    <ClCompile Include="$(ProjectDir)Generated Files\src\winui\MainWindow.xaml.g.hpp">
+      <CompilerIteration>XamlGenerated</CompilerIteration>
+    </ClCompile>
+
+
+
+
+
     <ClCompile Include="src\winui\MainWindow.xaml.cpp" />
     <ClCompile Include="src\core_bridge.c">
       <CompileAs>CompileAsC</CompileAs>
@@ -151,13 +197,13 @@
       <CompileAs>CompileAsC</CompileAs>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
-    <!-- Pinned to the exact 1.6 build CI resolved (run 36332867325,
-      refs #64): a floating 1.6.* re-resolves every run and drifts. -->
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250602001" />
+    <!-- Pinned to the exact stable build (bleeding edge as of 2026-09;
+      was 1.6.250602001, refs #64): a floating version re-resolves and drifts. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
     <!-- C++/WinRT MSBuild support (midlrt.exe + cppwinrt.exe): without this,
       MIDL 3.0 .idl files fall through to the classic COM MIDL compiler,
       which fails with MIDL2025 near "namespace" (run 36328939162). -->
-    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="2.0.250303.1" />
+    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260818.1" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

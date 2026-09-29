@@ -2,6 +2,7 @@
 // boilerplate: create the main window on launch and keep it alive.
 #pragma once
 
+#include "App.g.h"
 #include "App.xaml.g.h"
 
 namespace winrt::AgentManagerWinUI::implementation

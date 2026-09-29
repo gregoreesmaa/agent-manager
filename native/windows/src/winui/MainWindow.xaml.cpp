@@ -7,7 +7,7 @@
 //
 // Epic DoD wiring (mirrors swift/README.md's table):
 //   roster      am_session_count + am_session_json at launch, am_status ticks
-//   spawn       New run button / Ctrl+N -> bridge_spawn (80x25 grid)
+//   spawn       New Session button / Ctrl+N -> bridge_spawn (80x25 grid)
 //   converse    key encoding -> bridge_write; pump -> am_feed_delta -> append
 //   copy/paste  native TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via
 //               Clipboard -> bridge_write; Ctrl+C forwards ETX (interrupts)
@@ -123,6 +123,7 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     MainWindow::MainWindow() {
+        InitializeComponent();
         m_core = bridge_core_new();
 
         /* Theme: LocalSettings is a plain local store (local-only trust:
@@ -251,7 +252,7 @@ namespace winrt::AgentManagerWinUI::implementation
                     line += " · " + harness;
                 }
                 rows.push_back({to_wide(id),
-                                to_wide(status_glyph(st)) + to_wide(line),
+                                std::wstring(status_glyph(st)) + to_wide(line),
                                 st});
             }
         }
@@ -286,7 +287,7 @@ namespace winrt::AgentManagerWinUI::implementation
             TermBox().Text(
                 m_selected.empty()
                     ? L"(no run selected)"
-                    : L"(no live session — press New run)");
+                    : L"(no live session — press New Session)");
             return;
         }
         const std::string &text =
@@ -346,9 +347,28 @@ namespace winrt::AgentManagerWinUI::implementation
         }
     }
 
+    /* New Session starts the selected row's child through the core
+     * bridge and selects it in the roster. With no selection yet
+     * (fresh launch, or the filter cleared it), take the first
+     * roster row so one click always starts something. */
     void MainWindow::NewButton_Click(IInspectable const &,
                                      RoutedEventArgs const &) {
-        if (!m_core || m_selected.empty()) {
+        if (!m_core) {
+            return;
+        }
+        if (m_selected.empty()) {
+            auto items = RosterList().Items();
+            if (items.Size() == 0) {
+                SetStatus(L"No runs yet - nothing to start.");
+                return;
+            }
+            RosterList().SelectedIndex(0);
+            auto first = items.GetAt(0).try_as<ListViewItem>();
+            if (first) {
+                m_selected = unbox_value<hstring>(first.Tag());
+            }
+        }
+        if (m_selected.empty()) {
             SetStatus(L"Select a run first.");
             return;
         }
@@ -368,6 +388,19 @@ namespace winrt::AgentManagerWinUI::implementation
         LivePty lp;
         lp.pty = pty;
         m_live[m_selected] = std::move(lp);
+        RefreshRoster();
+        /* The roster rebuild keeps m_selected; make the control show
+         * the started row as selected too. */
+        auto items = RosterList().Items();
+        for (uint32_t i = 0; i < items.Size(); ++i) {
+            auto item = items.GetAt(i).try_as<ListViewItem>();
+            if (item &&
+                std::wstring(unbox_value<hstring>(item.Tag())) ==
+                    m_selected) {
+                RosterList().SelectedIndex(static_cast<int>(i));
+                break;
+            }
+        }
         ShowSelected();
         SetStatus(L"Session started.");
     }
@@ -472,14 +505,11 @@ namespace winrt::AgentManagerWinUI::implementation
      * with the native control for copy. */
     void MainWindow::RootGrid_KeyDown(
         IInspectable const &, KeyRoutedEventArgs const &args) {
-        using VKMod = Windows::System::VirtualKeyModifiers;
-        auto mods = args.KeyModifiers();
-        bool ctrl =
-            (mods & VKMod::Control) == VKMod::Control;
-        bool shift =
-            (mods & VKMod::Shift) == VKMod::Shift;
-        bool alt =
-            (mods & VKMod::Menu) == VKMod::Menu;
+        /* WinUI 3 KeyRoutedEventArgs carries no modifiers: query the
+         * async key state directly (user32 is free to call here). */
+        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
         int vk = static_cast<int>(args.Key());
 
         if (ctrl && !alt && !shift) {

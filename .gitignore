@@ -8,3 +8,13 @@ agent-manager-prefs.json
 
 # crash dumps (e.g. Linux core dump from a crashed test binary)
 /core
+
+# Native Windows shell build outputs (CMake suite + WinUI codegen/obj).
+/native/windows/build/
+/native/windows/obj/
+/native/windows/bin/
+/native/windows/x64/
+/native/windows/ARM64/
+/native/windows/Generated Files/
+/native/windows/*.g.h
+/native/windows/.vs/

@@ -18,9 +18,10 @@ double-echoes — the same single-emulator rule as the Linux shell's
 
 ## Prerequisites (Windows 11)
 
-- Visual Studio 2022 17.x with the **Desktop development with C++**
-  workload, the **Windows 11 SDK**, and the **C++/WinRT** VSIX
-  (all present on the `windows-latest` CI runner)
+- Visual Studio 2026 18.x with the **Desktop development with C++**
+  workload (v145 toolset: what the vcxproj tracks), the UWP C++ build tools,
+  and the **Windows 11 SDK** (the portable CMake/CTest suite also builds
+  under VS2022 17.x).
 - Rust 1.90.0 (for the core staticlib)
 - CMake 3.21+ (for the portable C suite; on CI it ships with the runner)
 
@@ -37,8 +38,11 @@ cmake --build native/windows/build --config Release
 ctest --test-dir native/windows/build -C Release --output-on-failure
 ```
 
-The WinUI app itself (unpackaged exe — no MSIX/installer, which is a
-non-goal of #64 and lives with the CI/packaging issue):
+The WinUI app itself (unpackaged + self-contained — no MSIX/installer,
+which is a non-goal of #64 and lives with the CI/packaging issue, and no
+Windows App Runtime to preinstall — the runtime payload sits next to the
+exe, so the release distribution is the whole output folder
+`native/windows/x64/Release/AgentManagerWinUI/`, never the exe alone):
 
 ```powershell
 msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
@@ -46,8 +50,14 @@ msbuild native/windows/AgentManagerWinUI.vcxproj `
   /p:Configuration=Release /p:Platform=x64
 ```
 
-`Microsoft.WindowsAppSDK` is pinned to the exact 1.6 build CI resolved
-(`Version="1.6.250602001"` in the vcxproj) so restores never drift.
+One build is enough, including on a clean checkout: the page `.g.hpp`
+sources compile in the stock post-Pass2 batch (`CompilerIteration=
+`XamlGenerated`), after Pass2 rewrites them — no link-red dance.
+Run these from a VS2026
+`vcvars64` / Developer PowerShell environment (v145 toolset).
+
+`Microsoft.WindowsAppSDK` (`Version="2.5.1"`) and `Microsoft.Windows.CppWinRT`
+(`Version="3.0.260818.1"`) are pinned to exact stable builds in the vcxproj so restores never drift.
 
 ## Tests
 

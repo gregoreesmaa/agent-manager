@@ -2,13 +2,16 @@
 // See MainWindow.xaml.cpp for the epic-DoD wiring table.
 #pragma once
 
+#include "MainWindow.g.h"
 #include "MainWindow.xaml.g.h"
+
+#include "core_bridge.h"
 
 namespace winrt::AgentManagerWinUI::implementation
 {
     struct LivePty
     {
-        struct AmPty *pty{nullptr};
+        ::AmPty *pty{nullptr};
         std::string last_snapshot; /* Last full screen text (delta base). */
         std::string shown;         /* Everything fed to the view (capped). */
     };
@@ -58,7 +61,7 @@ namespace winrt::AgentManagerWinUI::implementation
         fire_and_forget GetContentText(
             Windows::ApplicationModel::DataTransfer::DataPackageView data);
 
-        struct AmCore *m_core{nullptr};
+        ::AmCore *m_core{nullptr};
         std::map<std::wstring, LivePty> m_live; /* roster id -> live PTY */
         std::wstring m_selected;                /* selected roster row id */
         std::string m_filter;                   /* sidebar filter (UTF-8) */

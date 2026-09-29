@@ -187,7 +187,7 @@ char *am_feed_delta(const char *old_text, const char *new_text) {
             feed = malloc(clear_len + strlen(body) + 1);
             if (feed) {
                 memcpy(feed, clear, clear_len);
-                strcpy(feed + clear_len, body);
+                memcpy(feed + clear_len, body, strlen(body) + 1);
             }
             free(body);
         }

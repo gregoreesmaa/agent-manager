@@ -26,6 +26,12 @@
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Xaml.Navigation.h>
 
+// XAML implementation types for the generated type-info provider
+// (XamlTypeInfo.g.cpp references implementation::App/MainWindow but
+// includes no project headers of its own).
+#include "App.xaml.h"
+#include "MainWindow.xaml.h"
+
 // Standard C++ used across the code-behind.
 #include <cstdlib>
 #include <map>
