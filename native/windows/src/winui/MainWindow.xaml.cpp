@@ -6,15 +6,17 @@
 // the emulator; this shell owns WinUI controls.
 //
 // Epic DoD wiring (mirrors swift/README.md's table):
-//   roster      am_session_count + am_session_json at launch, am_status ticks
+//   roster      am_session_count + am_session_json at launch, am_status ticks;
+//               live runs grouped needs-input/idle/working, one shared
+//               selection across the group lists (#73)
 //   spawn       New Session button / Ctrl+N -> bridge_spawn (80x25 grid)
 //   converse    key encoding -> bridge_write; pump -> am_feed_delta -> append
 //   copy/paste  native TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via
 //               Clipboard -> bridge_write; Ctrl+C forwards ETX (interrupts)
 //   scroll      output TextBox in a ScrollViewer, per-run text retained
-//   search      sidebar filter box trims the roster; find box selects the
+//   search      sidebar search box filters every group; find box selects the
 //               next case-insensitive match in the terminal (Ctrl+F focuses)
-//   history     rows show status/title/project/harness, restored every
+//   history     collapsed group of rows with no live PTY, restored every
 //               launch; per-run output retained while the window lives
 //   theme       System/Dark/Light via RequestedTheme, kept in LocalSettings
 //   persist     Save button / Ctrl+S / close hook -> bridge_core_save
@@ -222,22 +224,24 @@ namespace winrt::AgentManagerWinUI::implementation
         }
     }
 
-    /* Rebuild the roster list only when the fingerprint (row count +
-     * per-row status + filter) changes; ticks otherwise leave the
-     * selection alone. Rows show status glyph, title, project/harness —
-     * the history surface, restored every launch by am_core_new. */
+    /* Rebuild the grouped roster only when the fingerprint (row count
+     * + filter + per-row status + per-row live-ness) changes; ticks
+     * otherwise leave the selection alone. Live runs group by urgency,
+     * needs-input first; rows with no live PTY in this shell are
+     * history, collapsed at the end. The search box filters every
+     * group. Group order is fixed (issue #73): Needs input, Idle,
+     * Working, History — every row still shows its status glyph,
+     * title, project/harness, restored every launch by am_core_new. */
     void MainWindow::RefreshRoster() {
         if (!m_core) {
             return;
         }
+        using Rows = std::vector<std::pair<std::wstring, std::wstring>>;
         size_t n = bridge_session_count(m_core);
-        struct Row
-        {
-            std::wstring id;
-            std::wstring display;
-            int status;
-        };
-        std::vector<Row> rows;
+        Rows needs;
+        Rows idle;
+        Rows working;
+        Rows history;
         std::string fingerprint;
         fingerprint += std::to_string(n);
         fingerprint += '|';
@@ -248,50 +252,131 @@ namespace winrt::AgentManagerWinUI::implementation
             std::string js = json ? json : "";
             bridge_string_free(json);
             int st = bridge_status(m_core, i);
-            fingerprint += std::to_string(st);
-            fingerprint += ';';
             std::string id = amjson::get_string(js, "id");
-            std::string title = amjson::get_string(js, "title");
-            std::string project = amjson::get_string(js, "project");
-            std::string harness = amjson::get_string(js, "harness");
             if (id.empty()) {
                 continue;
             }
-            std::string line;
-            if (m_filter.empty() ||
-                js.find(m_filter) != std::string::npos) {
-                line = (title.empty() ? id : title);
-                if (!project.empty()) {
-                    line += " — " + project;
-                }
-                if (!harness.empty()) {
-                    line += " · " + harness;
-                }
-                rows.push_back({to_wide(id),
-                                std::wstring(status_glyph(st)) + to_wide(line),
-                                st});
+            std::wstring wid = to_wide(id);
+            /* Spawning moves a row from history to a live group without
+             * touching its core status, so live-ness joins the gate. */
+            bool live = m_live.count(wid) != 0;
+            fingerprint += std::to_string(st);
+            fingerprint += live ? 'L' : 'h';
+            fingerprint += ';';
+            if (!m_filter.empty() &&
+                js.find(m_filter) == std::string::npos) {
+                continue;
+            }
+            std::string title = amjson::get_string(js, "title");
+            std::string project = amjson::get_string(js, "project");
+            std::string harness = amjson::get_string(js, "harness");
+            std::string line = (title.empty() ? id : title);
+            if (!project.empty()) {
+                line += " — " + project;
+            }
+            if (!harness.empty()) {
+                line += " · " + harness;
+            }
+            std::pair<std::wstring, std::wstring> row{
+                wid, std::wstring(status_glyph(st)) + to_wide(line)};
+            if (!live) {
+                history.push_back(std::move(row));
+            } else if (st == AM_STATUS_ATTENTION) {
+                needs.push_back(std::move(row));
+            } else if (st == AM_STATUS_WORKING) {
+                working.push_back(std::move(row));
+            } else {
+                idle.push_back(std::move(row));
             }
         }
         if (fingerprint == m_fingerprint) {
             return;
         }
         m_fingerprint = fingerprint;
-        RosterList().Items().Clear();
-        int select = -1;
-        for (std::size_t i = 0; i < rows.size(); ++i) {
-            ListViewItem item;
-            item.Content(box_value(rows[i].display));
-            item.Tag(box_value(rows[i].id));
-            if (rows[i].id == m_selected) {
-                select = static_cast<int>(i);
+        NeedsHeader().Text(winrt::hstring(
+            L"Needs input (" + std::to_wstring(needs.size()) + L")"));
+        IdleHeader().Text(winrt::hstring(
+            L"Idle (" + std::to_wstring(idle.size()) + L")"));
+        WorkingHeader().Text(winrt::hstring(
+            L"Working (" + std::to_wstring(working.size()) + L")"));
+        HistoryExpander().Header(box_value(winrt::hstring(
+            L"History (" + std::to_wstring(history.size()) + L")")));
+        m_syncing = true;
+        RebuildGroupList(NeedsInputList(), needs);
+        RebuildGroupList(IdleList(), idle);
+        RebuildGroupList(WorkingList(), working);
+        RebuildGroupList(HistoryList(), history);
+        m_syncing = false;
+        if (!m_selected.empty()) {
+            SelectRowById(m_selected);
+        } else {
+            std::wstring first;
+            if (FirstRowId(first)) {
+                SelectRowById(first);
             }
-            RosterList().Items().Append(item);
         }
-        if (select >= 0) {
-            RosterList().SelectedIndex(select);
-        } else if (!rows.empty() && m_selected.empty()) {
-            RosterList().SelectedIndex(0);
+    }
+
+    /* Repopulate one group list from (id, display) rows. Runs under
+     * m_syncing from RefreshRoster, so the clear/repopulate
+     * SelectionChanged fan-out is ignored. */
+    void MainWindow::RebuildGroupList(
+        ListView const &list,
+        std::vector<std::pair<std::wstring, std::wstring>> const &rows) {
+        list.Items().Clear();
+        for (auto const &row : rows) {
+            ListViewItem item;
+            item.Content(box_value(row.second));
+            item.Tag(box_value(row.first));
+            list.Items().Append(item);
         }
+    }
+
+    /* Move the shared selection to the row with this id, clearing the
+     * other three lists. No-op when no list holds the id. */
+    void MainWindow::SelectRowById(std::wstring const &id) {
+        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
+                            HistoryList()};
+        bool found = false;
+        m_syncing = true;
+        for (auto const &list : lists) {
+            auto items = list.Items();
+            int at = -1;
+            for (uint32_t i = 0; i < items.Size(); ++i) {
+                auto item = items.GetAt(i).try_as<ListViewItem>();
+                if (item &&
+                    std::wstring(unbox_value<hstring>(item.Tag())) == id) {
+                    at = static_cast<int>(i);
+                    found = true;
+                    break;
+                }
+            }
+            list.SelectedIndex(at);
+        }
+        m_syncing = false;
+        if (found) {
+            m_selected = id;
+            ShowSelected();
+        }
+    }
+
+    /* First row id across the groups in display order; false when every
+     * list is empty (no runs yet, or the search matches nothing). */
+    bool MainWindow::FirstRowId(std::wstring &id) {
+        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
+                            HistoryList()};
+        for (auto const &list : lists) {
+            auto items = list.Items();
+            if (items.Size() == 0) {
+                continue;
+            }
+            auto first = items.GetAt(0).try_as<ListViewItem>();
+            if (first) {
+                id = std::wstring(unbox_value<hstring>(first.Tag()));
+                return true;
+            }
+        }
+        return false;
     }
 
     /* Show the selected run's current output from scratch (selection
@@ -365,28 +450,20 @@ namespace winrt::AgentManagerWinUI::implementation
 
     /* New Session starts the selected row's child through the core
      * bridge and selects it in the roster. With no selection yet
-     * (fresh launch, or the filter cleared it), take the first
-     * roster row so one click always starts something. */
+     * (fresh launch, or the search cleared it), take the first row
+     * in group order so one click always starts something. */
     void MainWindow::NewButton_Click(IInspectable const &,
                                      RoutedEventArgs const &) {
         if (!m_core) {
             return;
         }
         if (m_selected.empty()) {
-            auto items = RosterList().Items();
-            if (items.Size() == 0) {
+            std::wstring first;
+            if (!FirstRowId(first)) {
                 SetStatus(L"No runs yet - nothing to start.");
                 return;
             }
-            RosterList().SelectedIndex(0);
-            auto first = items.GetAt(0).try_as<ListViewItem>();
-            if (first) {
-                m_selected = unbox_value<hstring>(first.Tag());
-            }
-        }
-        if (m_selected.empty()) {
-            SetStatus(L"Select a run first.");
-            return;
+            m_selected = first;
         }
         if (m_live.count(m_selected)) {
             SetStatus(L"That run is already live.");
@@ -405,19 +482,9 @@ namespace winrt::AgentManagerWinUI::implementation
         lp.pty = pty;
         m_live[m_selected] = std::move(lp);
         RefreshRoster();
-        /* The roster rebuild keeps m_selected; make the control show
-         * the started row as selected too. */
-        auto items = RosterList().Items();
-        for (uint32_t i = 0; i < items.Size(); ++i) {
-            auto item = items.GetAt(i).try_as<ListViewItem>();
-            if (item &&
-                std::wstring(unbox_value<hstring>(item.Tag())) ==
-                    m_selected) {
-                RosterList().SelectedIndex(static_cast<int>(i));
-                break;
-            }
-        }
-        ShowSelected();
+        /* The rebuild keeps m_selected; make the lists show the started
+         * row (now in a live group) as selected too. */
+        SelectRowById(m_selected);
         SetStatus(L"Session started.");
     }
 
@@ -484,14 +551,34 @@ namespace winrt::AgentManagerWinUI::implementation
         RefreshRoster();
     }
 
-    void MainWindow::RosterList_SelectionChanged(
-        IInspectable const &, SelectionChangedEventArgs const &) {
-        auto item = RosterList().SelectedItem().try_as<ListViewItem>();
-        if (item) {
-            m_selected = unbox_value<hstring>(item.Tag());
-        } else {
-            m_selected.clear();
+    /* One shared selection across the four group lists: a pick in
+     * any list clears the other three and shows that run.
+     * Null-selection events (list clears during a rebuild) are
+     * ignored so m_selected survives the repopulate; m_syncing
+     * covers programmatic moves. */
+    void MainWindow::Roster_SelectionChanged(
+        IInspectable const &sender, SelectionChangedEventArgs const &) {
+        if (m_syncing) {
+            return;
         }
+        auto picked = sender.try_as<ListView>();
+        if (!picked) {
+            return;
+        }
+        auto item = picked.SelectedItem().try_as<ListViewItem>();
+        if (!item) {
+            return;
+        }
+        m_selected = std::wstring(unbox_value<hstring>(item.Tag()));
+        m_syncing = true;
+        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
+                            HistoryList()};
+        for (auto const &list : lists) {
+            if (list != picked) {
+                list.SelectedIndex(-1);
+            }
+        }
+        m_syncing = false;
         ShowSelected();
     }
 

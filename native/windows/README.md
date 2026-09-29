@@ -83,8 +83,8 @@ powershell -ExecutionPolicy Bypass `
 | Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |
 | Scroll | output TextBox in a `ScrollViewer`, auto-tails; per-run text retained (capped at 100 000 chars) |
-| Search / filter | sidebar filter box trims the roster; find box + Ctrl+F selects the next case-insensitive terminal match |
-| History | rows show status/title/project/harness, restored every launch; per-run output retained while the window lives |
+| Search / filter | sidebar search box filters every roster group; find box + Ctrl+F selects the next case-insensitive terminal match |
+| History | collapsed group of rows with no live PTY, restored every launch; per-run output retained while the window lives |
 | Theme | System/Dark/Light (`RequestedTheme`), kept in `LocalSettings` — local-only, no sync |
 | Persistence | Save button / Ctrl+S / close hook → `bridge_core_save` |
 

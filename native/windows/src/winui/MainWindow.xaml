@@ -33,7 +33,12 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Roster card: new session, filter, run list, actions, theme, find. -->
+            <!-- Roster card (issue #73): New Session button, session search,
+                 then live runs grouped needs-input / idle / working with
+                 non-live history collapsed at the end; save, theme, find,
+                 and the status line sit below the groups. One shared
+                 SelectionChanged handler keeps a single selection across
+                 the four lists. -->
             <Border Grid.Column="0"
                     Margin="12,0,0,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -50,6 +55,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0"
                                Text="Runs"
@@ -62,12 +68,58 @@
                             Click="NewButton_Click"/>
                     <TextBox x:Name="FilterBox"
                              Grid.Row="2"
-                             PlaceholderText="Filter runs"
+                             PlaceholderText="Search sessions"
                              TextChanged="FilterBox_TextChanged"/>
-                    <ListView x:Name="RosterList"
-                              Grid.Row="3"
-                              SelectionMode="Single"
-                              SelectionChanged="RosterList_SelectionChanged"/>
+                    <!-- Group lists size to content (inner scrolling off)
+                         inside one outer scroller; history stays collapsed
+                         until the user expands it. All four headers always
+                         show, so the group order is stable even when a
+                         group is empty. -->
+                    <ScrollViewer Grid.Row="3"
+                                  VerticalScrollMode="Auto"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="2">
+                            <TextBlock x:Name="NeedsHeader"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <ListView x:Name="NeedsInputList"
+                                      SelectionMode="Single"
+                                      ScrollViewer.VerticalScrollMode="Disabled"
+                                      ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                                      ScrollViewer.HorizontalScrollMode="Disabled"
+                                      SelectionChanged="Roster_SelectionChanged"/>
+                            <TextBlock x:Name="IdleHeader"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <ListView x:Name="IdleList"
+                                      SelectionMode="Single"
+                                      ScrollViewer.VerticalScrollMode="Disabled"
+                                      ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                                      ScrollViewer.HorizontalScrollMode="Disabled"
+                                      SelectionChanged="Roster_SelectionChanged"/>
+                            <TextBlock x:Name="WorkingHeader"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <ListView x:Name="WorkingList"
+                                      SelectionMode="Single"
+                                      ScrollViewer.VerticalScrollMode="Disabled"
+                                      ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                                      ScrollViewer.HorizontalScrollMode="Disabled"
+                                      SelectionChanged="Roster_SelectionChanged"/>
+                            <Expander x:Name="HistoryExpander"
+                                      Header="History"
+                                      IsExpanded="False"
+                                      HorizontalAlignment="Stretch"
+                                      HorizontalContentAlignment="Stretch">
+                                <ListView x:Name="HistoryList"
+                                          SelectionMode="Single"
+                                          ScrollViewer.VerticalScrollMode="Disabled"
+                                          ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                                          ScrollViewer.HorizontalScrollMode="Disabled"
+                                          SelectionChanged="Roster_SelectionChanged"/>
+                            </Expander>
+                        </StackPanel>
+                    </ScrollViewer>
                     <Button x:Name="SaveButton"
                             Grid.Row="4"
                             Content="Save"
@@ -90,41 +142,40 @@
                             Content="Find next"
                             HorizontalAlignment="Stretch"
                             Click="FindNextButton_Click"/>
+                    <!-- Status line: failures (spawn, save, clipboard)
+                         must stay visible (fail-visible principle), so it
+                         lives at the sidebar bottom now that the terminal
+                         fills the right pane. -->
+                    <TextBlock x:Name="StatusText"
+                               Grid.Row="8"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
                 </Grid>
             </Border>
 
-            <!-- Terminal card: read-only output surface + status bar. -->
+            <!-- Terminal card (issue #73): the output surface fills the
+                 full height of the right pane; no status label beneath. -->
             <Border Grid.Column="1"
                     Margin="12,0,12,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
                     CornerRadius="8">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <ScrollViewer x:Name="TermScroll"
-                                  Padding="12"
-                                  HorizontalScrollMode="Auto"
-                                  VerticalScrollMode="Auto">
-                        <TextBox x:Name="TermBox"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="NoWrap"
-                                 Background="Transparent"
-                                 BorderThickness="0"
-                                 FontFamily="Cascadia Mono, Consolas, monospace"
-                                 FontSize="13"
-                                 KeyDown="RootGrid_KeyDown"/>
-                    </ScrollViewer>
-                    <TextBlock x:Name="StatusText"
-                               Grid.Row="1"
-                               Style="{StaticResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               Padding="12,6"/>
-                </Grid>
+                <ScrollViewer x:Name="TermScroll"
+                              Padding="12"
+                              HorizontalScrollMode="Auto"
+                              VerticalScrollMode="Auto">
+                    <TextBox x:Name="TermBox"
+                             IsReadOnly="True"
+                             AcceptsReturn="True"
+                             TextWrapping="NoWrap"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             FontFamily="Cascadia Mono, Consolas, monospace"
+                             FontSize="13"
+                             KeyDown="RootGrid_KeyDown"/>
+                </ScrollViewer>
             </Border>
         </Grid>
     </Grid>

@@ -14,7 +14,7 @@ namespace AgentManagerWinUI
         void FilterBox_TextChanged(
             Object sender,
             Microsoft.UI.Xaml.Controls.TextChangedEventArgs args);
-        void RosterList_SelectionChanged(
+        void Roster_SelectionChanged(
             Object sender,
             Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs args);
         void ThemeBox_SelectionChanged(

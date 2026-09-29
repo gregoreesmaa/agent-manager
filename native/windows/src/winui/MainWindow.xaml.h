@@ -33,7 +33,7 @@ namespace winrt::AgentManagerWinUI::implementation
         void FilterBox_TextChanged(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::TextChangedEventArgs const &args);
-        void RosterList_SelectionChanged(
+        void Roster_SelectionChanged(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const
                 &args);
@@ -54,6 +54,14 @@ namespace winrt::AgentManagerWinUI::implementation
             Microsoft::UI::Xaml::WindowEventArgs const &args);
         void RefreshRoster();
         void ShowSelected();
+        /* Group-list helpers (issue #73): the four lists share one
+         * selection, kept in m_selected; m_syncing guards the
+         * SelectionChanged fan-out while the selection is moved. */
+        void RebuildGroupList(
+            Microsoft::UI::Xaml::Controls::ListView const &list,
+            std::vector<std::pair<std::wstring, std::wstring>> const &rows);
+        void SelectRowById(std::wstring const &id);
+        bool FirstRowId(std::wstring &id);
         void SetStatus(winrt::hstring const &text);
         void ForwardBytes(char const *data, std::size_t len);
         std::wstring SelectedId();
@@ -64,6 +72,7 @@ namespace winrt::AgentManagerWinUI::implementation
         ::AmCore *m_core{nullptr};
         std::map<std::wstring, LivePty> m_live; /* roster id -> live PTY */
         std::wstring m_selected;                /* selected roster row id */
+        bool m_syncing{false}; /* true while moving shared selection */
         std::string m_filter;                   /* sidebar filter (UTF-8) */
         std::string m_fingerprint; /* roster rebuild gate */
         Microsoft::UI::Dispatching::DispatcherQueueTimer m_timer{nullptr};
