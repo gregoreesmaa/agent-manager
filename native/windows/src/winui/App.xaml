@@ -4,6 +4,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
         <ResourceDictionary>
+            <!-- App-wide type ramp (issue #72): Segoe Variable for every control and TextBlock. -->
+            <FontFamily x:Key="ContentControlThemeFontFamily">Segoe UI Variable Text</FontFamily>
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>

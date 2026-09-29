@@ -124,6 +124,22 @@ namespace winrt::AgentManagerWinUI::implementation
 
     MainWindow::MainWindow() {
         InitializeComponent();
+        /* Native Windows 11 chrome (issue #72): Mica system backdrop,
+         * content extended into the title bar with AppTitleBar as the
+         * drag region, transparent caption-button wells so Mica shows
+         * through. Same controls and handlers: no behavior change. */
+        SystemBackdrop(Media::MicaBackdrop{});
+        ExtendsContentIntoTitleBar(true);
+        SetTitleBar(AppTitleBar());
+        try {
+            auto titleBar = AppWindow().TitleBar();
+            titleBar.ButtonBackgroundColor(
+                Microsoft::UI::Colors::Transparent());
+            titleBar.ButtonInactiveBackgroundColor(
+                Microsoft::UI::Colors::Transparent());
+        } catch (...) {
+            /* Pre-Windows 11 host: chrome stays default. */
+        }
         m_core = bridge_core_new();
 
         /* Theme: LocalSettings is a plain local store (local-only trust:

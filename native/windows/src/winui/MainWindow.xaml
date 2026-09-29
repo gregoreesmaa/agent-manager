@@ -7,63 +7,125 @@
     mc:Ignorable="d"
     Title="Agent Manager">
 
+    <!-- Native Windows 11 look (issue #72): Segoe Variable type ramp (see App.xaml) over
+         the Mica system backdrop (see code-behind), card surfaces with
+         rounded corners, 12px outer / 8px inner spacing. Every brush is a
+         ThemeResource, so the System/Dark/Light setting repaints the whole
+         window. Same controls and handlers as before: no behavior change. -->
     <Grid x:Name="RootGrid" KeyDown="RootGrid_KeyDown">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="320"/>
-            <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
 
-        <!-- Roster column: new session, filter, run list, actions, theme, find. -->
-        <StackPanel Grid.Column="0" Padding="12" Spacing="8">
-            <Button x:Name="NewButton"
-                    Content="New Session"
-                    Click="NewButton_Click"/>
-            <TextBox x:Name="FilterBox"
-                     PlaceholderText="Filter runs"
-                     TextChanged="FilterBox_TextChanged"/>
-            <ListView x:Name="RosterList"
-                      Height="400"
-                      SelectionMode="Single"
-                      SelectionChanged="RosterList_SelectionChanged"/>
-            <Button x:Name="SaveButton"
-                    Content="Save"
-                    Click="SaveButton_Click"/>
-            <ComboBox x:Name="ThemeBox"
-                      Header="Theme"
-                      SelectionChanged="ThemeBox_SelectionChanged">
-                <x:String>System</x:String>
-                <x:String>Dark</x:String>
-                <x:String>Light</x:String>
-            </ComboBox>
-            <TextBox x:Name="FindBox"
-                     PlaceholderText="Find in terminal"/>
-            <Button x:Name="FindNextButton"
-                    Content="Find next"
-                    Click="FindNextButton_Click"/>
-        </StackPanel>
+        <!-- Custom title bar: drag region via SetTitleBar in code-behind.
+             Caption buttons overlay the right side, so content stays left. -->
+        <Grid x:Name="AppTitleBar" Height="32">
+            <TextBlock Text="Agent Manager"
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       VerticalAlignment="Center"
+                       Margin="16,0,0,0"/>
+        </Grid>
 
-        <!-- Terminal column: read-only output surface + status bar. -->
-        <Grid Grid.Column="1">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
-            <ScrollViewer x:Name="TermScroll"
-                          Padding="12"
-                          HorizontalScrollMode="Auto"
-                          VerticalScrollMode="Auto">
-                <TextBox x:Name="TermBox"
-                         IsReadOnly="True"
-                         AcceptsReturn="True"
-                         TextWrapping="NoWrap"
-                         FontFamily="Cascadia Mono, Consolas, monospace"
-                         FontSize="13"
-                         KeyDown="RootGrid_KeyDown"/>
-            </ScrollViewer>
-            <TextBlock x:Name="StatusText"
-                       Grid.Row="1"
-                       Padding="12,6"
-                       Opacity="0.8"/>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Roster card: new session, filter, run list, actions, theme, find. -->
+            <Border Grid.Column="0"
+                    Margin="12,0,0,12"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <Grid Padding="12" RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0"
+                               Text="Runs"
+                               Style="{StaticResource SubtitleTextBlockStyle}"/>
+                    <Button x:Name="NewButton"
+                            Grid.Row="1"
+                            Content="New Session"
+                            Style="{StaticResource AccentButtonStyle}"
+                            HorizontalAlignment="Stretch"
+                            Click="NewButton_Click"/>
+                    <TextBox x:Name="FilterBox"
+                             Grid.Row="2"
+                             PlaceholderText="Filter runs"
+                             TextChanged="FilterBox_TextChanged"/>
+                    <ListView x:Name="RosterList"
+                              Grid.Row="3"
+                              SelectionMode="Single"
+                              SelectionChanged="RosterList_SelectionChanged"/>
+                    <Button x:Name="SaveButton"
+                            Grid.Row="4"
+                            Content="Save"
+                            HorizontalAlignment="Stretch"
+                            Click="SaveButton_Click"/>
+                    <ComboBox x:Name="ThemeBox"
+                              Grid.Row="5"
+                              Header="Theme"
+                              HorizontalAlignment="Stretch"
+                              SelectionChanged="ThemeBox_SelectionChanged">
+                        <x:String>System</x:String>
+                        <x:String>Dark</x:String>
+                        <x:String>Light</x:String>
+                    </ComboBox>
+                    <TextBox x:Name="FindBox"
+                             Grid.Row="6"
+                             PlaceholderText="Find in terminal"/>
+                    <Button x:Name="FindNextButton"
+                            Grid.Row="7"
+                            Content="Find next"
+                            HorizontalAlignment="Stretch"
+                            Click="FindNextButton_Click"/>
+                </Grid>
+            </Border>
+
+            <!-- Terminal card: read-only output surface + status bar. -->
+            <Border Grid.Column="1"
+                    Margin="12,0,12,12"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <ScrollViewer x:Name="TermScroll"
+                                  Padding="12"
+                                  HorizontalScrollMode="Auto"
+                                  VerticalScrollMode="Auto">
+                        <TextBox x:Name="TermBox"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 TextWrapping="NoWrap"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 FontFamily="Cascadia Mono, Consolas, monospace"
+                                 FontSize="13"
+                                 KeyDown="RootGrid_KeyDown"/>
+                    </ScrollViewer>
+                    <TextBlock x:Name="StatusText"
+                               Grid.Row="1"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Padding="12,6"/>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </Window>

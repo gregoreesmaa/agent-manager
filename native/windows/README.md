@@ -99,6 +99,7 @@ powershell -ExecutionPolicy Bypass `
   the Linux ESC-prefix parity.
 - Spawning runs the configured `muse` command; without it on PATH the
   shell reports the core's error message in the status bar.
+- Styling (issue #72) targets the Windows App SDK gallery look: Mica system backdrop, content extended into the title bar with a custom drag region, card surfaces with rounded corners, Segoe UI Variable type ramp, and ThemeResource brushes throughout so the System/Dark/Light setting repaints the whole window. No behavior changes.
 - This directory must stay free of the macOS GUI framework in code and
   prose alike (CI enforces it with a literal grep gate): the Windows
   shell binds the C ABI only.
