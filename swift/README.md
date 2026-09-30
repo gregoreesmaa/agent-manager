@@ -29,7 +29,7 @@ Run the app with `swift run` or `.build/debug/AgentManagerMac`.
 | Select / copy / paste / scroll | native SwiftTerm view and scrollback |
 | Search / filter | sidebar search field; terminal find via Cmd-F (SwiftTerm find bar) |
 | History | roster rows carry project, harness, last-active age; restored every launch |
-| Theme | System / Dark / Light picker (UserDefaults) + native terminal colors |
+| Theme | follows the system appearance (no manual override) + native terminal colors |
 | Persistence | Save button and quit hook call `am_core_save` |
 
 ## Notes
