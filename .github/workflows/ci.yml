@@ -36,8 +36,9 @@ jobs:
 
   macos:
     # Native macOS Swift shell (issue #62): SPM build + unit tests +
-    # headless C ABI smoke against the real staticlib, then a zip
-    # artifact (dmg/notarization are explicit non-goals — see
+    # headless C ABI smoke against the real staticlib, a mock-session
+    # window screenshot (issue #77), then a zip artifact
+    # (dmg/notarization are explicit non-goals — see
     # packaging/README.md). Runs on macos-latest only and touches
     # nothing outside swift/ + the core staticlib.
     runs-on: macos-latest
@@ -58,6 +59,82 @@ jobs:
         run: swift test --package-path swift
       - name: headless smoke (real C ABI)
         run: swift/.build/debug/AgentManagerMac --smoke
+      - name: seed mock sessions (hermetic)
+        run: |
+          # Deterministic fake muse-store (issue #77): three sessions across
+          # Attention / Working / Idle through the REAL discovery path, so the
+          # roster, titles, projects, and status groups render exactly as with
+          # live data — offline, with no agent and no network. Statuses come
+          # from the classifier itself: an approval marker wins regardless of
+          # mtime (Attention), a fresh mtime without markers is Working, an
+          # old mtime without markers is Idle.
+          SEED="$RUNNER_TEMP/am-shot"
+          STORE="$SEED/xdg/muse/sessions/2026/09/30"
+          mkdir -p "$STORE/shot-attention" "$STORE/shot-working" "$STORE/shot-idle"
+          cat > "$STORE/shot-attention/session.jsonl" <<'EOF'
+          {"payload_type":"metadata","payload":{"record":{"workspace_root":"/tmp/shot-demo/shop"}}}
+          {"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"text":"Add checkout retries with backoff"}]}}
+          {"payload_type":"evt","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Needs your approval to edit Cargo.toml (y/n)"}}}
+          EOF
+          cat > "$STORE/shot-working/session.jsonl" <<'EOF'
+          {"payload_type":"metadata","payload":{"record":{"workspace_root":"/tmp/shot-demo/blog"}}}
+          {"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"text":"Draft the release notes"}]}}
+          {"payload_type":"evt","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Writing section two of three."}}}
+          EOF
+          cat > "$STORE/shot-idle/session.jsonl" <<'EOF'
+          {"payload_type":"metadata","payload":{"record":{"workspace_root":"/tmp/shot-demo/dotfiles"}}}
+          {"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"text":"Clean up old shell aliases"}]}}
+          {"payload_type":"evt","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Done. Removed twelve aliases."}}}
+          EOF
+          # Relative ages stay glanceable forever ("5m ago", "2d ago"); the
+          # working row keeps a fresh mtime so it classifies as Working.
+          touch -t "$(date -v-5M +%Y%m%d%H%M)" "$STORE/shot-attention/session.jsonl"
+          touch -t "$(date -v-2d +%Y%m%d%H%M)" "$STORE/shot-idle/session.jsonl"
+          # Fake muse on PATH: deterministic transcript if the shell spawns,
+          # then a long sleep so the child outlives the capture.
+          mkdir -p "$SEED/bin" "$SEED/home" "$SEED/shot"
+          cat > "$SEED/bin/muse" <<'EOF'
+          #!/bin/sh
+          printf 'fake-muse-ready-shot\n$ '
+          sleep 120
+          EOF
+          chmod +x "$SEED/bin/muse"
+          printf '{"agents": {}}\n' > "$SEED/config.json"
+          find "$STORE" -name session.jsonl | sort
+      - name: screenshot (mock sessions)
+        run: |
+          # Launch the real app under the seeded profile (scratch XDG/HOME/
+          # config: the runner's live files are never touched), capture the
+          # main window, and fail visibly when the PNG is missing or empty.
+          SEED="$RUNNER_TEMP/am-shot"
+          # Re-fresh the working row: Working needs an mtime under 60 s old
+          # at launch, and the seed step may be older than that by now.
+          touch "$SEED/xdg/muse/sessions/2026/09/30/shot-working/session.jsonl"
+          PATH="$SEED/bin:$PATH" HOME="$SEED/home" XDG_DATA_HOME="$SEED/xdg" \
+            AGENT_MANAGER_CONFIG="$SEED/config.json" \
+            swift/.build/debug/AgentManagerMac >"$SEED/shot/app.log" 2>&1 &
+          APP_PID=$!
+          sleep 6
+          if ! kill -0 $APP_PID 2>/dev/null; then
+            tail -n 40 "$SEED/shot/app.log" || true
+            echo "AgentManagerMac exited before the screenshot" >&2
+            exit 1
+          fi
+          screencapture -x -m "$SEED/shot/macos-mock.png"
+          kill $APP_PID 2>/dev/null || true
+          wait $APP_PID 2>/dev/null || true
+          test -s "$SEED/shot/macos-mock.png"
+          mkdir -p dist
+          cp "$SEED/shot/macos-mock.png" dist/macos-mock.png
+          cp "$SEED/shot/app.log" dist/shot-app.log
+          tail -n 20 "$SEED/shot/app.log" || true
+      - name: upload screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentManagerMac-screenshot
+          path: |
+            dist/macos-mock.png
+            dist/shot-app.log
       - name: package (zip; dmg stubbed — see packaging/README.md)
         run: |
           mkdir -p dist
@@ -124,15 +201,16 @@ jobs:
   windows:
     # Native Windows WinUI shell (issue #64): the core library plus the
     # CMake-built C suite against the real C ABI, plus the live ConPTY
-    # converse smoke. The MSVC-built WinUI 3 shell is dev-machine-only
-    # (unpackaged exe, no MSIX — see packaging/README.md). Unlike the
-    # Linux job this one runs `cargo test --all-targets`, per the
-    # issue's acceptance criteria: the gpui binary is macOS-gated in
-    # src/main.rs, so on this runner that exercises the full portable
-    # lib suite plus a stub bin, while the per-shell proof lives in the
-    # CMake/CTest and WinUI steps. Runs on windows-latest only and
-    # touches nothing outside native/windows + the core staticlib.
-    # Ships an unpackaged zip of the portable C suite.
+    # converse smoke. The unpackaged WinUI 3 exe also builds here for a
+    # mock-session window screenshot (issue #77); MSIX stays a non-goal
+    # (see packaging/README.md). Unlike the Linux job this one runs
+    # `cargo test --all-targets`, per the issue's acceptance criteria:
+    # the gpui binary is macOS-gated in src/main.rs, so on this runner
+    # that exercises the full portable lib suite plus a stub bin, while
+    # the per-shell proof lives in the CMake/CTest and WinUI steps. Runs
+    # on windows-latest only and touches nothing outside native/windows
+    # + the core staticlib. Ships an unpackaged zip of the portable C
+    # suite.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -163,6 +241,104 @@ jobs:
           powershell -ExecutionPolicy Bypass
           -File native/windows/tests/smoke_live.ps1
           -Smoke ./native/windows/build/Release/am-win-smoke.exe
+      - name: WinUI app (msbuild, unpackaged; screenshot-only)
+        # Screenshot-only use of the unpackaged exe (issue #77): MSIX stays
+        # a non-goal (see packaging/README.md). windows-latest carries VS
+        # 2026, whose v145 toolset is what the vcxproj tracks.
+        shell: pwsh
+        run: |
+          msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
+          if ($LASTEXITCODE -ne 0) { throw "msbuild restore failed" }
+          msbuild native/windows/AgentManagerWinUI.vcxproj `
+            /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { throw "msbuild build failed" }
+          $exe = 'native/windows/bin/x64/Release/AgentManagerWinUI.exe'
+          if (-not (Test-Path $exe)) { throw "WinUI exe missing: $exe" }
+      - name: seed mock sessions (hermetic)
+        # Same deterministic fake muse-store as the macOS job (three
+        # sessions across Attention / Working / Idle through the real
+        # discovery path), plus a compiled fake muse.exe for the
+        # screenshot step's PATH: the unix harnesses' shell-script fake
+        # cannot execute under CreateProcess, hence tests/fake_muse.c +
+        # cl, as in tests/smoke_live.ps1.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $seed = Join-Path $env:RUNNER_TEMP 'am-shot'
+          $store = Join-Path $seed 'xdg/muse/sessions/2026/09/30'
+          $rows = @(
+            @{ id = 'shot-attention'; project = 'shop'; prompt = 'Add checkout retries with backoff'; reply = 'Needs your approval to edit Cargo.toml (y/n)'; age = (Get-Date).AddMinutes(-5) },
+            @{ id = 'shot-working'; project = 'blog'; prompt = 'Draft the release notes'; reply = 'Writing section two of three.'; age = (Get-Date) },
+            @{ id = 'shot-idle'; project = 'dotfiles'; prompt = 'Clean up old shell aliases'; reply = 'Done. Removed twelve aliases.'; age = (Get-Date).AddDays(-2) }
+          )
+          foreach ($row in $rows) {
+            $dir = New-Item -ItemType Directory -Force (Join-Path $store $row.id)
+            $log = Join-Path $dir 'session.jsonl'
+            $lines = @(
+              ('{"payload_type":"metadata","payload":{"record":{"workspace_root":"C:/shot-demo/' + $row.project + '"}}}'),
+              ('{"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"text":"' + $row.prompt + '"}]}}'),
+              ('{"payload_type":"evt","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"' + $row.reply + '}}}')
+            )
+            # WriteAllText: BOM-less UTF-8 with LF joins on every edition
+            # (Set-Content's utf8NoBOM exists only in PowerShell 7), so the
+            # seeds are byte-identical to the macOS job's.
+            [IO.File]::WriteAllText($log, (($lines -join "`n") + "`n"))
+            (Get-Item $log).LastWriteTime = $row.age
+          }
+          New-Item -ItemType Directory -Force (Join-Path $seed 'bin') | Out-Null
+          New-Item -ItemType Directory -Force (Join-Path $seed 'home') | Out-Null
+          New-Item -ItemType Directory -Force (Join-Path $seed 'shot') | Out-Null
+          cl /nologo /O2 /Fe:"$seed\bin\muse.exe" native/windows/tests/fake_muse.c | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "cl failed to build fake muse.exe" }
+          [IO.File]::WriteAllText((Join-Path $seed 'config.json'), ('{"agents": {}}' + "`n"))
+          Get-ChildItem $store -Recurse -File | Select-Object FullName, LastWriteTime
+      - name: screenshot (mock sessions)
+        shell: pwsh
+        run: |
+          # Launch the unpackaged exe under the seeded profile (scratch
+          # XDG/HOME/config: the runner's live files are never touched),
+          # capture the primary screen, and fail visibly when the PNG is
+          # missing or empty.
+          $ErrorActionPreference = 'Stop'
+          $seed = Join-Path $env:RUNNER_TEMP 'am-shot'
+          $env:PATH = "$seed\bin;$env:PATH"
+          $env:XDG_DATA_HOME = Join-Path $seed 'xdg'
+          $env:AGENT_MANAGER_CONFIG = Join-Path $seed 'config.json'
+          $env:HOME = Join-Path $seed 'home'
+          $exe = 'native/windows/bin/x64/Release/AgentManagerWinUI.exe'
+          $png = Join-Path $seed 'shot/windows-mock.png'
+          # Re-fresh the working row: Working needs an mtime under 60 s old
+          # at launch, and the seed step may be older than that by now.
+          (Get-Item (Join-Path $seed 'xdg/muse/sessions/2026/09/30/shot-working/session.jsonl')).LastWriteTime = Get-Date
+          $proc = Start-Process -FilePath $exe `
+            -WorkingDirectory (Split-Path $exe) -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            if ($proc.HasExited) { throw "WinUI app exited before the screenshot" }
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -AssemblyName System.Windows.Forms
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+            try {
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              try {
+                $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              } finally { $g.Dispose() }
+              $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
+            } finally { $bmp.Dispose() }
+            if (-not (Test-Path $png) -or (Get-Item $png).Length -eq 0) {
+              throw "screenshot missing or empty: $png"
+            }
+          } finally {
+            Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $png dist/windows-mock.png
+      - name: upload screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentManagerWindows-screenshot
+          path: dist/windows-mock.png
       - name: package portable suite (unpackaged zip; MSIX stubbed — see packaging/README.md)
         shell: pwsh
         run: |
