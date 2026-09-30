@@ -15,7 +15,9 @@ use crate::embedded::{EmbeddedPty, SpawnKind};
 use crate::launch;
 use crate::parsers::registry::RegistryParser;
 use crate::persist;
-use crate::providers::{ClaudeCliProvider, MuseCliProvider, OpencodeCliProvider, Provider};
+use crate::providers::{
+    ClaudeCliProvider, CodexCliProvider, MuseCliProvider, OpencodeCliProvider, Provider,
+};
 
 /// Integer error codes returned by every fallible `am_*` function.
 #[repr(i32)]
@@ -137,7 +139,9 @@ pub unsafe extern "C" fn am_core_new() -> *mut AmCore {
         Box::new(RegistryParser::default()),
     )
     .discover_sessions();
-    // Same merge as the gpui shell startup: opencode and claude sessions
+    // Same merge as the gpui shell startup: opencode, claude, and codex
+    // sessions seed alongside muse sessions (unreachable stores/CLIs
+    // degrade to empty).
     // seed alongside muse sessions (unreachable stores/CLIs degrade to
     // empty).
     discovered.extend(
@@ -147,6 +151,13 @@ pub unsafe extern "C" fn am_core_new() -> *mut AmCore {
     discovered.extend(
         ClaudeCliProvider::new(
             ClaudeCliProvider::default_store_root(),
+            Box::new(RegistryParser::default()),
+        )
+        .discover_sessions(),
+    );
+    discovered.extend(
+        CodexCliProvider::new(
+            CodexCliProvider::default_store_root(),
             Box::new(RegistryParser::default()),
         )
         .discover_sessions(),

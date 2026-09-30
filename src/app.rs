@@ -42,6 +42,11 @@ pub const HARNESS_OPENCODE: &str = "opencode";
 /// plain `claude`, resumed as `claude --resume <id>`.
 pub const HARNESS_CLAUDE: &str = "claude";
 
+/// Harness id for sessions backed by the Codex CLI: discovered from
+/// rollout logs under `~/.codex/sessions/`, spawned as plain `codex`,
+/// resumed as `codex resume <id>`.
+pub const HARNESS_CODEX: &str = "codex";
+
 /// Default harness for newly spawned runs and for persisted sessions
 /// predating the field (serde fills it in): everything today is muse.
 pub fn default_harness() -> String {
@@ -754,6 +759,7 @@ impl App {
     /// live entries relaunch fresh. Resume routes through the stored
     /// harness: opencode-backed rows re-attach as `opencode --session`,
     /// claude-backed rows as `claude --resume <id>`,
+    /// codex-backed rows as `codex resume <id>`,
     /// everything else as `muse --resume <id>`.
     pub fn respawn_kind(&self, run_id: &str) -> SpawnKind {
         use crate::embedded::Harness;
@@ -1504,6 +1510,28 @@ mod tests {
             args,
             vec!["--resume".to_string(), "sess-claude-1".to_string()]
         );
+        // Live rows still relaunch fresh, regardless of harness.
+        app.sessions[0].provider_session_id = None;
+        assert_eq!(app.respawn_kind("a"), SpawnKind::New);
+    }
+
+    #[test]
+    fn respawn_kind_routes_codex_rows_to_codex_resume() {
+        use crate::embedded::Harness;
+        let mut app = App::new(vec![sess("a", Status::Idle, 1)]);
+        app.sessions[0].harness = HARNESS_CODEX.to_string();
+        app.sessions[0].provider_session_id = Some("sess-codex-1".into());
+        // Codex-backed historic rows re-attach via `codex resume`.
+        assert_eq!(
+            app.respawn_kind("a"),
+            SpawnKind::ResumeOn {
+                harness: Harness::Codex,
+                session_id: "sess-codex-1".into(),
+            }
+        );
+        let (program, args) = app.spawn_command_for(&app.respawn_kind("a")).clone();
+        assert_eq!(program, "codex");
+        assert_eq!(args, vec!["resume".to_string(), "sess-codex-1".to_string()]);
         // Live rows still relaunch fresh, regardless of harness.
         app.sessions[0].provider_session_id = None;
         assert_eq!(app.respawn_kind("a"), SpawnKind::New);
