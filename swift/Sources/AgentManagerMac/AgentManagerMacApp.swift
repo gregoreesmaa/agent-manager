@@ -31,6 +31,10 @@ struct AgentManagerMacApp: App {
         // full height.
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Session", action: appState.newSession)
+                    .keyboardShortcut("n", modifiers: .command)
+            }
             CommandGroup(after: .saveItem) {
                 Button("Save Core Config", action: appState.save)
                     .keyboardShortcut("s", modifiers: .command)

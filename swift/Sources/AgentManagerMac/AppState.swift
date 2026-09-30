@@ -83,11 +83,6 @@ final class AppState: ObservableObject {
 
     // MARK: - Spawn / converse / resize
 
-    var canSpawn: Bool {
-        guard let id = selection else { return false }
-        return ptys[id] == nil && rows.contains(where: { $0.id == id })
-    }
-
     func spawnSelected() {
         guard let id = selection, ptys[id] == nil else { return }
         do {
@@ -96,6 +91,19 @@ final class AppState: ObservableObject {
         } catch {
             pendingError = error.localizedDescription
         }
+    }
+
+    /// New Session entry point (issue #74, WinUI #71 parity): start
+    /// the selected row's child through the core and keep it
+    /// selected. With no selection yet (fresh launch, or the filter
+    /// cleared it), take the first visible row so one click always
+    /// starts something. An already-live or still-empty selection is
+    /// a silent no-op: the roster already shows the wanted state.
+    func newSession() {
+        if selection == nil {
+            selection = filteredRows.first?.id ?? rows.first?.id
+        }
+        spawnSelected()
     }
 
     func hasLivePty(_ id: String) -> Bool { ptys[id] != nil }

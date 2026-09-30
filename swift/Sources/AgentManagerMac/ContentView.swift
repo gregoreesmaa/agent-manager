@@ -4,9 +4,10 @@ import SwiftUI
 ///
 /// - Roster: core rows grouped by urgency (needs-input first), with an
 ///   inline sidebar filter field matching title/project/id.
-/// - Spawn: sidebar footer button (or the empty-state button) starts
-///   the selected row's child via `am_spawn`; typing in the terminal
-///   converses through `am_write`.
+/// - Spawn: the sidebar New Session button (or the detail Spawn
+///   button) starts the selected row's child via `am_spawn`; with no
+///   selection New Session takes the first visible row. Typing in
+///   the terminal converses through `am_write`.
 /// - History: every row shows its project, harness, and last-active age;
 ///   the rows themselves come from discovery + the persisted store, so
 ///   they survive relaunches.
@@ -20,6 +21,12 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
+                Button("New Session", action: state.newSession)
+                    .keyboardShortcut("n", modifiers: .command)
+                    .disabled(state.rows.isEmpty)
+                    .help("Start the selected session (am_spawn)")
+                    .padding(8)
+                Divider()
                 List(selection: $state.selection) {
                     Text(title)
                         .font(.headline)
@@ -71,20 +78,14 @@ struct ContentView: View {
 
     // MARK: - Sidebar
 
-    /// Spawn/Save/Theme live in the sidebar footer with keyboard
-    /// shortcuts (Cmd-N / Cmd-S); Cmd-S is additionally wired app-wide
-    /// in `AgentManagerMacApp.commands`.
+    /// Save/Theme live in the sidebar footer (Cmd-S, additionally
+    /// wired app-wide in `AgentManagerMacApp.commands`); New Session
+    /// sits at the sidebar top (Cmd-N, likewise app-wide).
     private var sidebarFooter: some View {
         VStack(spacing: 8) {
-            HStack {
-                Button("Spawn", action: state.spawnSelected)
-                    .keyboardShortcut("n", modifiers: .command)
-                    .disabled(!state.canSpawn)
-                    .help("Start the selected session (am_spawn)")
-                Button("Save", action: state.save)
-                    .keyboardShortcut("s", modifiers: .command)
-                    .help("Persist the core config (am_core_save)")
-            }
+            Button("Save", action: state.save)
+                .keyboardShortcut("s", modifiers: .command)
+                .help("Persist the core config (am_core_save)")
             Picker("Theme", selection: $appearance) {
                 Text("System").tag("system")
                 Text("Dark").tag("dark")
