@@ -38,7 +38,8 @@ use gpui_component::{Root, Theme};
 use gui::shell::ShellView;
 #[cfg(target_os = "macos")]
 use providers::{
-    ClaudeCliProvider, CodexCliProvider, MuseCliProvider, OpencodeCliProvider, Provider,
+    AntigravityCliProvider, ClaudeCliProvider, CodexCliProvider, MuseCliProvider,
+    OpencodeCliProvider, Provider,
 };
 
 #[cfg(target_os = "macos")]
@@ -46,12 +47,13 @@ fn main() {
     // Historic attach: provider-discovered sessions seed the list before
     // any PTY exists (unreachable stores degrade to an empty list, never
     // a startup failure). `r` on a seeded entry re-attaches it. Muse,
-    // opencode, Claude Code, and codex stores merge here; ids are
-    // provider-scoped (muse session dirs, opencode `ses-*` ids, claude
-    // `sessionId`s, codex rollout `session_id`s), and `merge_sessions`
-    // keeps one row per id — opencode rows re-attach via
+    // opencode, Claude Code, codex, and Antigravity stores merge here; ids
+    // are provider-scoped (muse session dirs, opencode `ses-*` ids, claude
+    // `sessionId`s, codex rollout `session_id`s, agy conversationIds), and
+    // `merge_sessions` keeps one row per id: opencode rows re-attach via
     // `opencode --session <id>`, claude rows via `claude --resume <id>`,
-    // codex rows via `codex resume <id>`.
+    // codex rows via `codex resume <id>`, antigravity rows via
+    // `agy --conversation <id>`.
     let mut discovered = MuseCliProvider::new(
         MuseCliProvider::default_store_root(),
         Box::new(parsers::registry::RegistryParser::default()),
@@ -73,6 +75,13 @@ fn main() {
     discovered.extend(
         CodexCliProvider::new(
             CodexCliProvider::default_store_root(),
+            Box::new(parsers::registry::RegistryParser::default()),
+        )
+        .discover_sessions(),
+    );
+    discovered.extend(
+        AntigravityCliProvider::new(
+            AntigravityCliProvider::default_store_root(),
             Box::new(parsers::registry::RegistryParser::default()),
         )
         .discover_sessions(),
