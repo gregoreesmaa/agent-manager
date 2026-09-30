@@ -39,8 +39,8 @@ pub enum Harness {
     Muse,
     /// `opencode` — the opencode CLI.
     Opencode,
-    /// `claude` — spawned by program name; resume reuses the muse shape
-    /// until a Claude provider lands.
+    /// `claude` — the Claude Code CLI (discovery + transcript land with
+    /// its provider; resume reuses the muse `--resume <id>` shape).
     Claude,
     /// `codex` — spawned by program name; resume reuses the muse shape
     /// until a Codex provider lands.
@@ -54,7 +54,7 @@ impl Harness {
         match self {
             Harness::Muse => crate::app::HARNESS_MUSE,
             Harness::Opencode => crate::app::HARNESS_OPENCODE,
-            Harness::Claude => "claude",
+            Harness::Claude => crate::app::HARNESS_CLAUDE,
             Harness::Codex => "codex",
         }
     }
@@ -65,7 +65,7 @@ impl Harness {
     pub fn from_id(id: &str) -> Self {
         if id == crate::app::HARNESS_OPENCODE {
             Harness::Opencode
-        } else if id == "claude" {
+        } else if id == crate::app::HARNESS_CLAUDE {
             Harness::Claude
         } else if id == "codex" {
             Harness::Codex
@@ -106,8 +106,8 @@ impl Harness {
 
     /// argv (after the program) resuming a historic conversation.
     /// Shape is per-CLI: muse takes `--resume <id>`, opencode takes
-    /// `--session <id>`; claude/codex reuse the muse shape until their
-    /// providers define their own.
+    /// `--session <id>`; claude takes `--resume <id>` like muse, and
+    /// codex reuses the muse shape until its provider defines its own.
     pub fn resume_args(self, session_id: &str) -> Vec<String> {
         match self {
             Harness::Opencode => vec!["--session".to_string(), session_id.to_string()],
@@ -907,6 +907,34 @@ mod tests {
                 vec!["--resume".to_string(), "sess-abc".to_string()]
             )
         );
+    }
+
+    #[test]
+    fn claude_harness_routes_spawn_commands() {
+        // Claude spawn surface: plain `claude` starts fresh, `claude
+        // --resume <id>` re-attaches a discovered conversation.
+        assert_eq!(
+            SpawnKind::NewOn {
+                harness: Harness::Claude,
+                yolo: false,
+            }
+            .command(),
+            ("claude".to_string(), vec![])
+        );
+        assert_eq!(
+            SpawnKind::ResumeOn {
+                harness: Harness::Claude,
+                session_id: "sess-claude-1".to_string(),
+            }
+            .command(),
+            (
+                "claude".to_string(),
+                vec!["--resume".to_string(), "sess-claude-1".to_string()]
+            )
+        );
+        assert_eq!(Harness::Claude.id(), crate::app::HARNESS_CLAUDE);
+        assert_eq!(Harness::from_id("claude"), Harness::Claude);
+        assert_eq!(Harness::Claude.program(), "claude");
     }
 
     /// Child-printed cwd contains the expected dir, tolerating the

@@ -169,6 +169,26 @@ fn cap_messages(mut messages: Vec<TranscriptMessage>) -> ParsedTranscript {
     }
 }
 
+/// Claude Code transcript tail: one JSON object per line with `type`
+/// (`user`/`assistant`) and `message.content` text blocks. Non-JSON lines
+/// are kept as [`Role::Unknown`] (same contract as [`parse_transcript`).
+/// Tool-use/result entries surface as `🔧 <name>` summaries; anything else
+/// (file-history, queue ops, summaries) is skipped.
+pub fn parse_claude_tail(tail: &str) -> ParsedTranscript {
+    let mut messages = Vec::new();
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => extract_claude_value(&value, &mut messages),
+            Err(_) => push_capped(&mut messages, Role::Unknown, line.to_string()),
+        }
+    }
+    cap_messages(messages)
+}
+
 fn opencode_role(role: &str) -> Option<Role> {
     match role {
         "user" => Some(Role::User),
@@ -263,6 +283,130 @@ fn extract_opencode_value(value: &serde_json::Value, out: &mut Vec<TranscriptMes
                 push_capped(out, role, s.trim().to_string());
             }
             _ => {}
+        }
+    }
+}
+
+/// Best-effort resume handle for a Claude Code tail: the first `sessionId`
+/// field found (every record carries it). Falls back to the log filename
+/// at the provider layer.
+pub fn extract_claude_session_id(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(id) = value.get("sessionId").and_then(|v| v.as_str()) {
+            if !id.trim().is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort project name for a Claude Code tail: basename of the first
+/// `cwd` field found (both `/` and `\` separators split, so Windows paths
+/// work too).
+pub fn extract_claude_project(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(cwd) = value.get("cwd").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if cwd.trim().is_empty() {
+            continue;
+        }
+        let name = cwd
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(cwd);
+        if !name.trim().is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn claude_text_blocks(content: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let blocks: Vec<&serde_json::Value> = match content {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        obj => vec![obj],
+    };
+    for block in blocks {
+        if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+            if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                if !name.trim().is_empty() {
+                    out.push(format!("🔧 {name}"));
+                }
+            }
+            continue;
+        }
+        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+            if block
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_none_or(|t| t == "text")
+            {
+                out.push(text.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn extract_claude_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    // `user` / `assistant` carry `message: {role, content}`; content is
+    // text blocks (kept, joined) or a bare string (newer compact rows).
+    if kind == "user" || kind == "assistant" {
+        let role = if kind == "user" {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        let message = value.get("message");
+        let content = message.and_then(|m| m.get("content")).or_else(|| {
+            // Newer compact rows may inline content beside `type`.
+            if value.get("content").is_some() {
+                value.get("content")
+            } else {
+                None
+            }
+        });
+        let text = match content {
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            Some(content) => claude_text_blocks(content).join("\n").trim().to_string(),
+            None => String::new(),
+        };
+        if !text.is_empty() {
+            push_capped(out, role, text);
+        }
+        return;
+    }
+    // Tool results and queue artifacts land after the assistant turn;
+    // attribute emitted stdout to the assistant so it stays visible.
+    if kind == "tool_result" {
+        let text = value
+            .get("toolUseResult")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("content").and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !text.is_empty() {
+            push_capped(out, Role::Assistant, text);
         }
     }
 }
@@ -611,5 +755,73 @@ mod tests {
         let parsed = parse_opencode_tail("Fix login\n");
         assert_eq!(parsed.messages.len(), 1);
         assert_eq!(parsed.messages[0].role, Role::Unknown);
+    }
+
+    #[test]
+    fn parses_claude_user_and_assistant_blocks_in_order() {
+        let tail = [
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "s-1",
+                "cwd": "/tmp/work/shop",
+                "message": {"role": "user",
+                    "content": [{"type": "text", "text": "Fix login"}]}
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "s-1",
+                "cwd": "/tmp/work/shop",
+                "message": {"role": "assistant",
+                    "content": [{"type": "text", "text": "Done"}]}
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_claude_tail(&tail);
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(parsed.messages[0].text, "Fix login");
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[1].text, "Done");
+        assert_eq!(extract_claude_session_id(&tail).as_deref(), Some("s-1"));
+        assert_eq!(extract_claude_project(&tail).as_deref(), Some("shop"));
+        assert_eq!(extract_claude_project("not json\n"), None);
+        assert_eq!(extract_claude_session_id("not json\n"), None);
+    }
+
+    #[test]
+    fn claude_tool_use_blocks_surface_as_tool_summaries() {
+        let tail = serde_json::json!({
+            "type": "assistant",
+            "sessionId": "s-2",
+            "cwd": "C:\\work\\myproj",
+            "message": {"role": "assistant",
+                "content": [{"type": "tool_use", "name": "Edit"}]}
+        })
+        .to_string();
+        let parsed = parse_claude_tail(&tail);
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Assistant);
+        assert_eq!(parsed.messages[0].text, "🔧 Edit");
+        // Windows path projects split on backslashes too.
+        assert_eq!(extract_claude_project(&tail).as_deref(), Some("myproj"));
+    }
+
+    #[test]
+    fn claude_bare_string_content_and_plain_text_lines_parse() {
+        let tail = serde_json::json!({
+            "type": "user",
+            "sessionId": "s-3",
+            "message": {"content": "Fix login"}
+        })
+        .to_string();
+        let parsed = parse_claude_tail(&format!("{tail}\nplain line\n"));
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(parsed.messages[0].text, "Fix login");
+        assert_eq!(parsed.messages[1].role, Role::Unknown);
     }
 }
