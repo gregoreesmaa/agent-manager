@@ -24,20 +24,11 @@ namespace winrt::AgentManagerWinUI::implementation
         void NewButton_Click(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::RoutedEventArgs const &args);
-        void SaveButton_Click(
-            Windows::Foundation::IInspectable const &sender,
-            Microsoft::UI::Xaml::RoutedEventArgs const &args);
-        void FindNextButton_Click(
-            Windows::Foundation::IInspectable const &sender,
-            Microsoft::UI::Xaml::RoutedEventArgs const &args);
+        void PersistCore();
         void FilterBox_TextChanged(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::TextChangedEventArgs const &args);
         void Roster_SelectionChanged(
-            Windows::Foundation::IInspectable const &sender,
-            Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const
-                &args);
-        void ThemeBox_SelectionChanged(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const
                 &args);
