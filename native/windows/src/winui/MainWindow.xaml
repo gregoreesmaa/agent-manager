@@ -10,8 +10,7 @@
     <!-- Native Windows 11 look (issue #72): Segoe Variable type ramp (see App.xaml) over
          the Mica system backdrop (see code-behind), card surfaces with
          rounded corners, 12px outer / 8px inner spacing. Every brush is a
-         ThemeResource, so the System/Dark/Light setting repaints the whole
-         window. Same controls and handlers as before: no behavior change. -->
+         ThemeResource, so the window follows the system theme. Same controls and handlers as before: no behavior change. -->
     <Grid x:Name="RootGrid" KeyDown="RootGrid_KeyDown">
         <Grid.RowDefinitions>
             <RowDefinition Height="32"/>
@@ -35,10 +34,9 @@
 
             <!-- Roster card (issue #73): New Session button, session search,
                  then live runs grouped needs-input / idle / working with
-                 non-live history collapsed at the end; save, theme, find,
-                 and the status line sit below the groups. One shared
-                 SelectionChanged handler keeps a single selection across
-                 the four lists. -->
+                 non-live history collapsed at the end; the status line
+                 sits below the groups. One shared SelectionChanged handler
+                 keeps a single selection across the four lists. -->
             <Border Grid.Column="0"
                     Margin="12,0,0,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -51,10 +49,6 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0"
@@ -120,34 +114,12 @@
                             </Expander>
                         </StackPanel>
                     </ScrollViewer>
-                    <Button x:Name="SaveButton"
-                            Grid.Row="4"
-                            Content="Save"
-                            HorizontalAlignment="Stretch"
-                            Click="SaveButton_Click"/>
-                    <ComboBox x:Name="ThemeBox"
-                              Grid.Row="5"
-                              Header="Theme"
-                              HorizontalAlignment="Stretch"
-                              SelectionChanged="ThemeBox_SelectionChanged">
-                        <x:String>System</x:String>
-                        <x:String>Dark</x:String>
-                        <x:String>Light</x:String>
-                    </ComboBox>
-                    <TextBox x:Name="FindBox"
-                             Grid.Row="6"
-                             PlaceholderText="Find in terminal"/>
-                    <Button x:Name="FindNextButton"
-                            Grid.Row="7"
-                            Content="Find next"
-                            HorizontalAlignment="Stretch"
-                            Click="FindNextButton_Click"/>
                     <!-- Status line: failures (spawn, save, clipboard)
                          must stay visible (fail-visible principle), so it
                          lives at the sidebar bottom now that the terminal
                          fills the right pane. -->
                     <TextBlock x:Name="StatusText"
-                               Grid.Row="8"
+                               Grid.Row="4"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>

@@ -14,12 +14,10 @@
 //   copy/paste  native TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via
 //               Clipboard -> bridge_write; Ctrl+C forwards ETX (interrupts)
 //   scroll      output TextBox in a ScrollViewer, per-run text retained
-//   search      sidebar search box filters every group; find box selects the
-//               next case-insensitive match in the terminal (Ctrl+F focuses)
+//   search      sidebar search box filters every group
 //   history     collapsed group of rows with no live PTY, restored every
 //               launch; per-run output retained while the window lives
-//   theme       System/Dark/Light via RequestedTheme, kept in LocalSettings
-//   persist     Save button / Ctrl+S / close hook -> bridge_core_save
+//   persist     Ctrl+S / close hook -> bridge_core_save (no sidebar control)
 //
 // ConPTY note: no console is ever created on the WinUI side. The core's
 // EmbeddedPty on Windows is ConPTY-backed (portable-pty uses the native
@@ -39,8 +37,7 @@
 #include "terminal_keys.h"
 #include "json_mini.h"
 
-#include <algorithm>
-#include <cctype>
+#include <utility>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -143,30 +140,6 @@ namespace winrt::AgentManagerWinUI::implementation
             /* Pre-Windows 11 host: chrome stays default. */
         }
         m_core = bridge_core_new();
-
-        /* Theme: LocalSettings is a plain local store (local-only trust:
-         * no account, no sync), mirroring the GTK shell's plain-file
-         * pref. Missing key = System, matching first launch. */
-        try {
-            auto settings =
-                Windows::Storage::ApplicationData::Current().LocalSettings();
-            auto values = settings.Values();
-            if (values.HasKey(L"ThemeIndex")) {
-                int idx = unbox_value<int>(values.Lookup(L"ThemeIndex"));
-                ThemeBox().SelectedIndex(idx);
-                auto theme = ElementTheme::Default;
-                if (idx == 1) {
-                    theme = ElementTheme::Dark;
-                } else if (idx == 2) {
-                    theme = ElementTheme::Light;
-                }
-                RootGrid().RequestedTheme(theme);
-            } else {
-                ThemeBox().SelectedIndex(0);
-            }
-        } catch (...) {
-            ThemeBox().SelectedIndex(0);
-        }
 
         m_timer = DispatcherQueue().CreateTimer();
         m_timer.Interval(
@@ -488,8 +461,7 @@ namespace winrt::AgentManagerWinUI::implementation
         SetStatus(L"Session started.");
     }
 
-    void MainWindow::SaveButton_Click(IInspectable const &,
-                                      RoutedEventArgs const &) {
+    void MainWindow::PersistCore() {
         if (!m_core) {
             return;
         }
@@ -502,46 +474,6 @@ namespace winrt::AgentManagerWinUI::implementation
             return;
         }
         SetStatus(L"Saved.");
-    }
-
-    void MainWindow::FindNextButton_Click(IInspectable const &,
-                                          RoutedEventArgs const &) {
-        LivePty *lp = SelectedLive();
-        if (!lp) {
-            return;
-        }
-        std::string needle = to_utf8(FindBox().Text());
-        if (needle.empty()) {
-            return;
-        }
-        /* Literal, case-insensitive search over the retained text. */
-        std::string hay = lp->shown.empty() ? lp->last_snapshot : lp->shown;
-        std::string hay_low = hay;
-        std::string ndl_low = needle;
-        std::transform(hay_low.begin(), hay_low.end(), hay_low.begin(),
-                       [](unsigned char c) {
-                           return static_cast<char>(std::tolower(c));
-                       });
-        std::transform(ndl_low.begin(), ndl_low.end(), ndl_low.begin(),
-                       [](unsigned char c) {
-                           return static_cast<char>(std::tolower(c));
-                       });
-        std::size_t at = hay_low.find(ndl_low);
-        if (at == std::string::npos) {
-            SetStatus(L"No match.");
-            return;
-        }
-        /* TextBox indices are UTF-16 code units; snapshots here are
-         * byte-compared, so clamp the span into the control text. */
-        TermBox().Focus(FocusState::Programmatic);
-        int32_t start = static_cast<int32_t>(
-            std::min<std::size_t>(at, 1000000000));
-        int32_t len = static_cast<int32_t>(
-            std::min<std::size_t>(needle.size(), 1000000000));
-        if (start + len <= static_cast<int32_t>(TermBox().Text().size())) {
-            TermBox().Select(start, len);
-        }
-        SetStatus(L"Match found.");
     }
 
     void MainWindow::FilterBox_TextChanged(
@@ -582,28 +514,9 @@ namespace winrt::AgentManagerWinUI::implementation
         ShowSelected();
     }
 
-    void MainWindow::ThemeBox_SelectionChanged(
-        IInspectable const &, SelectionChangedEventArgs const &) {
-        int idx = ThemeBox().SelectedIndex();
-        auto theme = ElementTheme::Default;
-        if (idx == 1) {
-            theme = ElementTheme::Dark;
-        } else if (idx == 2) {
-            theme = ElementTheme::Light;
-        }
-        RootGrid().RequestedTheme(theme);
-        try {
-            Windows::Storage::ApplicationData::Current()
-                .LocalSettings()
-                .Values()
-                .Insert(L"ThemeIndex", box_value(idx));
-        } catch (...) {
-        }
-    }
-
     /* Converse path: every key the encoder accepts becomes child input.
-     * App shortcuts (Ctrl+S save, Ctrl+N spawn, Ctrl+F find) ride here
-     * too, mirroring the GTK shell's app-level shortcuts. Paste arrives
+     * App shortcuts (Ctrl+S persist, Ctrl+N spawn) ride here too,
+     * mirroring the GTK shell's app-level shortcuts. Paste arrives
      * via the clipboard (async); the reserve rule keeps Ctrl+Shift+C/V
      * with the native control for copy. */
     void MainWindow::RootGrid_KeyDown(
@@ -617,17 +530,12 @@ namespace winrt::AgentManagerWinUI::implementation
 
         if (ctrl && !alt && !shift) {
             if (vk == 'S') {
-                SaveButton_Click(nullptr, nullptr);
+                PersistCore();
                 args.Handled(true);
                 return;
             }
             if (vk == 'N') {
                 NewButton_Click(nullptr, nullptr);
-                args.Handled(true);
-                return;
-            }
-            if (vk == 'F') {
-                FindBox().Focus(FocusState::Programmatic);
                 args.Handled(true);
                 return;
             }
