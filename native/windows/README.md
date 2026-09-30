@@ -80,6 +80,7 @@ powershell -ExecutionPolicy Bypass `
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
 | Spawn | New-run button / Ctrl+N → `bridge_spawn` at 80x25 |
+| Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
 | Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |
 | Scroll | output TextBox in a `ScrollViewer`, auto-tails; per-run text retained (capped at 100 000 chars) |

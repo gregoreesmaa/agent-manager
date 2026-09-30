@@ -4,6 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:primitives="using:Microsoft.UI.Xaml.Controls.Primitives"
     mc:Ignorable="d"
     Title="Agent Manager">
 
@@ -28,7 +29,11 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="320"/>
+                <ColumnDefinition x:Name="SidebarColumn"
+                                  Width="320"
+                                  MinWidth="220"
+                                  MaxWidth="480"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
@@ -126,9 +131,80 @@
                 </Grid>
             </Border>
 
+            <!-- Resize grip between the roster card and the terminal card:
+                 a keyboard-focusable Thumb so the sidebar resizes by drag
+                 AND by arrow keys (keyboard parity: Left/Right move in 8px
+                 steps, Home/End jump to min/max). Drag deltas go through
+                 SidebarThumb_DragDelta, key presses through
+                 SidebarThumb_KeyDown; both clamp the SidebarColumn width
+                 to 220..480px and persist it in LocalSettings. -->
+            <primitives:Thumb x:Name="SidebarThumb"
+                              Grid.Column="1"
+                              Width="12"
+                              Margin="0,0,0,12"
+                              Background="Transparent"
+                              BorderThickness="0"
+                              DragDelta="SidebarThumb_DragDelta"
+                              KeyDown="SidebarThumb_KeyDown"
+                              AutomationProperties.Name="Resize sidebar"
+                              IsTabStop="True">
+                <ToolTipService.ToolTip>
+                    <ToolTip Content="Drag to resize the sidebar"/>
+                </ToolTipService.ToolTip>
+                <primitives:Thumb.Template>
+                    <ControlTemplate TargetType="primitives:Thumb">
+                        <Grid Background="Transparent">
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="PointerOver">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="FocusStates">
+                                    <VisualState x:Name="Unfocused"/>
+                                    <VisualState x:Name="PointerFocused"/>
+                                    <VisualState x:Name="Focused">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                            <Rectangle x:Name="Grip"
+                                       Width="4"
+                                       RadiusX="2"
+                                       RadiusY="2"
+                                       HorizontalAlignment="Center"
+                                       Fill="{ThemeResource ControlStrongStrokeColorDefaultBrush}"
+                                       Opacity="0"/>
+                        </Grid>
+                    </ControlTemplate>
+                </primitives:Thumb.Template>
+            </primitives:Thumb>
+
             <!-- Terminal card (issue #73): the output surface fills the
                  full height of the right pane; no status label beneath. -->
-            <Border Grid.Column="1"
+            <Border Grid.Column="2"
                     Margin="12,0,12,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
