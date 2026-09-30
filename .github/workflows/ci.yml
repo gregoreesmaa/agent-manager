@@ -252,7 +252,7 @@ jobs:
           msbuild native/windows/AgentManagerWinUI.vcxproj `
             /p:Configuration=Release /p:Platform=x64
           if ($LASTEXITCODE -ne 0) { throw "msbuild build failed" }
-          $exe = 'native/windows/bin/x64/Release/AgentManagerWinUI.exe'
+          $exe = 'native/windows/x64/Release/AgentManagerWinUI/AgentManagerWinUI.exe'
           if (-not (Test-Path $exe)) { throw "WinUI exe missing: $exe" }
       - name: seed mock sessions (hermetic)
         # Same deterministic fake muse-store as the macOS job (three
@@ -305,7 +305,7 @@ jobs:
           $env:XDG_DATA_HOME = Join-Path $seed 'xdg'
           $env:AGENT_MANAGER_CONFIG = Join-Path $seed 'config.json'
           $env:HOME = Join-Path $seed 'home'
-          $exe = 'native/windows/bin/x64/Release/AgentManagerWinUI.exe'
+          $exe = 'native/windows/x64/Release/AgentManagerWinUI/AgentManagerWinUI.exe'
           $png = Join-Path $seed 'shot/windows-mock.png'
           # Re-fresh the working row: Working needs an mtime under 60 s old
           # at launch, and the seed step may be older than that by now.
