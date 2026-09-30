@@ -11,11 +11,10 @@ import SwiftUI
 /// - History: every row shows its project, harness, and last-active age;
 ///   the rows themselves come from discovery + the persisted store, so
 ///   they survive relaunches.
-/// - Theme: System/Dark/Light picker persisted in UserDefaults.
+/// - Theme: follows the system appearance (no manual override).
 /// - Persistence: Save writes the core config; it also runs on quit.
 struct ContentView: View {
     @ObservedObject var state: AppState
-    @AppStorage("appearance") private var appearance = "system"
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -65,9 +64,10 @@ struct ContentView: View {
             // window edge. Keyboard safe area is untouched.
             detailView.ignoresSafeArea(.container, edges: .top)
         }
-        // Repaint the window background when the theme changes mid-run.
-        .onChange(of: colorScheme) { _, scheme in
-            WindowPaint.set(darkMode: scheme == .dark)
+        // Repaint the window background when the system appearance
+        // changes mid-run.
+        .onChange(of: colorScheme) { _, _ in
+            WindowPaint.sync()
         }
         .alert("Session error", isPresented: errorPresented) {
             Button("OK", role: .cancel) { state.pendingError = nil }
@@ -78,22 +78,15 @@ struct ContentView: View {
 
     // MARK: - Sidebar
 
-    /// Save/Theme live in the sidebar footer (Cmd-S, additionally
+    /// Save lives in the sidebar footer (Cmd-S, additionally
     /// wired app-wide in `AgentManagerMacApp.commands`); New Session
-    /// sits at the sidebar top (Cmd-N, likewise app-wide).
+    /// sits at the sidebar top (Cmd-N, likewise app-wide). The shell
+    /// follows the system appearance: no manual theme override.
     private var sidebarFooter: some View {
-        VStack(spacing: 8) {
-            Button("Save", action: state.save)
-                .keyboardShortcut("s", modifiers: .command)
-                .help("Persist the core config (am_core_save)")
-            Picker("Theme", selection: $appearance) {
-                Text("System").tag("system")
-                Text("Dark").tag("dark")
-                Text("Light").tag("light")
-            }
-            .pickerStyle(.segmented)
-        }
-        .padding(8)
+        Button("Save", action: state.save)
+            .keyboardShortcut("s", modifiers: .command)
+            .help("Persist the core config (am_core_save)")
+            .padding(8)
     }
 
     private var title: String {

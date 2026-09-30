@@ -9,7 +9,6 @@ import SwiftUI
 struct AgentManagerMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var appState: AppState
-    @AppStorage("appearance") private var appearance = "system"
 
     init() {
         guard let core = Core() else {
@@ -23,7 +22,6 @@ struct AgentManagerMacApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(state: appState)
-                .preferredColorScheme(scheme)
                 .frame(minWidth: 720, minHeight: 460)
         }
         // No title bar and no toolbar: the window keeps only the
@@ -41,14 +39,6 @@ struct AgentManagerMacApp: App {
             }
         }
     }
-
-    private var scheme: ColorScheme? {
-        switch appearance {
-        case "dark": .dark
-        case "light": .light
-        default: nil
-        }
-    }
 }
 
 /// App delegate: activation fix + config persistence on quit.
@@ -61,18 +51,18 @@ struct AgentManagerMacApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var state: AppState?
 
-    private var windowObserver: NSObjectProtocol?
-
     func applicationDidFinishLaunching(_: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        WindowPaint.set(darkMode: WindowPaint.current())
+        // The manual theme override is gone; drop the stale default.
+        UserDefaults.standard.removeObject(forKey: "appearance")
+        WindowPaint.sync()
         // The WindowGroup window may not exist yet at launch, so paint
         // on every main-window change too.
-        windowObserver = NotificationCenter.default.addObserver(
+        _ = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeMainNotification,
             object: nil, queue: .main
-        ) { _ in WindowPaint.set(darkMode: WindowPaint.current()) }
+        ) { _ in WindowPaint.sync() }
     }
 
     func applicationWillTerminate(_: Notification) {
@@ -85,22 +75,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Window background = terminal background (pure black in Dark Mode,
 /// white in Light Mode), so any gap around the terminal reads as
-/// terminal instead of window gray.
+/// terminal instead of window gray. Follows the system appearance:
+/// no manual theme override.
 enum WindowPaint {
-    static func set(darkMode: Bool) {
+    static func sync() {
+        let darkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         for window in NSApp.windows {
             window.backgroundColor = darkMode ? .black : .white
-        }
-    }
-
-    /// Resolve the theme the same way ContentView does: a forced
-    /// appearance wins, otherwise the system appearance.
-    static func current() -> Bool {
-        switch UserDefaults.standard.string(forKey: "appearance") {
-        case "dark": return true
-        case "light": return false
-        default:
-            return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         }
     }
 }
