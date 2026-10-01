@@ -32,6 +32,13 @@ namespace winrt::AgentManagerWinUI::implementation
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const
                 &args);
+        void SidebarThumb_DragDelta(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::Controls::Primitives::DragDeltaEventArgs const
+                &args);
+        void SidebarThumb_KeyDown(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args);
         void RootGrid_KeyDown(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args);
@@ -57,6 +64,10 @@ namespace winrt::AgentManagerWinUI::implementation
         void ForwardBytes(char const *data, std::size_t len);
         std::wstring SelectedId();
         LivePty *SelectedLive();
+        /* Resizable sidebar: read/apply helpers for the SidebarColumn
+         * width behind the Thumb grip. */
+        double SidebarWidthPx();
+        void SetSidebarWidth(double w);
         fire_and_forget GetContentText(
             Windows::ApplicationModel::DataTransfer::DataPackageView data);
 

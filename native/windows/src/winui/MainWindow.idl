@@ -13,6 +13,12 @@ namespace AgentManagerWinUI
         void Roster_SelectionChanged(
             Object sender,
             Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs args);
+        void SidebarThumb_DragDelta(
+            Object sender,
+            Microsoft.UI.Xaml.Controls.Primitives.DragDeltaEventArgs args);
+        void SidebarThumb_KeyDown(
+            Object sender,
+            Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);
         void RootGrid_KeyDown(
             Object sender,
             Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);

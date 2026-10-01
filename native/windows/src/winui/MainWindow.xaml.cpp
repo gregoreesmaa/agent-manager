@@ -58,6 +58,16 @@ namespace winrt::AgentManagerWinUI::implementation
      * accumulate-forever buffer would leak memory over long runs). */
     constexpr std::size_t kShownCap = 100000;
     constexpr const char *kFeedClear = AM_FEED_CLEAR;
+    /* Resizable sidebar: the Thumb between the roster card and the
+     * terminal card drives SidebarColumn (the XAML default is 320px;
+     * clamped to the GTK shell's 220px floor and a 480px ceiling so
+     * long titles stay glanceable). The width persists in
+     * LocalSettings (local-only trust: plain local store, no
+     * account, no sync). */
+    constexpr double kSidebarMin = 220.0;
+    constexpr double kSidebarMax = 480.0;
+    constexpr double kSidebarKeyStep = 8.0;
+    constexpr wchar_t const *kSidebarWidthKey = L"SidebarWidth";
 
     static std::wstring to_wide(std::string const &s) {
         if (s.empty()) {
@@ -140,6 +150,24 @@ namespace winrt::AgentManagerWinUI::implementation
             /* Pre-Windows 11 host: chrome stays default. */
         }
         m_core = bridge_core_new();
+
+        /* Restore the persisted sidebar width (LocalSettings is a
+         * plain local store — local-only trust: no account, no
+         * sync). Out-of-range values fall back to the 320px XAML
+         * default. */
+        try {
+            auto values = Windows::Storage::ApplicationData::Current()
+                              .LocalSettings()
+                              .Values();
+            if (values.HasKey(kSidebarWidthKey)) {
+                double w =
+                    unbox_value<double>(values.Lookup(kSidebarWidthKey));
+                if (w >= kSidebarMin && w <= kSidebarMax) {
+                    SidebarColumn().Width(GridLengthHelper::FromPixels(w));
+                }
+            }
+        } catch (...) {
+        }
 
         m_timer = DispatcherQueue().CreateTimer();
         m_timer.Interval(
@@ -512,6 +540,68 @@ namespace winrt::AgentManagerWinUI::implementation
         }
         m_syncing = false;
         ShowSelected();
+    }
+
+    /* Current sidebar width in pixels; 0 when the column is star/auto
+     * (never expected — the XAML pins pixels — but guarded anyway). */
+    double MainWindow::SidebarWidthPx() {
+        return SidebarColumn().ActualWidth();
+    }
+
+    /* Clamp + apply + persist one sidebar width. Persistence rides
+     * LocalSettings (local-only trust: plain local store). */
+    void MainWindow::SetSidebarWidth(double w) {
+        double clamped = std::clamp(w, kSidebarMin, kSidebarMax);
+        SidebarColumn().Width(GridLengthHelper::FromPixels(clamped));
+        try {
+            Windows::Storage::ApplicationData::Current()
+                .LocalSettings()
+                .Values()
+                .Insert(kSidebarWidthKey, box_value(clamped));
+        } catch (...) {
+        }
+    }
+
+    /* Thumb drag: HorizontalChange is already in DIPs along the drag
+     * axis, so it adds straight onto the column width. */
+    void MainWindow::SidebarThumb_DragDelta(
+        IInspectable const &,
+        Controls::Primitives::DragDeltaEventArgs const &args) {
+        SetSidebarWidth(SidebarWidthPx() + args.HorizontalChange());
+        args.Handled(true);
+    }
+
+    /* Keyboard parity for the grip (fail-visible + non-color cue: the
+     * Thumb template's grip lights up on focus/hover/press, and the
+     * thumb exposes an automation name + tooltip): Left/Right nudge
+     * in 8px steps, Home/End jump to min/max. Up/Down mirror
+     * Left/Right for screen-reader arrow conventions; anything else
+     * stays with the shell's global KeyDown handler. */
+    void MainWindow::SidebarThumb_KeyDown(
+        IInspectable const &, KeyRoutedEventArgs const &args) {
+        double w = SidebarWidthPx();
+        switch (args.Key()) {
+        case Windows::System::VirtualKey::Left:
+        case Windows::System::VirtualKey::Up:
+            SetSidebarWidth(w - kSidebarKeyStep);
+            args.Handled(true);
+            return;
+        case Windows::System::VirtualKey::Right:
+        case Windows::System::VirtualKey::Down:
+            SetSidebarWidth(w + kSidebarKeyStep);
+            args.Handled(true);
+            return;
+        case Windows::System::VirtualKey::Home:
+            SetSidebarWidth(kSidebarMin);
+            args.Handled(true);
+            return;
+        case Windows::System::VirtualKey::End:
+            SetSidebarWidth(kSidebarMax);
+            args.Handled(true);
+            return;
+        default:
+            return;
+        }
     }
 
     /* Converse path: every key the encoder accepts becomes child input.
