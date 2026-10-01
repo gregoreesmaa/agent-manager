@@ -108,6 +108,10 @@ int bridge_note_launch(AmCore *core, const char *cli, const char *cwd,
     return rc;
 }
 
+void bridge_pty_free(AmPty *pty) {
+    am_pty_free(pty);
+}
+
 int bridge_pump(AmPty *pty) {
     return am_pump(pty) ? 1 : 0;
 }
