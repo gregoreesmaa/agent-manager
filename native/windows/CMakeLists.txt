@@ -35,8 +35,12 @@ include_directories(
 # The Rust staticlib's Windows link closure (sockets, env, crypto, ntdll).
 set(SYS_LIBS ${CORE_LIB} ws2_32 userenv bcrypt ntdll)
 
-# Pure-logic reconciler unit tests: no WinUI needed, runs anywhere.
-add_executable(am-win-feed-test src/feed.c src/feed_test.c)
+# Shared-presentation contract tests over the real staticlib: the feed
+# reconciler, roster match, and age label live in the core now
+# (`src/shell_shared.rs`), so this pins the C ABI edge instead of a
+# vendored copy. No WinUI needed, runs anywhere MSVC does.
+add_executable(am-win-feed-test src/feed_test.c src/core_bridge.c)
+target_link_libraries(am-win-feed-test PRIVATE ${SYS_LIBS})
 add_test(NAME feed COMMAND am-win-feed-test)
 
 # 2D-launch picker logic tests (catalog/recents/folder/yolo/preview):

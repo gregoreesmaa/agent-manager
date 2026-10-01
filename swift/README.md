@@ -24,7 +24,11 @@ Run the app with `swift run` or `.build/debug/AgentManagerMac`.
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch |
+<<<<<<< HEAD
 | Spawn | split-button 2D launch: `Repeat last session` (Cmd-N) replays the last folder × CLI + yolo via `am_spawn_launch` (null CLI/folder); `Choose Folder, CLI, Options…` (Cmd-Shift-N) opens the picker sheet (folder field + recents from `am_recent_json`, CLI radio over `am_clis_json`, tri-state yolo, spawn preview) → `am_spawn_launch` + `am_note_launch` |
+=======
+| Spawn | `am_spawn` (sidebar New Session button / detail Spawn button / empty-pane New CTA, Cmd-N); with no unstarted row (empty roster included) New Session mints a shell-local terminal instead (Windows parity) |
+>>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
 | Converse | keystrokes `send` -> `am_write`; output `am_pump` -> `am_screen_text` -> view feed |
 | Select / copy / paste / scroll | native SwiftTerm view and scrollback |
 | Search / filter | sidebar search field; terminal find via Cmd-F (SwiftTerm find bar) |

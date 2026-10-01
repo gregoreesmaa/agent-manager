@@ -28,6 +28,7 @@ core_lib = cc.find_library('agent_manager', dirs: core_lib_dir, required: true)
 core_inc = include_directories('../../include')
 src_inc = include_directories('src')
 
+<<<<<<< HEAD
 # Pure-logic reconciler unit tests: no GTK needed, runs anywhere.
 feed_test_exe = executable('am-feed-test',
   'src/feed.c', 'src/feed_test.c',
@@ -45,11 +46,24 @@ picker_test_exe = executable('am-picker-test',
   install: false)
 test('picker', picker_test_exe)
 
+=======
+>>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
 # The Rust staticlib's own link closure (sockets, threads, math).
 sys_libs = [core_lib,
             cc.find_library('dl', required: false),
             cc.find_library('pthread', required: false),
             cc.find_library('m', required: false)]
+
+# Shared-presentation contract tests over the real staticlib: the feed
+# reconciler, roster match, and age label live in the core now
+# (`src/shell_shared.rs`), so this pins the C ABI edge instead of a
+# vendored copy. No GTK needed, runs anywhere.
+feed_test_exe = executable('am-feed-test',
+  'src/feed_test.c',
+  include_directories: [src_inc, core_inc],
+  dependencies: sys_libs,
+  install: false)
+test('feed', feed_test_exe)
 
 # Headless C ABI runtime check: no display needed, CI-greppable output.
 smoke_exe = executable('am-gtk-smoke',
@@ -64,7 +78,11 @@ test('smoke-live', find_program('tests/smoke_live.sh'),
 
 # The GTK shell itself.
 executable('agent-manager-gtk',
+<<<<<<< HEAD
   'src/main.c', 'src/core_bridge.c', 'src/feed.c', 'src/picker.c',
+=======
+  'src/main.c', 'src/core_bridge.c',
+>>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
   include_directories: [src_inc, core_inc],
   dependencies: [gtk4, adw, vte] + sys_libs,
   install: true)

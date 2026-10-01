@@ -34,6 +34,11 @@ final class AppState: ObservableObject {
     private var feedSeq: UInt64 = 0
     private var grid = (cols: defaultCols, rows: defaultRows)
     private var timer: Timer?
+    /// Shell-local terminal ids (`local-N`, Windows parity): New Session
+    /// with no unstarted roster row (empty roster included) still opens a
+    /// live terminal through the core. Locals pump/converse like roster
+    /// rows but never join the roster lists.
+    private var localNext = 1
 
     init(core: Core) {
         self.core = core
@@ -88,14 +93,22 @@ final class AppState: ObservableObject {
 
     func spawnSelected() {
         guard let id = selection, ptys[id] == nil else { return }
+        spawn(id: id)
+    }
+
+    /// Spawn one live terminal through the core under `id`, selected on
+    /// success. Shared by roster rows and shell-local terminals alike.
+    private func spawn(id: String) {
         do {
             ptys[id] = try core.spawn(cols: grid.cols, rows: grid.rows)
             fedText[id] = ""
+            selection = id
         } catch {
             pendingError = error.localizedDescription
         }
     }
 
+<<<<<<< HEAD
     // MARK: - 2D launch (folder × CLI + yolo)
 
     /// Split-button main action: repeat the last launch instantly (the
@@ -111,6 +124,60 @@ final class AppState: ObservableObject {
         } catch {
             pendingError = error.localizedDescription
         }
+=======
+    /// True for shell-local terminal ids (`local-N`): live terminals
+    /// with no roster row (Windows #84 parity).
+    func isLocalId(_ id: String) -> Bool { id.hasPrefix("local-") }
+
+    private func mintLocalId() -> String {
+        defer { localNext += 1 }
+        var id = "local-\(localNext)"
+        while ptys[id] != nil {
+            localNext += 1
+            id = "local-\(localNext)"
+        }
+        return id
+    }
+
+    private func firstUnstartedRowId() -> String? {
+        filteredRows.first { ptys[$0.id] == nil }?.id
+            ?? rows.first { ptys[$0.id] == nil }?.id
+    }
+
+    /// New Session entry point (issue #74, WinUI #71 parity): start
+    /// the selected row's child through the core and keep it
+    /// selected. With no selection yet (fresh launch, or the filter
+    /// cleared it), take the first unstarted visible row so one click
+    /// always starts something. With no unstarted row at all (empty
+    /// roster included) or an already-live roster selection, mint a
+    /// shell-local terminal instead — the empty roster is a starting
+    /// point, not a dead end. A live local stays put (no orphan
+    /// duplicates: locals have no roster row to return to).
+    func newSession() {
+        if let id = selection, isLocalId(id) {
+            // A live local terminal is already the newest thing open:
+            // keep it selected rather than orphaning it behind a newer
+            // one (locals never die in-shell, so this is always live).
+            return
+        }
+        if let id = selection, ptys[id] != nil {
+            // Already-live roster selection: mint a shell-local
+            // terminal, so one click always opens something.
+            spawn(id: mintLocalId())
+            return
+        }
+        if selection == nil, let id = firstUnstartedRowId() {
+            spawn(id: id)
+            return
+        }
+        if let id = selection {
+            // Unstarted roster selection.
+            spawn(id: id)
+            return
+        }
+        // Empty roster, cleared filter, or every row already live.
+        spawn(id: mintLocalId())
+>>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
     }
 
     /// Attach a freshly spawned PTY under a new local id (native shells

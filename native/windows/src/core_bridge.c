@@ -12,6 +12,7 @@
 
 #include "core_bridge.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -134,6 +135,27 @@ void bridge_resize(AmPty *pty, unsigned cols, unsigned rows) {
 
 char *bridge_screen_text(const AmPty *pty) {
     return am_screen_text(pty);
+}
+
+char *bridge_feed_delta(const char *old_text, const char *new_text) {
+    return am_feed_delta(old_text, new_text);
+}
+
+int bridge_roster_matches(const char *title, const char *project,
+                           const char *id, const char *query) {
+    return am_roster_matches(title, project, id, query);
+}
+
+char *bridge_relative_age(long long now_secs, long long then_secs) {
+    return am_relative_age((int64_t)now_secs, (int64_t)then_secs);
+}
+
+int bridge_link_count(const AmCore *core, size_t row) {
+    return am_link_count(core, row);
+}
+
+long long bridge_last_active(const AmCore *core, size_t row) {
+    return (long long)am_last_active(core, row);
 }
 
 char *bridge_last_error(void) {

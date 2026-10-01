@@ -151,7 +151,6 @@
     <ClInclude Include="src\winui\App.xaml.h" />
     <ClInclude Include="src\winui\MainWindow.xaml.h" />
     <ClInclude Include="src\core_bridge.h" />
-    <ClInclude Include="src\feed.h" />
     <ClInclude Include="src\terminal_keys.h" />
     <ClInclude Include="src\json_mini.h" />
     <ClCompile Include="src\winui\pch.cpp">
@@ -190,10 +189,6 @@
 
     <ClCompile Include="src\winui\MainWindow.xaml.cpp" />
     <ClCompile Include="src\core_bridge.c">
-      <CompileAs>CompileAsC</CompileAs>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-    </ClCompile>
-    <ClCompile Include="src\feed.c">
       <CompileAs>CompileAsC</CompileAs>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
