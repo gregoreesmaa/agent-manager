@@ -289,7 +289,14 @@ private struct NewSessionSheet: View {
         .frame(minWidth: 360)
         .onAppear {
             clis = state.pickerCatalog()
-            if !clis.contains(where: { $0.id == cliId }) {
+            // Preselect the first available CLI (catalog order); a
+            // configured-but-missing default stays listed but never
+            // preselected — Spawn would fail for certain.
+            if let firstUp = clis.first(where: { $0.available }) {
+                if !clis.contains(where: { $0.id == cliId && $0.available }) {
+                    cliId = firstUp.id
+                }
+            } else {
                 cliId = clis.first?.id ?? "muse"
             }
             folder = state.pickerRecents().first ?? ""

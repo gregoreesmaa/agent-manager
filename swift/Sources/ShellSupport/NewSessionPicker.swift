@@ -24,7 +24,7 @@ struct NewSessionPicker {
 
     /// Per-run yolo choice: safe by default, explicit per run, never
     /// auto-written back to the config.
-    enum YoloChoice: Equatable {
+    enum YoloChoice: Hashable {
         case useDefault
         case forceOn
         case forceOff

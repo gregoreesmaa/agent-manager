@@ -479,7 +479,11 @@ static void on_spawn(GtkButton *btn, gpointer data) {
     free(sh->selected);
     sh->selected = strdup(id);
     bridge_note_launch(sh->core, NULL, NULL, NULL);
-    char *preview = picker_preview(NULL, NULL, 0);
+    /* Name the effective CLI so the repeat is verifiable (the null
+     * form resolves last-used / configured / autodetected). */
+    char *eff = bridge_effective_cli(sh->core, NULL);
+    char *preview = picker_preview(eff ? eff : NULL, NULL, 0);
+    bridge_string_free(eff);
     toast(sh, preview ? preview : "Session started.");
     free(preview);
     show_selected_in_terminal(sh);
