@@ -4,14 +4,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:primitives="using:Microsoft.UI.Xaml.Controls.Primitives"
     mc:Ignorable="d"
     Title="Agent Manager">
 
     <!-- Native Windows 11 look (issue #72): Segoe Variable type ramp (see App.xaml) over
          the Mica system backdrop (see code-behind), card surfaces with
          rounded corners, 12px outer / 8px inner spacing. Every brush is a
-         ThemeResource, so the System/Dark/Light setting repaints the whole
-         window. Same controls and handlers as before: no behavior change. -->
+         ThemeResource, so the window follows the system theme. Same controls and handlers as before: no behavior change. -->
     <Grid x:Name="RootGrid" KeyDown="RootGrid_KeyDown">
         <Grid.RowDefinitions>
             <RowDefinition Height="32"/>
@@ -29,16 +29,19 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="320"/>
+                <ColumnDefinition x:Name="SidebarColumn"
+                                  Width="320"
+                                  MinWidth="220"
+                                  MaxWidth="480"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <!-- Roster card (issue #73): New Session button, session search,
                  then live runs grouped needs-input / idle / working with
-                 non-live history collapsed at the end; save, theme, find,
-                 and the status line sit below the groups. One shared
-                 SelectionChanged handler keeps a single selection across
-                 the four lists. -->
+                 non-live history collapsed at the end; the status line
+                 sits below the groups. One shared SelectionChanged handler
+                 keeps a single selection across the four lists. -->
             <Border Grid.Column="0"
                     Margin="12,0,0,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -51,10 +54,6 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0"
@@ -120,43 +119,92 @@
                             </Expander>
                         </StackPanel>
                     </ScrollViewer>
-                    <Button x:Name="SaveButton"
-                            Grid.Row="4"
-                            Content="Save"
-                            HorizontalAlignment="Stretch"
-                            Click="SaveButton_Click"/>
-                    <ComboBox x:Name="ThemeBox"
-                              Grid.Row="5"
-                              Header="Theme"
-                              HorizontalAlignment="Stretch"
-                              SelectionChanged="ThemeBox_SelectionChanged">
-                        <x:String>System</x:String>
-                        <x:String>Dark</x:String>
-                        <x:String>Light</x:String>
-                    </ComboBox>
-                    <TextBox x:Name="FindBox"
-                             Grid.Row="6"
-                             PlaceholderText="Find in terminal"/>
-                    <Button x:Name="FindNextButton"
-                            Grid.Row="7"
-                            Content="Find next"
-                            HorizontalAlignment="Stretch"
-                            Click="FindNextButton_Click"/>
                     <!-- Status line: failures (spawn, save, clipboard)
                          must stay visible (fail-visible principle), so it
                          lives at the sidebar bottom now that the terminal
                          fills the right pane. -->
                     <TextBlock x:Name="StatusText"
-                               Grid.Row="8"
+                               Grid.Row="4"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
                 </Grid>
             </Border>
 
+            <!-- Resize grip between the roster card and the terminal card:
+                 a keyboard-focusable Thumb so the sidebar resizes by drag
+                 AND by arrow keys (keyboard parity: Left/Right move in 8px
+                 steps, Home/End jump to min/max). Drag deltas go through
+                 SidebarThumb_DragDelta, key presses through
+                 SidebarThumb_KeyDown; both clamp the SidebarColumn width
+                 to 220..480px and persist it in LocalSettings. -->
+            <primitives:Thumb x:Name="SidebarThumb"
+                              Grid.Column="1"
+                              Width="12"
+                              Margin="0,0,0,12"
+                              Background="Transparent"
+                              BorderThickness="0"
+                              DragDelta="SidebarThumb_DragDelta"
+                              KeyDown="SidebarThumb_KeyDown"
+                              AutomationProperties.Name="Resize sidebar"
+                              IsTabStop="True">
+                <ToolTipService.ToolTip>
+                    <ToolTip Content="Drag to resize the sidebar"/>
+                </ToolTipService.ToolTip>
+                <primitives:Thumb.Template>
+                    <ControlTemplate TargetType="primitives:Thumb">
+                        <Grid Background="Transparent">
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="PointerOver">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="FocusStates">
+                                    <VisualState x:Name="Unfocused"/>
+                                    <VisualState x:Name="PointerFocused"/>
+                                    <VisualState x:Name="Focused">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Grip"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                            <Rectangle x:Name="Grip"
+                                       Width="4"
+                                       RadiusX="2"
+                                       RadiusY="2"
+                                       HorizontalAlignment="Center"
+                                       Fill="{ThemeResource ControlStrongStrokeColorDefaultBrush}"
+                                       Opacity="0"/>
+                        </Grid>
+                    </ControlTemplate>
+                </primitives:Thumb.Template>
+            </primitives:Thumb>
+
             <!-- Terminal card (issue #73): the output surface fills the
                  full height of the right pane; no status label beneath. -->
-            <Border Grid.Column="1"
+            <Border Grid.Column="2"
                     Margin="12,0,12,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

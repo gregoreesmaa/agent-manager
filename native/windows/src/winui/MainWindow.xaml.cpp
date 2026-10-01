@@ -14,12 +14,10 @@
 //   copy/paste  native TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via
 //               Clipboard -> bridge_write; Ctrl+C forwards ETX (interrupts)
 //   scroll      output TextBox in a ScrollViewer, per-run text retained
-//   search      sidebar search box filters every group; find box selects the
-//               next case-insensitive match in the terminal (Ctrl+F focuses)
+//   search      sidebar search box filters every group
 //   history     collapsed group of rows with no live PTY, restored every
 //               launch; per-run output retained while the window lives
-//   theme       System/Dark/Light via RequestedTheme, kept in LocalSettings
-//   persist     Save button / Ctrl+S / close hook -> bridge_core_save
+//   persist     Ctrl+S / close hook -> bridge_core_save (no sidebar control)
 //
 // ConPTY note: no console is ever created on the WinUI side. The core's
 // EmbeddedPty on Windows is ConPTY-backed (portable-pty uses the native
@@ -39,8 +37,7 @@
 #include "terminal_keys.h"
 #include "json_mini.h"
 
-#include <algorithm>
-#include <cctype>
+#include <utility>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -61,6 +58,16 @@ namespace winrt::AgentManagerWinUI::implementation
      * accumulate-forever buffer would leak memory over long runs). */
     constexpr std::size_t kShownCap = 100000;
     constexpr const char *kFeedClear = AM_FEED_CLEAR;
+    /* Resizable sidebar: the Thumb between the roster card and the
+     * terminal card drives SidebarColumn (the XAML default is 320px;
+     * clamped to the GTK shell's 220px floor and a 480px ceiling so
+     * long titles stay glanceable). The width persists in
+     * LocalSettings (local-only trust: plain local store, no
+     * account, no sync). */
+    constexpr double kSidebarMin = 220.0;
+    constexpr double kSidebarMax = 480.0;
+    constexpr double kSidebarKeyStep = 8.0;
+    constexpr wchar_t const *kSidebarWidthKey = L"SidebarWidth";
 
     static std::wstring to_wide(std::string const &s) {
         if (s.empty()) {
@@ -144,28 +151,22 @@ namespace winrt::AgentManagerWinUI::implementation
         }
         m_core = bridge_core_new();
 
-        /* Theme: LocalSettings is a plain local store (local-only trust:
-         * no account, no sync), mirroring the GTK shell's plain-file
-         * pref. Missing key = System, matching first launch. */
+        /* Restore the persisted sidebar width (LocalSettings is a
+         * plain local store — local-only trust: no account, no
+         * sync). Out-of-range values fall back to the 320px XAML
+         * default. */
         try {
-            auto settings =
-                Windows::Storage::ApplicationData::Current().LocalSettings();
-            auto values = settings.Values();
-            if (values.HasKey(L"ThemeIndex")) {
-                int idx = unbox_value<int>(values.Lookup(L"ThemeIndex"));
-                ThemeBox().SelectedIndex(idx);
-                auto theme = ElementTheme::Default;
-                if (idx == 1) {
-                    theme = ElementTheme::Dark;
-                } else if (idx == 2) {
-                    theme = ElementTheme::Light;
+            auto values = Windows::Storage::ApplicationData::Current()
+                              .LocalSettings()
+                              .Values();
+            if (values.HasKey(kSidebarWidthKey)) {
+                double w =
+                    unbox_value<double>(values.Lookup(kSidebarWidthKey));
+                if (w >= kSidebarMin && w <= kSidebarMax) {
+                    SidebarColumn().Width(GridLengthHelper::FromPixels(w));
                 }
-                RootGrid().RequestedTheme(theme);
-            } else {
-                ThemeBox().SelectedIndex(0);
             }
         } catch (...) {
-            ThemeBox().SelectedIndex(0);
         }
 
         m_timer = DispatcherQueue().CreateTimer();
@@ -543,8 +544,7 @@ namespace winrt::AgentManagerWinUI::implementation
         SetStatus(local ? L"New terminal started." : L"Session started.");
     }
 
-    void MainWindow::SaveButton_Click(IInspectable const &,
-                                      RoutedEventArgs const &) {
+    void MainWindow::PersistCore() {
         if (!m_core) {
             return;
         }
@@ -557,46 +557,6 @@ namespace winrt::AgentManagerWinUI::implementation
             return;
         }
         SetStatus(L"Saved.");
-    }
-
-    void MainWindow::FindNextButton_Click(IInspectable const &,
-                                          RoutedEventArgs const &) {
-        LivePty *lp = SelectedLive();
-        if (!lp) {
-            return;
-        }
-        std::string needle = to_utf8(FindBox().Text());
-        if (needle.empty()) {
-            return;
-        }
-        /* Literal, case-insensitive search over the retained text. */
-        std::string hay = lp->shown.empty() ? lp->last_snapshot : lp->shown;
-        std::string hay_low = hay;
-        std::string ndl_low = needle;
-        std::transform(hay_low.begin(), hay_low.end(), hay_low.begin(),
-                       [](unsigned char c) {
-                           return static_cast<char>(std::tolower(c));
-                       });
-        std::transform(ndl_low.begin(), ndl_low.end(), ndl_low.begin(),
-                       [](unsigned char c) {
-                           return static_cast<char>(std::tolower(c));
-                       });
-        std::size_t at = hay_low.find(ndl_low);
-        if (at == std::string::npos) {
-            SetStatus(L"No match.");
-            return;
-        }
-        /* TextBox indices are UTF-16 code units; snapshots here are
-         * byte-compared, so clamp the span into the control text. */
-        TermBox().Focus(FocusState::Programmatic);
-        int32_t start = static_cast<int32_t>(
-            std::min<std::size_t>(at, 1000000000));
-        int32_t len = static_cast<int32_t>(
-            std::min<std::size_t>(needle.size(), 1000000000));
-        if (start + len <= static_cast<int32_t>(TermBox().Text().size())) {
-            TermBox().Select(start, len);
-        }
-        SetStatus(L"Match found.");
     }
 
     void MainWindow::FilterBox_TextChanged(
@@ -637,28 +597,72 @@ namespace winrt::AgentManagerWinUI::implementation
         ShowSelected();
     }
 
-    void MainWindow::ThemeBox_SelectionChanged(
-        IInspectable const &, SelectionChangedEventArgs const &) {
-        int idx = ThemeBox().SelectedIndex();
-        auto theme = ElementTheme::Default;
-        if (idx == 1) {
-            theme = ElementTheme::Dark;
-        } else if (idx == 2) {
-            theme = ElementTheme::Light;
-        }
-        RootGrid().RequestedTheme(theme);
+    /* Current sidebar width in pixels; 0 when the column is star/auto
+     * (never expected — the XAML pins pixels — but guarded anyway). */
+    double MainWindow::SidebarWidthPx() {
+        return SidebarColumn().ActualWidth();
+    }
+
+    /* Clamp + apply + persist one sidebar width. Persistence rides
+     * LocalSettings (local-only trust: plain local store). */
+    void MainWindow::SetSidebarWidth(double w) {
+        double clamped = std::clamp(w, kSidebarMin, kSidebarMax);
+        SidebarColumn().Width(GridLengthHelper::FromPixels(clamped));
         try {
             Windows::Storage::ApplicationData::Current()
                 .LocalSettings()
                 .Values()
-                .Insert(L"ThemeIndex", box_value(idx));
+                .Insert(kSidebarWidthKey, box_value(clamped));
         } catch (...) {
         }
     }
 
+    /* Thumb drag: HorizontalChange is already in DIPs along the drag
+     * axis, so it adds straight onto the column width. (Unlike
+     * KeyRoutedEventArgs, DragDeltaEventArgs carries no Handled flag
+     * — there is nothing to mark: the event has no routing to stop.) */
+    void MainWindow::SidebarThumb_DragDelta(
+        IInspectable const &,
+        Controls::Primitives::DragDeltaEventArgs const &args) {
+        SetSidebarWidth(SidebarWidthPx() + args.HorizontalChange());
+    }
+
+    /* Keyboard parity for the grip (fail-visible + non-color cue: the
+     * Thumb template's grip lights up on focus/hover/press, and the
+     * thumb exposes an automation name + tooltip): Left/Right nudge
+     * in 8px steps, Home/End jump to min/max. Up/Down mirror
+     * Left/Right for screen-reader arrow conventions; anything else
+     * stays with the shell's global KeyDown handler. */
+    void MainWindow::SidebarThumb_KeyDown(
+        IInspectable const &, KeyRoutedEventArgs const &args) {
+        double w = SidebarWidthPx();
+        switch (args.Key()) {
+        case Windows::System::VirtualKey::Left:
+        case Windows::System::VirtualKey::Up:
+            SetSidebarWidth(w - kSidebarKeyStep);
+            args.Handled(true);
+            return;
+        case Windows::System::VirtualKey::Right:
+        case Windows::System::VirtualKey::Down:
+            SetSidebarWidth(w + kSidebarKeyStep);
+            args.Handled(true);
+            return;
+        case Windows::System::VirtualKey::Home:
+            SetSidebarWidth(kSidebarMin);
+            args.Handled(true);
+            return;
+        case Windows::System::VirtualKey::End:
+            SetSidebarWidth(kSidebarMax);
+            args.Handled(true);
+            return;
+        default:
+            return;
+        }
+    }
+
     /* Converse path: every key the encoder accepts becomes child input.
-     * App shortcuts (Ctrl+S save, Ctrl+N spawn, Ctrl+F find) ride here
-     * too, mirroring the GTK shell's app-level shortcuts. Paste arrives
+     * App shortcuts (Ctrl+S persist, Ctrl+N spawn) ride here too,
+     * mirroring the GTK shell's app-level shortcuts. Paste arrives
      * via the clipboard (async); the reserve rule keeps Ctrl+Shift+C/V
      * with the native control for copy. */
     void MainWindow::RootGrid_KeyDown(
@@ -672,17 +676,12 @@ namespace winrt::AgentManagerWinUI::implementation
 
         if (ctrl && !alt && !shift) {
             if (vk == 'S') {
-                SaveButton_Click(nullptr, nullptr);
+                PersistCore();
                 args.Handled(true);
                 return;
             }
             if (vk == 'N') {
                 NewButton_Click(nullptr, nullptr);
-                args.Handled(true);
-                return;
-            }
-            if (vk == 'F') {
-                FindBox().Focus(FocusState::Programmatic);
                 args.Handled(true);
                 return;
             }

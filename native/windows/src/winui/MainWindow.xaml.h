@@ -24,12 +24,7 @@ namespace winrt::AgentManagerWinUI::implementation
         void NewButton_Click(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::RoutedEventArgs const &args);
-        void SaveButton_Click(
-            Windows::Foundation::IInspectable const &sender,
-            Microsoft::UI::Xaml::RoutedEventArgs const &args);
-        void FindNextButton_Click(
-            Windows::Foundation::IInspectable const &sender,
-            Microsoft::UI::Xaml::RoutedEventArgs const &args);
+        void PersistCore();
         void FilterBox_TextChanged(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::TextChangedEventArgs const &args);
@@ -37,10 +32,13 @@ namespace winrt::AgentManagerWinUI::implementation
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const
                 &args);
-        void ThemeBox_SelectionChanged(
+        void SidebarThumb_DragDelta(
             Windows::Foundation::IInspectable const &sender,
-            Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const
+            Microsoft::UI::Xaml::Controls::Primitives::DragDeltaEventArgs const
                 &args);
+        void SidebarThumb_KeyDown(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args);
         void RootGrid_KeyDown(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args);
@@ -74,6 +72,10 @@ namespace winrt::AgentManagerWinUI::implementation
         void ForwardBytes(char const *data, std::size_t len);
         std::wstring SelectedId();
         LivePty *SelectedLive();
+        /* Resizable sidebar: read/apply helpers for the SidebarColumn
+         * width behind the Thumb grip. */
+        double SidebarWidthPx();
+        void SetSidebarWidth(double w);
         fire_and_forget GetContentText(
             Windows::ApplicationModel::DataTransfer::DataPackageView data);
 

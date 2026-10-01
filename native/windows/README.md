@@ -80,13 +80,13 @@ powershell -ExecutionPolicy Bypass `
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
 | Spawn | New-run button / Ctrl+N → `bridge_spawn` at 80x25 |
+| Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
 | Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |
 | Scroll | output TextBox in a `ScrollViewer`, auto-tails; per-run text retained (capped at 100 000 chars) |
-| Search / filter | sidebar search box filters every roster group; find box + Ctrl+F selects the next case-insensitive terminal match |
+| Search / filter | sidebar search box filters every roster group |
 | History | collapsed group of rows with no live PTY, restored every launch; per-run output retained while the window lives |
-| Theme | System/Dark/Light (`RequestedTheme`), kept in `LocalSettings` — local-only, no sync |
-| Persistence | Save button / Ctrl+S / close hook → `bridge_core_save` |
+| Persistence | Ctrl+S / close hook → `bridge_core_save` |
 
 ## Notes
 
@@ -99,7 +99,7 @@ powershell -ExecutionPolicy Bypass `
   the Linux ESC-prefix parity.
 - Spawning runs the configured `muse` command; without it on PATH the
   shell reports the core's error message in the status bar.
-- Styling (issue #72) targets the Windows App SDK gallery look: Mica system backdrop, content extended into the title bar with a custom drag region, card surfaces with rounded corners, Segoe UI Variable type ramp, and ThemeResource brushes throughout so the System/Dark/Light setting repaints the whole window. No behavior changes.
+- Styling (issue #72) targets the Windows App SDK gallery look: Mica system backdrop, content extended into the title bar with a custom drag region, card surfaces with rounded corners, Segoe UI Variable type ramp, and ThemeResource brushes throughout so the window follows the system theme. No behavior changes.
 - This directory must stay free of the macOS GUI framework in code and
   prose alike (CI enforces it with a literal grep gate): the Windows
   shell binds the C ABI only.

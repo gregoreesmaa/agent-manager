@@ -7,19 +7,18 @@ namespace AgentManagerWinUI
 
         void NewButton_Click(
             Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
-        void SaveButton_Click(
-            Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
-        void FindNextButton_Click(
-            Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
         void FilterBox_TextChanged(
             Object sender,
             Microsoft.UI.Xaml.Controls.TextChangedEventArgs args);
         void Roster_SelectionChanged(
             Object sender,
             Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs args);
-        void ThemeBox_SelectionChanged(
+        void SidebarThumb_DragDelta(
             Object sender,
-            Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs args);
+            Microsoft.UI.Xaml.Controls.Primitives.DragDeltaEventArgs args);
+        void SidebarThumb_KeyDown(
+            Object sender,
+            Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);
         void RootGrid_KeyDown(
             Object sender,
             Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);

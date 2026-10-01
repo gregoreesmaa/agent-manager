@@ -38,7 +38,7 @@ right shell — each owns its own sidebar/chrome.
     `Sources/AgentManagerMac/ContentView.swift` with a hidden title bar
     and no toolbar; the detail ignores the top container safe area so
     the terminal starts at the window edge. Terminal and window are
-    pure black / white per theme (explicit appearance resolution).
+    pure black / white following the system appearance.
     Build with `cargo build --lib` then `cd swift && swift build`;
     run `.build/debug/AgentManagerMac`.
   - `native/linux/` — GTK4/libadwaita + VTE shell over the same C ABI.
