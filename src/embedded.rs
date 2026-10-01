@@ -266,6 +266,19 @@ pub struct EmbeddedPty {
     exited: bool,
 }
 
+/// Whether a resolved Windows program path can be launched directly by
+/// `CreateProcessW` (what the ConPTY backend calls). Only native PE
+/// executables (`.exe`) qualify: batch files (`.bat`/`.cmd`) and other
+/// script shims need a command interpreter (`cmd /d /s /c`), which
+/// `CreateProcessW` does not implicitely provide — spawning them directly
+/// surfaces a console host / elevation-style prompt instead of running
+/// the CLI (the `muse` shim on Windows is a `.cmd` launcher).
+fn is_directly_spawnable(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+}
+
 /// Resolve a bare command name against explicit search dirs, trying the
 /// exact name first and then each `exts` suffix (Windows `PATHEXT`
 /// probing). Pure so unit tests cover it on every OS.
@@ -276,8 +289,11 @@ pub struct EmbeddedPty {
 /// `PATH` (direnv-style shells, the smoke harness's fake `muse.exe` dir)
 /// never resolves and `CreateProcessW` fails with "file not found".
 /// Pre-resolving to an absolute path honors the process environment on
-/// every backend. Names carrying a directory, or resolving nowhere, yield
-/// `None` so the backend keeps its own lookup and error.
+/// every backend. Names carrying a directory, resolving nowhere, or
+/// resolving to a non-directly-spawnable script shim (`.cmd`/`.bat`;
+/// see [`is_directly_spawnable`]) yield `None` so the backend keeps its
+/// own lookup and error — or, on Windows, the caller routes through the
+/// command interpreter instead of handing a script to `CreateProcessW`.
 fn resolve_bare_program(
     program: &str,
     path_value: &std::ffi::OsStr,
@@ -288,10 +304,53 @@ fn resolve_bare_program(
     }
     for dir in std::env::split_paths(path_value) {
         let base = dir.join(program);
-        if base.is_file() {
+        // Extensionless hits (Unix binaries, hermetic test fixtures) pass
+        // through on every OS; hits carrying an extension must be directly
+        // spawnable on Windows so `.cmd`/`.bat` shims never reach
+        // `CreateProcessW` (they route via `cmd /d /s /c` instead).
+        let base_ok = base.is_file()
+            && (base.extension().is_none() || cfg!(not(windows)) || is_directly_spawnable(&base));
+        if base_ok {
             return Some(base);
         }
         for ext in exts {
+            let candidate = dir.join(format!("{program}{ext}"));
+            if candidate.is_file() && (cfg!(not(windows)) || is_directly_spawnable(&candidate)) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// PATHEXT suffixes from the live process environment (`.exe` fallback
+/// when unset/empty), in order.
+fn pathext_suffixes() -> Vec<String> {
+    std::env::var_os("PATHEXT")
+        .map(|v| {
+            std::env::split_paths(&v)
+                .filter_map(|e| e.to_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![".exe".to_owned()])
+}
+
+/// Locate the raw `PATH` hit for `program` (no spawnability filter):
+/// the exact file the shell would run, including `.cmd`/`.bat` shims.
+/// `None` means "not a bare name or not found".
+fn locate_on_process_path(program: &str) -> Option<std::path::PathBuf> {
+    if program.is_empty() || program.contains('/') || program.contains('\\') {
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    let pathext = pathext_suffixes();
+    for dir in std::env::split_paths(&path) {
+        let base = dir.join(program);
+        if base.is_file() {
+            return Some(base);
+        }
+        for ext in &pathext {
             let candidate = dir.join(format!("{program}{ext}"));
             if candidate.is_file() {
                 return Some(candidate);
@@ -301,19 +360,46 @@ fn resolve_bare_program(
     None
 }
 
+/// Build the `cmd /d /s /c "<shim> <args...>"` spawn for a Windows script
+/// shim (`.cmd`/`.bat`) found on the process `PATH`. Returns `None` when
+/// `program` is not a bare name, resolves nowhere, or already spawns
+/// directly (native `.exe`) — those keep the existing path untouched.
+#[cfg(windows)]
+fn script_shim_command(program: &str, args: &[String]) -> Option<(String, Vec<String>)> {
+    let hit = locate_on_process_path(program)?;
+    if is_directly_spawnable(&hit) {
+        return None;
+    }
+    let ext = hit
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ext != "cmd" && ext != "bat" {
+        return None;
+    }
+    // `cmd /d /s /c` plus the shim path and the CLI args as separate
+    // argv elements: portable-pty quotes each element itself
+    // (`append_quoted`), so the spaced path stays one word and cmd joins
+    // everything back into `"path" args...` for the shim.
+    let mut argv = vec!["/d".to_string(), "/s".to_string(), "/c".to_string()];
+    argv.push(hit.to_string_lossy().into_owned());
+    argv.extend(args.iter().cloned());
+    Some((
+        std::env::var_os("COMSPEC")
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "cmd.exe".to_string()),
+        argv,
+    ))
+}
+
 /// Resolve `program` against the live process `PATH`/`PATHEXT`, exactly
-/// what the backend should have searched. `None` means "not a bare name
-/// or not found": pass the original through untouched.
+/// what the backend should have searched. `None` means "not a bare name,
+/// not found, or not directly spawnable": pass the original through
+/// untouched (script shims are handled by [`script_shim_command`]).
 fn resolve_against_process_path(program: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let pathext = std::env::var_os("PATHEXT")
-        .map(|v| {
-            std::env::split_paths(&v)
-                .filter_map(|e| e.to_str().map(str::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| vec![".exe".to_owned()]);
+    let pathext = pathext_suffixes();
     let exts: Vec<&str> = pathext.iter().map(String::as_str).collect();
     resolve_bare_program(program, &path, &exts)
 }
@@ -351,19 +437,37 @@ impl EmbeddedPty {
             .context("openpty failed")?;
         // Windows only (issue #64): the backend searches the registry
         // PATH instead of this process's, so pre-resolve bare names
-        // against the live environment. Everywhere else (and for names
-        // with a directory, or misses) the original passes through, so
-        // behavior and error text are unchanged there.
-        let resolved: Option<std::path::PathBuf> = if cfg!(windows) {
+        // against the live environment. A resolved script shim (`.cmd` /
+        // `.bat`, e.g. the `muse` launcher) cannot run via `CreateProcessW`
+        // directly — route it through `cmd /d /s /c` so New Session starts
+        // the CLI instead of surfacing a console-host permission prompt.
+        // Everywhere else (and for names with a directory, or misses) the
+        // original passes through, so behavior and error text are
+        // unchanged there.
+        let interpreted: Option<(String, Vec<String>)> = if cfg!(windows) {
+            script_shim_command(program, args)
+        } else {
+            None
+        };
+        let resolved: Option<std::path::PathBuf> = if cfg!(windows) && interpreted.is_none() {
             resolve_against_process_path(program)
         } else {
             None
         };
-        let mut cmd = match &resolved {
-            Some(abs) => portable_pty::CommandBuilder::new(abs),
-            None => portable_pty::CommandBuilder::new(program),
+        let mut cmd = match &interpreted {
+            Some((shell_prog, shell_args)) => {
+                let mut builder = portable_pty::CommandBuilder::new(shell_prog);
+                builder.args(shell_args);
+                builder
+            }
+            None => match &resolved {
+                Some(abs) => portable_pty::CommandBuilder::new(abs),
+                None => portable_pty::CommandBuilder::new(program),
+            },
         };
-        cmd.args(args);
+        if interpreted.is_none() {
+            cmd.args(args);
+        }
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }
@@ -779,11 +883,77 @@ mod tests {
             resolve_bare_program("muse.exe", &path, &[".exe"]),
             Some(dir.join("muse.exe"))
         );
+        // Script shims never resolve for direct spawn on Windows: handing
+        // a `.cmd`/`.bat` to `CreateProcessW` surfaces a console-host
+        // permission prompt instead of running the CLI (the `muse`
+        // launcher is a `.cmd`); the spawn seam routes those through
+        // `cmd /d /s /c`. Off Windows the lookup is unchanged.
+        std::fs::write(dir.join("muse.cmd"), b"fake").unwrap();
+        assert_eq!(
+            resolve_bare_program("muse.cmd", &path, &[".exe", ".cmd"]),
+            if cfg!(windows) {
+                None
+            } else {
+                Some(dir.join("muse.cmd"))
+            }
+        );
+        std::fs::remove_file(dir.join("muse.cmd")).unwrap();
         // Misses and directory-carrying names pass through as None.
         assert_eq!(resolve_bare_program("nope-xyz", &path, &[".exe"]), None);
         assert_eq!(resolve_bare_program("sub/muse", &path, &[".exe"]), None);
         assert_eq!(resolve_bare_program(r"sub\muse", &path, &[".exe"]), None);
         assert_eq!(resolve_bare_program("", &path, &[".exe"]), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_exe_counts_as_directly_spawnable() {
+        assert!(is_directly_spawnable(std::path::Path::new("muse.exe")));
+        assert!(is_directly_spawnable(std::path::Path::new("MUSE.EXE")));
+        assert!(!is_directly_spawnable(std::path::Path::new("muse.cmd")));
+        assert!(!is_directly_spawnable(std::path::Path::new("muse.bat")));
+        assert!(!is_directly_spawnable(std::path::Path::new("muse")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_shim_routes_through_comspec() {
+        // A `.cmd` hit on PATH becomes `cmd /d /s /c "<shim> <args>"`;
+        // native `.exe` hits and misses stay on the direct path (None).
+        let dir = std::env::temp_dir().join(format!(
+            "agent-manager-shim-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("nexe.exe"), b"fake").unwrap();
+        let old_path = std::env::var_os("PATH");
+        let mut new_path = dir.as_os_str().to_owned();
+        if let Some(old) = &old_path {
+            new_path.push(";");
+            new_path.push(old);
+        }
+        std::env::set_var("PATH", &new_path);
+        std::fs::write(dir.join("shim-tool.cmd"), b"fake").unwrap();
+        let shim = script_shim_command("shim-tool", &["--version".to_string()]);
+        assert!(shim.is_some(), "a .cmd hit must route via COMSPEC");
+        let (shell, argv) = shim.unwrap();
+        assert!(shell.to_ascii_lowercase().ends_with("cmd.exe"));
+        assert_eq!(&argv[0..3], &["/d", "/s", "/c"]);
+        assert!(
+            argv[3].to_ascii_lowercase().contains("shim-tool.cmd"),
+            "shim path: {:?}",
+            argv
+        );
+        assert_eq!(&argv[4..], &["--version"]);
+        assert!(script_shim_command("nexe", &[]).is_none());
+        assert!(script_shim_command("definitely-not-a-real-binary-xyz", &[]).is_none());
+        match old_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
