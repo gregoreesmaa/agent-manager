@@ -83,6 +83,16 @@ int32_t am_core_save(const AmCore *core);
 int32_t am_spawn(const AmCore *core, AmPty **out, const char *cwd,
                  uint16_t cols, uint16_t rows);
 
+/* Spawn a 2D-launch session PTY (folder x CLI + yolo) of `cols` x `rows`.
+ * `cli` names the harness id (`muse`, `claude`, ...; NULL/empty repeats
+ * the last-used/default resolution), `cwd` is NULL (inherit) or a path,
+ * `yolo` nonzero forces the canonical yolo flag for this spawn only.
+ * Returns an `AmError` code; the handle lands in `*out`. Free the handle
+ * with `am_pty_free`. */
+int32_t am_spawn_launch(const AmCore *core, AmPty **out, const char *cli,
+                        const char *cwd, int32_t yolo,
+                        uint16_t cols, uint16_t rows);
+
 /* Feed queued output into the emulator. True when new output arrived or
  * the child newly exited (the repaint gate). NULL is false, never UB. */
 bool am_pump(AmPty *pty);
@@ -117,6 +127,22 @@ size_t am_session_count(const AmCore *core);
  * null handle, out-of-bounds row, or JSON failure; free with
  * `am_screen_text_free`. */
 char *am_session_json(const AmCore *core, size_t row);
+
+/* Owned JSON of the autodetected CLI catalog (2D launch):
+ * `[{"id","program","path"|null,"available"}]` in `SUPPORTED_CLIS`
+ * order. Never NULL on allocation success; free with
+ * `am_screen_text_free`. */
+char *am_clis_json(void);
+
+/* Owned JSON of the persisted folder recents (2D launch): a string array,
+ * MRU-first. NULL core yields an empty list, never UB; free with
+ * `am_screen_text_free`. */
+char *am_recent_json(const AmCore *core);
+
+/* Record a confirmed launch (2D launch): refreshes last-used CLI + folder
+ * MRU in the core config. NULL core is a null error; NULL/empty `cli`
+ * keeps the previous CLI; NULL `cwd` records no folder. */
+int32_t am_note_launch(AmCore *core, const char *cli, const char *cwd);
 
 /* Last error message for this thread (UTF-8, NUL-terminated). Never
  * NULL; valid until the next failing `am_*` call on this thread. */

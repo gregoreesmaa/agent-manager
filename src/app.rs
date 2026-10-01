@@ -483,6 +483,52 @@ impl App {
         self.config.save()
     }
 
+    /// FFI accessors for the 2D-launch C ABI (read-only views into the
+    /// owned config; the core never hands out mutable config across FFI).
+    pub fn config_last_cli(&self) -> Option<&str> {
+        self.config.last_cli.as_deref()
+    }
+
+    pub fn config_default_cli(&self) -> Option<&str> {
+        self.config.default_cli.as_deref()
+    }
+
+    pub fn config_recents(&self) -> &[String] {
+        &self.config.recent_folders
+    }
+
+    /// Test helper: seed folder recents (production reaches them through
+    /// confirmed launches via `note_launch`).
+    #[cfg(test)]
+    pub fn config_note_recents(&mut self, recents: Vec<String>) {
+        self.config.recent_folders = recents;
+    }
+
+    pub fn config_default_cwd(&self) -> Option<&str> {
+        self.config.default_cwd.as_deref()
+    }
+
+    pub fn config_extra_args(&self, agent: &str) -> Vec<String> {
+        self.config.extra_args_for(agent)
+    }
+
+    pub fn config_yolo_default(&self, agent: &str) -> bool {
+        self.config.yolo_default_for(agent)
+    }
+
+    /// Record a confirmed launch from a shell that spawns via FFI (the
+    /// in-process gpui path goes through `start_launch` instead): same
+    /// memory update, no new row. Empty CLI keeps the previous memory.
+    pub fn note_launch(&mut self, cli: &str, cwd: Option<&str>) {
+        if cli.is_empty() {
+            if let Some(dir) = cwd {
+                crate::launch::push_recent_folder(&mut self.config.recent_folders, dir);
+            }
+            return;
+        }
+        self.config.note_launch(cli, cwd);
+    }
+
     /// Terminal-pane font setting (issue #35).
     pub fn terminal_config(&self) -> &crate::config::TerminalConfig {
         &self.config.terminal
@@ -514,21 +560,74 @@ impl App {
     }
 
     /// Spawn command for `kind` with the configured per-agent extra flags
-    /// appended (issue #33). The key is the program name, so every
-    /// supported agent (`muse`, `claude`, …) can carry its own flags.
+    /// appended (issue #33) plus the yolo default/override (2D launch).
+    /// The key is the program name, so every supported agent (`muse`,
+    /// `claude`, …) can carry its own flags. The canonical yolo flag is
+    /// deduped against an identical user-configured `extra_args` entry so
+    /// enabling yolo twice never doubles the flag.
     pub fn spawn_command_for(&self, kind: &SpawnKind) -> (String, Vec<String>) {
         let (program, mut args) = kind.command();
         args.extend(self.config.extra_args_for(&program));
+        let yolo_on = match kind {
+            SpawnKind::NewOn { harness, yolo } => {
+                *yolo || self.config.yolo_default_for(harness.id())
+            }
+            _ => self.config.yolo_default_for(&program),
+        };
+        if yolo_on {
+            if let Some(flag) = kind.harness().yolo_flag() {
+                if !args.iter().any(|a| a == flag) {
+                    args.push(flag.to_string());
+                }
+            }
+        }
         (program, args)
     }
 
     /// One-line spawn description for UI affordances (`muse --yolo`).
     pub fn spawn_command_string(&self) -> String {
-        let (program, args) = self.spawn_command_for(&SpawnKind::New);
+        self.spawn_command_string_for(&SpawnKind::New)
+    }
+
+    /// One-line spawn description for `kind` (2D launch preview).
+    pub fn spawn_command_string_for(&self, kind: &SpawnKind) -> String {
+        let (program, args) = self.spawn_command_for(kind);
         if args.is_empty() {
             program
         } else {
             format!("{program} {}", args.join(" "))
+        }
+    }
+
+    /// Effective CLI for the next repeat-last spawn (2D launch): the
+    /// last-used CLI when still supported, else the configured default,
+    /// else the first autodetected binary. Pure resolution lives in
+    /// `launch::resolve_effective_cli`; this reads the stored bits.
+    pub fn repeat_cli(&self) -> String {
+        crate::launch::resolve_effective_cli(
+            None,
+            self.config.last_cli.as_deref(),
+            self.config.default_cli.as_deref(),
+            &crate::launch::detect_available_clis(),
+        )
+    }
+
+    /// Spawn kind for a repeat-last launch (2D launch): `n` / the `+ New`
+    /// main click. Resolves the yolo flag against the per-agent default.
+    pub fn repeat_spawn_kind(&self) -> SpawnKind {
+        use crate::embedded::Harness;
+        let cli = self.repeat_cli();
+        if cli == HARNESS_MUSE
+            && self.config.last_cli.is_none()
+            && self.config.default_cli.is_none()
+        {
+            // No memory and no default: the historic plain path, so the
+            // first-ever spawn stays exactly `muse`.
+            SpawnKind::New
+        } else {
+            let harness = Harness::from_id(&cli);
+            let yolo = self.config.yolo_default_for(harness.id());
+            SpawnKind::NewOn { harness, yolo }
         }
     }
 
@@ -801,6 +900,35 @@ impl App {
     /// app's directory). The folder rides on the session so the runs
     /// list, restarts, and persisted state all see it.
     pub fn start_new_session_in(&mut self, cwd: Option<String>) {
+        self.start_launch(&crate::launch::LaunchSelection::new(
+            self.repeat_cli(),
+            cwd,
+            self.config.yolo_default_for(&self.repeat_cli()),
+        ));
+    }
+
+    /// Create a new live-run entry from a confirmed 2D [`LaunchSelection`]
+    /// (folder × CLI + yolo): records the harness, queues the spawn kind,
+    /// and notes the launch for repeat-last memory + folder MRU. This is
+    /// the single funnel every new-run path uses (`n`, `+ New`, picker).
+    /// Unknown CLI ids fall back to the historic muse harness (same rule
+    /// as [`crate::embedded::Harness::from_id`]), never a broken row.
+    pub fn start_launch(&mut self, selection: &crate::launch::LaunchSelection) {
+        use crate::embedded::Harness;
+        let harness = if crate::launch::SUPPORTED_CLIS.contains(&selection.cli.as_str()) {
+            Harness::from_id(&selection.cli)
+        } else {
+            Harness::Muse
+        };
+        let kind = if harness == Harness::Muse && !selection.yolo {
+            SpawnKind::New
+        } else {
+            SpawnKind::NewOn {
+                harness,
+                yolo: selection.yolo,
+            }
+        };
+        let cli = harness.id().to_string();
         self.next_run += 1;
         let n = self.next_run;
         self.sessions.push(ChatSession {
@@ -810,7 +938,7 @@ impl App {
             title: animal_name(n),
             project: current_dir_name(),
             status: Status::Working,
-            harness: default_harness(),
+            harness: cli.clone(),
             last_active: now_secs(),
             pr_links: vec![],
             related_links: vec![],
@@ -820,11 +948,12 @@ impl App {
             provider_session_id: None,
             title_locked: false,
             pending_input: String::new(),
-            cwd,
+            cwd: selection.cwd.clone(),
         });
         self.selected = self.sessions.len() - 1;
-        self.pending_spawn = Some(SpawnKind::New);
+        self.pending_spawn = Some(kind);
         self.focus = Focus::Terminal;
+        self.config.note_launch(&cli, selection.cwd.as_deref());
     }
 
     /// Working directory recorded on `run_id`, if the session picked one
@@ -1049,6 +1178,7 @@ mod tests {
             "muse".to_string(),
             AgentConfig {
                 extra_args: vec!["--yolo".to_string()],
+                yolo: false,
             },
         );
         app.set_config(cfg);
@@ -1056,6 +1186,57 @@ mod tests {
         let (program, args) = app.spawn_command_for(&SpawnKind::New);
         assert_eq!(program, "muse");
         assert_eq!(args, vec!["--yolo".to_string()]);
+    }
+
+    #[test]
+    fn launch_selection_records_harness_queues_kind_and_notes_memory() {
+        // 2D launch: confirming a folder × CLI + yolo records the
+        // harness on the row, queues the matching kind, and refreshes
+        // repeat-last memory + folder MRU — the single funnel every
+        // new-run path shares.
+        use crate::embedded::Harness;
+        use crate::launch::{LaunchSelection, YoloChoice};
+        let mut app = App::new(vec![]);
+        assert!(app.config.last_cli.is_none());
+        let sel = LaunchSelection::new(
+            "claude".to_string(),
+            Some("/tmp/api".to_string()),
+            YoloChoice::ForceOn.resolve(false),
+        );
+        app.start_launch(&sel);
+        assert_eq!(app.sessions.len(), 1);
+        let row = &app.sessions[0];
+        assert_eq!(row.harness, "claude");
+        assert_eq!(row.cwd.as_deref(), Some("/tmp/api"));
+        assert_eq!(
+            app.take_pending_spawn(),
+            Some(SpawnKind::NewOn {
+                harness: Harness::Claude,
+                yolo: true,
+            })
+        );
+        assert_eq!(app.config.last_cli.as_deref(), Some("claude"));
+        assert_eq!(app.config.recent_folders, vec!["/tmp/api"]);
+        // Yolo default dedupes: config flag + picker-on yields one flag.
+        let mut cfg = crate::config::Config::default();
+        cfg.agents.insert(
+            "muse".to_string(),
+            crate::config::AgentConfig {
+                extra_args: vec!["--yolo".to_string()],
+                yolo: false,
+            },
+        );
+        app.set_config(cfg);
+        let (program, args) = app.spawn_command_for(&SpawnKind::NewOn {
+            harness: Harness::Muse,
+            yolo: true,
+        });
+        assert_eq!(program, "muse");
+        assert_eq!(args, vec!["--yolo".to_string()]);
+        // Unknown CLI ids fall back to the historic harness, never a
+        // broken row: the row spawns instead of failing to parse.
+        app.start_launch(&LaunchSelection::new("future".to_string(), None, false));
+        assert_eq!(app.sessions.last().unwrap().harness, HARNESS_MUSE);
     }
 
     #[test]

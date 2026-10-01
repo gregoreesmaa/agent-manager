@@ -159,6 +159,10 @@ pub struct ShellView {
     /// extend the buffer instead of dispatching nav actions; Enter
     /// starts a session in the typed folder, Esc cancels.
     pub(crate) cwd_capture: Option<String>,
+    /// 2D-launch picker capture (folder × CLI + yolo): while `Some`, the
+    /// picker owns the keyboard (see `gui::picker`); Enter confirms, Esc
+    /// cancels with zero side effects.
+    pub(crate) launch_picker: Option<crate::launch::LaunchPicker>,
     /// Last run-state persist (issue #26); `None` until the first save.
     /// Throttles refresh-time saves so a streaming run doesn't rewrite
     /// the file every 50 ms tick; quitting and closing always save.
@@ -181,6 +185,7 @@ impl ShellView {
             app: App::new(sessions),
             filtering: false,
             cwd_capture: None,
+            launch_picker: None,
             last_persist: None,
             runs: HashMap::new(),
             quit_armed: false,
@@ -275,6 +280,12 @@ impl ShellView {
             KeyTarget::FolderCapture => {
                 self.quit_armed = false;
                 self.cwd_key(key, key_char, ctrl, platform);
+                window.refresh();
+                return;
+            }
+            KeyTarget::PickerCapture => {
+                self.quit_armed = false;
+                self.picker_key(key, key_char, ctrl, platform);
                 window.refresh();
                 return;
             }
@@ -489,7 +500,7 @@ mod tests {
             narrow.len() < full.len(),
             "narrow hints compact: {narrow:?} vs {full:?}"
         );
-        for key in ["n:", "j/k", "o/Enter", "Tab", "x:", "t:", "q:"] {
+        for key in ["n:", "N:", "j/k", "o/Enter", "Tab", "x:", "t:", "q:"] {
             assert!(narrow.contains(key), "narrow hints keep {key}: {narrow:?}");
         }
         // Terminal-focus hints compact too.

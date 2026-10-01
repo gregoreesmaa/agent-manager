@@ -16,6 +16,7 @@ pub mod layout;
 pub mod lifecycle;
 pub mod nav;
 pub mod pager;
+pub mod picker;
 pub mod pump;
 pub mod runs;
 pub mod runs_panel;

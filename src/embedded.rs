@@ -28,7 +28,10 @@ pub fn new_session_command() -> (String, Vec<String>) {
 /// `Muse` is the default: bare [`SpawnKind::New`] / [`SpawnKind::Resume`]
 /// keep meaning muse, so every existing call site compiles untouched.
 /// Other harnesses spawn through [`SpawnKind::NewOn`] /
-/// [`SpawnKind::ResumeOn`].
+/// [`SpawnKind::ResumeOn`]. The picker catalog (`crate::launch`) may list
+/// more CLIs than this enum resolves (claude/codex spawn by program name
+/// until they grow full provider support here); `from_id` maps those to
+/// the closest spawnable harness so rows still re-attach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Harness {
     /// `muse` — the original and default harness.
@@ -36,6 +39,12 @@ pub enum Harness {
     Muse,
     /// `opencode` — the opencode CLI.
     Opencode,
+    /// `claude` — spawned by program name; resume reuses the muse shape
+    /// until a Claude provider lands.
+    Claude,
+    /// `codex` — spawned by program name; resume reuses the muse shape
+    /// until a Codex provider lands.
+    Codex,
 }
 
 impl Harness {
@@ -45,6 +54,8 @@ impl Harness {
         match self {
             Harness::Muse => crate::app::HARNESS_MUSE,
             Harness::Opencode => crate::app::HARNESS_OPENCODE,
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
         }
     }
 
@@ -54,6 +65,10 @@ impl Harness {
     pub fn from_id(id: &str) -> Self {
         if id == crate::app::HARNESS_OPENCODE {
             Harness::Opencode
+        } else if id == "claude" {
+            Harness::Claude
+        } else if id == "codex" {
+            Harness::Codex
         } else {
             Harness::Muse
         }
@@ -64,6 +79,23 @@ impl Harness {
         match self {
             Harness::Muse => "muse",
             Harness::Opencode => "opencode",
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+        }
+    }
+
+    /// Canonical yolo flag for this harness, if the picker supports one.
+    /// (`muse --yolo` and `claude --dangerously-skip-permissions` are the
+    /// documented config flags; codex `--dangerously-bypass-approvals-and-
+    /// sandbox` and opencode `--auto` are verified against the live CLI
+    /// references.) Unknown/future harnesses carry none — the toggle
+    /// hides instead of guessing.
+    pub fn yolo_flag(self) -> Option<&'static str> {
+        match self {
+            Harness::Muse => Some("--yolo"),
+            Harness::Claude => Some("--dangerously-skip-permissions"),
+            Harness::Codex => Some("--dangerously-bypass-approvals-and-sandbox"),
+            Harness::Opencode => Some("--auto"),
         }
     }
 
@@ -74,11 +106,12 @@ impl Harness {
 
     /// argv (after the program) resuming a historic conversation.
     /// Shape is per-CLI: muse takes `--resume <id>`, opencode takes
-    /// `--session <id>`.
+    /// `--session <id>`; claude/codex reuse the muse shape until their
+    /// providers define their own.
     pub fn resume_args(self, session_id: &str) -> Vec<String> {
         match self {
-            Harness::Muse => vec!["--resume".to_string(), session_id.to_string()],
             Harness::Opencode => vec!["--session".to_string(), session_id.to_string()],
+            _ => vec!["--resume".to_string(), session_id.to_string()],
         }
     }
 
@@ -98,12 +131,14 @@ impl Harness {
 pub enum SpawnKind {
     /// Start a brand-new `muse` session.
     New,
+    /// Start a brand-new session on another harness (`New` stays muse).
+    /// `yolo` forces the harness's canonical yolo flag for this run only
+    /// (the config default applies when false) — the 2D-launch path.
+    NewOn { harness: Harness, yolo: bool },
     /// Resume a historic provider conversation with `muse --resume <id>`.
     /// The app routes the spawn to the selected run entry, so no run id
     /// travels with the request.
     Resume { session_id: String },
-    /// Start a brand-new session on another harness (`New` stays muse).
-    NewOn(Harness),
     /// Resume a historic conversation on another harness (per-harness
     /// resume shape via [`Harness::resume_command`]).
     ResumeOn {
@@ -117,11 +152,35 @@ impl SpawnKind {
         match self {
             SpawnKind::New => Harness::Muse.new_command(),
             SpawnKind::Resume { session_id } => Harness::Muse.resume_command(session_id),
-            SpawnKind::NewOn(harness) => harness.new_command(),
+            SpawnKind::NewOn { harness, .. } => harness.new_command(),
             SpawnKind::ResumeOn {
                 harness,
                 session_id,
             } => harness.resume_command(session_id),
+        }
+    }
+
+    /// Harness this spawn runs (the config key for `extra_args`/yolo is
+    /// [`Harness::id`]).
+    pub fn harness(&self) -> Harness {
+        match self {
+            SpawnKind::New => Harness::Muse,
+            SpawnKind::NewOn { harness, .. } => *harness,
+            SpawnKind::Resume { .. } => Harness::Muse,
+            SpawnKind::ResumeOn { harness, .. } => *harness,
+        }
+    }
+
+    /// CLI this spawn runs (the config key for `extra_args`/yolo).
+    pub fn cli_id(&self) -> &str {
+        self.harness().id()
+    }
+
+    /// One-shot yolo for this spawn (2D launch): config default when false.
+    pub fn yolo_once(&self) -> bool {
+        match self {
+            SpawnKind::NewOn { yolo, .. } => *yolo,
+            _ => false,
         }
     }
 }
@@ -667,17 +726,15 @@ mod tests {
     }
 
     #[test]
-    fn new_session_command_shape() {
-        assert_eq!(new_session_command(), ("muse".to_string(), vec![]));
-        assert_eq!(SpawnKind::New.command(), ("muse".to_string(), vec![]));
-    }
-
-    #[test]
     fn harness_ids_map_and_route_spawn_commands() {
         // opencode spawn surface: plain `opencode` starts fresh,
         // `opencode --session <id>` re-attaches a discovered session.
         assert_eq!(
-            SpawnKind::NewOn(Harness::Opencode).command(),
+            SpawnKind::NewOn {
+                harness: Harness::Opencode,
+                yolo: false,
+            }
+            .command(),
             ("opencode".to_string(), vec![])
         );
         assert_eq!(
@@ -693,7 +750,11 @@ mod tests {
         );
         // Muse still routes through the same table (default harness).
         assert_eq!(
-            SpawnKind::NewOn(Harness::Muse).command(),
+            SpawnKind::NewOn {
+                harness: Harness::Muse,
+                yolo: false,
+            }
+            .command(),
             ("muse".to_string(), vec![])
         );
         assert_eq!(Harness::Opencode.id(), crate::app::HARNESS_OPENCODE);
@@ -701,9 +762,28 @@ mod tests {
         // Unknown/future harness ids fall back to muse instead of failing.
         assert_eq!(Harness::from_id("opencode"), Harness::Opencode);
         assert_eq!(Harness::from_id("muse"), Harness::Muse);
+        assert_eq!(Harness::from_id("claude"), Harness::Claude);
+        assert_eq!(Harness::from_id("codex"), Harness::Codex);
         assert_eq!(Harness::from_id("future-harness"), Harness::Muse);
         assert_eq!(Harness::Opencode.program(), "opencode");
+        assert_eq!(Harness::Claude.program(), "claude");
+        assert_eq!(Harness::Codex.program(), "codex");
         assert_eq!(Harness::default(), Harness::Muse);
+    }
+
+    #[test]
+    fn new_on_command_names_the_cli_without_flags() {
+        // 2D launch: the command is the plain program; yolo rides via
+        // the resolved selection, never baked into the base command.
+        let kind = SpawnKind::NewOn {
+            harness: Harness::Claude,
+            yolo: true,
+        };
+        assert_eq!(kind.command(), ("claude".to_string(), Vec::new()));
+        assert_eq!(kind.cli_id(), "claude");
+        assert!(kind.yolo_once());
+        assert!(!SpawnKind::New.yolo_once());
+        assert_eq!(SpawnKind::New.cli_id(), "muse");
     }
 
     #[test]

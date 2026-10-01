@@ -24,7 +24,7 @@ Run the app with `swift run` or `.build/debug/AgentManagerMac`.
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch |
-| Spawn | `am_spawn` (sidebar New Session button / detail Spawn button, Cmd-N) |
+| Spawn | `am_spawn` (sidebar New Session button / detail Spawn button, Cmd-N); 2D-launch entry points (`am_spawn_launch` with folder × CLI + yolo, `am_clis_json` catalog, `am_recent_json` recents, `am_note_launch` memory) available for the picker follow-up |
 | Converse | keystrokes `send` -> `am_write`; output `am_pump` -> `am_screen_text` -> view feed |
 | Select / copy / paste / scroll | native SwiftTerm view and scrollback |
 | Search / filter | sidebar search field; terminal find via Cmd-F (SwiftTerm find bar) |

@@ -12,6 +12,7 @@ use std::os::raw::{c_char, c_int};
 
 use crate::app::{App, ChatSession, Status};
 use crate::embedded::{EmbeddedPty, SpawnKind};
+use crate::launch;
 use crate::parsers::registry::RegistryParser;
 use crate::persist;
 use crate::providers::{MuseCliProvider, OpencodeCliProvider, Provider};
@@ -198,6 +199,170 @@ pub unsafe extern "C" fn am_spawn(
     }
     let (program, args) = (*core).app.spawn_command_for(&SpawnKind::New);
     spawn_into(out, &program, &args, cwd, cols, rows)
+}
+
+/// Spawn a 2D-launch session PTY (folder × CLI + yolo) of `cols` x `rows`.
+/// `cli` names the harness id (`muse`, `claude`, …; null/empty repeats the
+/// last-used/default resolution), `cwd` is null (inherit) or a path,
+/// `yolo` nonzero forces the canonical yolo flag for this spawn only.
+/// Returns an [`AmError`] code; the handle lands in `*out`.
+///
+/// # Safety
+/// `core`/`out` must be non-null live pointers; `cli`/`cwd` must be null
+/// or valid NUL-terminated C strings. Free the handle with [`am_pty_free`].
+#[no_mangle]
+pub unsafe extern "C" fn am_spawn_launch(
+    core: *const AmCore,
+    out: *mut *mut AmPty,
+    cli: *const c_char,
+    cwd: *const c_char,
+    yolo: c_int,
+    cols: u16,
+    rows: u16,
+) -> c_int {
+    if core.is_null() || out.is_null() {
+        set_error("am_spawn_launch: null core or out".to_string());
+        return AmError::Null.code();
+    }
+    let cli_str = if cli.is_null() {
+        None
+    } else {
+        match CStr::from_ptr(cli).to_str() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                set_error("am_spawn_launch: cli is not valid UTF-8".to_string());
+                return AmError::Utf8.code();
+            }
+        }
+    };
+    let _cwd_str = if cwd.is_null() {
+        None
+    } else {
+        match CStr::from_ptr(cwd).to_str() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                set_error("am_spawn_launch: cwd is not valid UTF-8".to_string());
+                return AmError::Utf8.code();
+            }
+        }
+    };
+    let app = &(*core).app;
+    let resolved_cli = launch::resolve_effective_cli(
+        cli_str.filter(|s| !s.is_empty()),
+        app.config_last_cli(),
+        app.config_default_cli(),
+        &launch::detect_available_clis(),
+    );
+    let harness = crate::embedded::Harness::from_id(&resolved_cli);
+    let yolo_on = yolo != 0 || app.config_yolo_default(harness.id());
+    let (program, mut args) = harness.new_command();
+    args.extend(app.config_extra_args(&program));
+    if yolo_on {
+        if let Some(flag) = harness.yolo_flag() {
+            if !args.iter().any(|a| a == flag) {
+                args.push(flag.to_string());
+            }
+        }
+    }
+    spawn_into(out, &program, &args, cwd, cols, rows)
+}
+
+/// Owned JSON of the autodetected CLI catalog (2D launch):
+/// `[{"id","program","path"|null,"available"}]` in
+/// [`launch::SUPPORTED_CLIS`] order. Never null on allocation success;
+/// free with [`am_screen_text_free`].
+///
+/// # Safety
+/// Always safe: allocates a fresh string, takes no handles.
+#[no_mangle]
+pub unsafe extern "C" fn am_clis_json() -> *mut c_char {
+    let clis = launch::detect_available_clis();
+    match serde_json::to_string(&clis) {
+        Ok(doc) => match CString::new(doc) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_error("am_clis_json: catalog contains NUL".to_string());
+                std::ptr::null_mut()
+            }
+        },
+        Err(e) => {
+            set_error(format!("am_clis_json: {e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Owned JSON of the persisted folder recents (2D launch): a string array,
+/// MRU-first. Null core yields an empty list, never UB; free with
+/// [`am_screen_text_free`].
+///
+/// # Safety
+/// `core` must be null or a live pointer from [`am_core_new`].
+#[no_mangle]
+pub unsafe extern "C" fn am_recent_json(core: *const AmCore) -> *mut c_char {
+    let recents: &[String] = if core.is_null() {
+        &[]
+    } else {
+        (*core).app.config_recents()
+    };
+    match serde_json::to_string(recents) {
+        Ok(doc) => match CString::new(doc) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_error("am_recent_json: recents contain NUL".to_string());
+                std::ptr::null_mut()
+            }
+        },
+        Err(e) => {
+            set_error(format!("am_recent_json: {e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Record a confirmed launch (2D launch): refreshes last-used CLI + folder
+/// MRU in the core config. Null core is a null error; null/empty `cli`
+/// keeps the previous CLI; null `cwd` records no folder.
+///
+/// # Safety
+/// `core` must be non-null and live; `cli`/`cwd` must be null or valid
+/// NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn am_note_launch(
+    core: *mut AmCore,
+    cli: *const c_char,
+    cwd: *const c_char,
+) -> c_int {
+    if core.is_null() {
+        set_error("am_note_launch: null core".to_string());
+        return AmError::Null.code();
+    }
+    let cli_str = if cli.is_null() {
+        None
+    } else {
+        match CStr::from_ptr(cli).to_str() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                set_error("am_note_launch: cli is not valid UTF-8".to_string());
+                return AmError::Utf8.code();
+            }
+        }
+    };
+    let cwd_str = if cwd.is_null() {
+        None
+    } else {
+        match CStr::from_ptr(cwd).to_str() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                set_error("am_note_launch: cwd is not valid UTF-8".to_string());
+                return AmError::Utf8.code();
+            }
+        }
+    };
+    (*core)
+        .app
+        .note_launch(cli_str.filter(|s| !s.is_empty()).unwrap_or(""), cwd_str);
+    AmError::Ok.code()
 }
 
 /// Shared spawn tail for [`am_spawn`] (and the test-only argv variant
@@ -898,6 +1063,65 @@ mod tests {
                 .into_owned();
             assert!(msg.contains("am_session_json"), "last_error: {msg:?}");
             assert!(am_session_json(std::ptr::null(), 0).is_null());
+        }
+    }
+
+    #[test]
+    fn launch_abi_lists_catalog_recents_and_spawns() {
+        // 2D launch: the catalog lists every supported CLI in order, the
+        // recents start empty on null, and a fake-CLI spawn through the
+        // public launch entry resolves flags without touching live state.
+        use crate::launch::SUPPORTED_CLIS;
+        unsafe {
+            let raw = am_clis_json();
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            let docs: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+            let ids: Vec<&str> = docs.iter().map(|d| d["id"].as_str().unwrap()).collect();
+            assert_eq!(ids, SUPPORTED_CLIS);
+            // Null core: empty recents, never UB.
+            let recents_raw = am_recent_json(std::ptr::null());
+            assert!(!recents_raw.is_null());
+            let recents = CStr::from_ptr(recents_raw).to_string_lossy().into_owned();
+            am_screen_text_free(recents_raw);
+            assert_eq!(recents, "[]");
+            // Null guards on the new entry points.
+            let mut out: *mut AmPty = std::ptr::null_mut();
+            assert_eq!(
+                am_spawn_launch(
+                    std::ptr::null(),
+                    &mut out,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    80,
+                    24
+                ),
+                AmError::Null.code()
+            );
+            assert_eq!(
+                am_note_launch(std::ptr::null_mut(), std::ptr::null(), std::ptr::null()),
+                AmError::Null.code()
+            );
+        }
+        // Note + recents round-trip on a live core.
+        let core = AmCore {
+            app: App::new(vec![]),
+        };
+        let core_ptr = &core as *const AmCore as *mut AmCore;
+        unsafe {
+            let cli = CString::new("claude").unwrap();
+            let cwd = CString::new("/tmp/api").unwrap();
+            assert_eq!(
+                am_note_launch(core_ptr, cli.as_ptr(), cwd.as_ptr()),
+                AmError::Ok.code()
+            );
+            let raw = am_recent_json(core_ptr);
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            assert_eq!(text, "[\"/tmp/api\"]");
         }
     }
 

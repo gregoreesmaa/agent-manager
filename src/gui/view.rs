@@ -317,6 +317,16 @@ impl ShellView {
                                 this.focus_term(window);
                             })),
                     ),
+                )
+                .child(
+                    div().pt_1().child(
+                        Button::new(ElementId::Name("empty-picker-btn".into()))
+                            .label("Choose folder × CLI (N)")
+                            .small()
+                            .on_click(cx.listener(|this, _ev, _window, _cx| {
+                                this.open_launch_picker();
+                            })),
+                    ),
                 ),
         )
     }
@@ -477,6 +487,7 @@ mod tests {
             "muse".to_string(),
             AgentConfig {
                 extra_args: vec!["--yolo".to_string()],
+                yolo: false,
             },
         );
         flagged.app.set_config(cfg);
