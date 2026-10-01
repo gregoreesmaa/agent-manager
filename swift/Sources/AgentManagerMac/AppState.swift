@@ -144,7 +144,7 @@ final class AppState: ObservableObject {
         do {
             let pty = try core.spawnLaunch(cli: cli, cwd: folder, yolo: yolo,
                                            cols: grid.cols, rows: grid.rows)
-            attachFreshPty(pty)
+            attachFreshPty(pty, cli: cli, folder: folder)
             core.noteLaunch(cli: cli, cwd: folder)
         } catch {
             pendingError = error.localizedDescription

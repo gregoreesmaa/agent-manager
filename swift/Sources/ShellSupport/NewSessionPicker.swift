@@ -11,26 +11,33 @@
 /// action repeats the last launch instantly (null CLI/folder through
 /// `am_spawn_launch`, which resolves the core's effective default); the
 /// picker confirms an explicit folder × CLI + yolo combination.
-struct NewSessionPicker {
+public struct NewSessionPicker {
     /// CLI catalog rows in core order (muse, claude, opencode, codex).
     /// Rows are always listed; `available == false` renders disabled
     /// with an install hint, never hidden.
-    struct CliRow: Equatable {
-        var id: String
-        var program: String
-        var path: String?
-        var available: Bool
+    public struct CliRow: Equatable {
+        public var id: String
+        public var program: String
+        public var path: String?
+        public var available: Bool
+
+        public init(id: String, program: String, path: String?, available: Bool) {
+            self.id = id
+            self.program = program
+            self.path = path
+            self.available = available
+        }
     }
 
     /// Per-run yolo choice: safe by default, explicit per run, never
     /// auto-written back to the config.
-    enum YoloChoice: Hashable {
+    public enum YoloChoice: Hashable {
         case useDefault
         case forceOn
         case forceOff
 
         /// Cycle for the picker toggle: default → on → off → default.
-        mutating func cycle() {
+        public mutating func cycle() {
             switch self {
             case .useDefault: self = .forceOn
             case .forceOn: self = .forceOff
@@ -39,7 +46,7 @@ struct NewSessionPicker {
         }
 
         /// Short label for the picker row (text, never color-only).
-        var label: String {
+        public var label: String {
             switch self {
             case .useDefault: "Default"
             case .forceOn: "On (once)"
@@ -48,21 +55,28 @@ struct NewSessionPicker {
         }
     }
 
-    var clis: [CliRow]
-    var cliIndex: Int
-    var folder: String
-    var recents: [String]
-    var yolo: YoloChoice = .useDefault
+    public var clis: [CliRow]
+    public var cliIndex: Int
+    public var folder: String
+    public var recents: [String]
+    public var yolo: YoloChoice = .useDefault
+
+    public init(clis: [CliRow], cliIndex: Int, folder: String, recents: [String]) {
+        self.clis = clis
+        self.cliIndex = cliIndex
+        self.folder = folder
+        self.recents = recents
+    }
 
     /// Blank folder means inherit (the historic behavior); anything else
     /// spawns in the typed directory (the shell validates is-dir before
     /// confirming, mirroring the shared picker's inline refuse-and-fix).
-    var effectiveFolder: String? {
+    public var effectiveFolder: String? {
         let trimmed = folder.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    var selectedCli: CliRow? {
+    public var selectedCli: CliRow? {
         guard !clis.isEmpty else { return nil }
         return clis[cliIndex % clis.count]
     }
@@ -70,7 +84,7 @@ struct NewSessionPicker {
     /// One-line spawn preview (`muse in ~/api`), so the launch is
     /// verifiable before it runs. The yolo flag itself rides inside
     /// `am_spawn_launch`; the preview names the combination, not argv.
-    var preview: String {
+    public var preview: String {
         let cli = selectedCli?.id ?? "muse"
         let where_ = effectiveFolder.map { " in \($0)" } ?? ""
         let yoloTag: String
@@ -82,7 +96,7 @@ struct NewSessionPicker {
         return "\(cli)\(where_)\(yoloTag)"
     }
 
-    mutating func stepCli(forward: Bool) {
+    public mutating func stepCli(forward: Bool) {
         guard !clis.isEmpty else { return }
         if forward {
             cliIndex = (cliIndex + 1) % clis.count
