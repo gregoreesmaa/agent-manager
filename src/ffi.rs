@@ -14,7 +14,7 @@ use crate::app::{App, ChatSession, Status};
 use crate::embedded::{EmbeddedPty, SpawnKind};
 use crate::parsers::registry::RegistryParser;
 use crate::persist;
-use crate::providers::{MuseCliProvider, Provider};
+use crate::providers::{MuseCliProvider, OpencodeCliProvider, Provider};
 
 /// Integer error codes returned by every fallible `am_*` function.
 #[repr(i32)]
@@ -131,11 +131,17 @@ pub struct AmPty {
 /// No arguments; always safe to call. Free with [`am_core_free`].
 #[no_mangle]
 pub unsafe extern "C" fn am_core_new() -> *mut AmCore {
-    let provider = MuseCliProvider::new(
+    let mut discovered = MuseCliProvider::new(
         MuseCliProvider::default_store_root(),
         Box::new(RegistryParser::default()),
+    )
+    .discover_sessions();
+    // Same merge as the gpui shell startup: opencode sessions seed
+    // alongside muse sessions (unreachable CLI degrades to empty).
+    discovered.extend(
+        OpencodeCliProvider::with_default_program(Box::new(RegistryParser::default()))
+            .discover_sessions(),
     );
-    let discovered = provider.discover_sessions();
     let persisted = persist::load_sessions();
     let app = App::new(persist::merge_sessions(discovered, persisted));
     Box::into_raw(Box::new(AmCore { app }))

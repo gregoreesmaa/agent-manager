@@ -32,6 +32,11 @@ pub const MAX_VISIBLE_LINKS: usize = 20;
 /// render via the generic fallback instead of failing to parse.
 pub const HARNESS_MUSE: &str = "muse";
 
+/// Harness id for sessions backed by the opencode CLI: discovered from
+/// the opencode session store (`~/.local/share/opencode`), spawned as
+/// plain `opencode`, resumed as `opencode --session <id>`.
+pub const HARNESS_OPENCODE: &str = "opencode";
+
 /// Default harness for newly spawned runs and for persisted sessions
 /// predating the field (serde fills it in): everything today is muse.
 pub fn default_harness() -> String {
@@ -48,6 +53,7 @@ pub fn harness_badge(harness: &str) -> (&'static str, &'static str) {
         "muse" => ("⬢", "mu"),
         "codex" => ("⬣", "cx"),
         "claude" => ("▲", "cc"),
+        "opencode" => ("⬓", "oc"),
         _ => ("○", "??"),
     }
 }
@@ -634,12 +640,22 @@ impl App {
     }
 
     /// Spawn kind for a sidebar selection: historic entries resume,
-    /// live entries relaunch fresh.
+    /// live entries relaunch fresh. Resume routes through the stored
+    /// harness: opencode-backed rows re-attach as `opencode --session`,
+    /// everything else as `muse --resume <id>`.
     pub fn respawn_kind(&self, run_id: &str) -> SpawnKind {
+        use crate::embedded::Harness;
         match self.sessions.iter().find(|s| s.id == run_id) {
-            Some(s) if s.provider_session_id.is_some() => SpawnKind::Resume {
-                session_id: s.provider_session_id.clone().unwrap_or_default(),
-            },
+            Some(s) if s.provider_session_id.is_some() => {
+                let session_id = s.provider_session_id.clone().unwrap_or_default();
+                match Harness::from_id(&s.harness) {
+                    Harness::Muse => SpawnKind::Resume { session_id },
+                    harness => SpawnKind::ResumeOn {
+                        harness,
+                        session_id,
+                    },
+                }
+            }
             _ => SpawnKind::New,
         }
     }
@@ -1250,6 +1266,43 @@ mod tests {
         assert_eq!(app.respawn_kind("missing"), SpawnKind::New);
         app.retry_spawn(SpawnKind::New);
         assert!(app.has_pending_spawn());
+    }
+
+    #[test]
+    fn respawn_kind_routes_opencode_rows_to_opencode_resume() {
+        use crate::embedded::Harness;
+        let mut app = App::new(vec![sess("a", Status::Idle, 1)]);
+        app.sessions[0].harness = HARNESS_OPENCODE.to_string();
+        app.sessions[0].provider_session_id = Some("ses-1".into());
+        // opencode-backed historic rows re-attach via `opencode --session`.
+        assert_eq!(
+            app.respawn_kind("a"),
+            SpawnKind::ResumeOn {
+                harness: Harness::Opencode,
+                session_id: "ses-1".into(),
+            }
+        );
+        let (program, args) = app.spawn_command_for(&app.respawn_kind("a")).clone();
+        assert_eq!(program, "opencode");
+        assert_eq!(args, vec!["--session".to_string(), "ses-1".to_string()]);
+        // Live rows still relaunch fresh, regardless of harness.
+        app.sessions[0].provider_session_id = None;
+        assert_eq!(app.respawn_kind("a"), SpawnKind::New);
+    }
+
+    #[test]
+    fn opencode_badge_is_distinct_and_non_blank() {
+        // New harness arm: distinct from muse/codex/claude/unknown, never
+        // blank, never colliding with the status row markers.
+        let oc = harness_badge(HARNESS_OPENCODE);
+        assert_eq!(oc, ("⬓", "oc"));
+        assert_ne!(oc, harness_badge("muse"));
+        assert_ne!(oc, harness_badge("codex"));
+        assert_ne!(oc, harness_badge("claude"));
+        assert_ne!(oc, harness_badge("future-harness"));
+        for marker in ["!", "·", ">"] {
+            assert_ne!(oc.0, marker);
+        }
     }
 
     #[test]
