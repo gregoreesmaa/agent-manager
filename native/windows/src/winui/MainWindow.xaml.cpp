@@ -380,6 +380,40 @@ namespace winrt::AgentManagerWinUI::implementation
         return false;
     }
 
+    bool MainWindow::FirstUnstartedRowId(std::wstring &id) {
+        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
+                            HistoryList()};
+        for (auto const &list : lists) {
+            auto items = list.Items();
+            for (uint32_t i = 0; i < items.Size(); ++i) {
+                auto item = items.GetAt(i).try_as<ListViewItem>();
+                if (!item) {
+                    continue;
+                }
+                std::wstring row(unbox_value<hstring>(item.Tag()));
+                if (!m_live.count(row)) {
+                    id = row;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool MainWindow::IsLocalId(std::wstring const &id) {
+        constexpr wchar_t kPrefix[] = L"local-";
+        return id.compare(0, 6, kPrefix) == 0;
+    }
+
+    std::wstring MainWindow::MintLocalId() {
+        for (;;) {
+            std::wstring id = L"local-" + std::to_wstring(m_localNext++);
+            if (!m_live.count(id)) {
+                return id;
+            }
+        }
+    }
+
     /* Show the selected run's current output from scratch (selection
      * change or fresh spawn): restore retained per-run text when the
      * run is live, else the latest snapshot, else the empty hint. */
@@ -449,26 +483,43 @@ namespace winrt::AgentManagerWinUI::implementation
         }
     }
 
-    /* New Session starts the selected row's child through the core
-     * bridge and selects it in the roster. With no selection yet
-     * (fresh launch, or the search cleared it), take the first row
-     * in group order so one click always starts something. */
+    /* New Session opens a live CLI terminal through the core bridge.
+     * The selected roster row starts when it has no live PTY yet (same
+     * as before); with no unstarted row (empty roster included) or an
+     * already-live roster selection, it mints a shell-local terminal
+     * instead — so one click always opens something and the empty
+     * roster is a starting point, not a dead end. A live local stays
+     * put (no orphan duplicates): it has no roster row to return to. */
     void MainWindow::NewButton_Click(IInspectable const &,
                                      RoutedEventArgs const &) {
         if (!m_core) {
             return;
         }
-        if (m_selected.empty()) {
-            std::wstring first;
-            if (!FirstRowId(first)) {
-                SetStatus(L"No runs yet - nothing to start.");
-                return;
-            }
-            m_selected = first;
-        }
-        if (m_live.count(m_selected)) {
-            SetStatus(L"That run is already live.");
+        /* A live local terminal is already the newest thing open:
+         * keep it selected rather than orphaning it behind a newer
+         * one (locals have no roster row to navigate back to). */
+        if (!m_selected.empty() && IsLocalId(m_selected) &&
+            m_live.count(m_selected) != 0) {
+            SetStatus(L"Terminal already open.");
             return;
+        }
+        /* Unstarted roster selection starts as before; an already-live
+         * roster selection or an empty/exhausted roster mints a
+         * shell-local terminal instead, so one click always opens
+         * something. */
+        std::wstring id;
+        bool local = false;
+        if (!m_selected.empty() && !IsLocalId(m_selected) &&
+            m_live.count(m_selected) != 0) {
+            id = MintLocalId();
+            local = true;
+        } else if (m_selected.empty() || IsLocalId(m_selected)) {
+            if (!FirstUnstartedRowId(id)) {
+                id = MintLocalId();
+                local = true;
+            }
+        } else {
+            id = m_selected;
         }
         char *err = nullptr;
         AmPty *pty = bridge_spawn(m_core, kCols, kRows, &err);
@@ -481,12 +532,16 @@ namespace winrt::AgentManagerWinUI::implementation
         }
         LivePty lp;
         lp.pty = pty;
-        m_live[m_selected] = std::move(lp);
+        m_live[id] = std::move(lp);
+        m_selected = id;
+        /* Force the roster rebuild (local PTYs never join its gate):
+         * RefreshRoster restores the list selection for a roster row,
+         * and clears the list visuals for a local id while keeping
+         * m_selected on the new terminal. */
+        m_fingerprint.clear();
         RefreshRoster();
-        /* The rebuild keeps m_selected; make the lists show the started
-         * row (now in a live group) as selected too. */
-        SelectRowById(m_selected);
-        SetStatus(L"Session started.");
+        ShowSelected();
+        SetStatus(local ? L"New terminal started." : L"Session started.");
     }
 
     void MainWindow::PersistCore() {

@@ -60,6 +60,14 @@ namespace winrt::AgentManagerWinUI::implementation
             std::vector<std::pair<std::wstring, std::wstring>> const &rows);
         void SelectRowById(std::wstring const &id);
         bool FirstRowId(std::wstring &id);
+        /* First roster row with no live PTY yet (display order); false
+         * when every visible row is already live or no row is visible. */
+        bool FirstUnstartedRowId(std::wstring &id);
+        /* Mint a shell-local terminal id ("local-N") for a New Session
+         * with no unstarted roster row (empty roster included). Local
+         * ids never collide with core roster ids and are always live. */
+        std::wstring MintLocalId();
+        bool IsLocalId(std::wstring const &id);
         void SetStatus(winrt::hstring const &text);
         void ForwardBytes(char const *data, std::size_t len);
         std::wstring SelectedId();
@@ -72,8 +80,12 @@ namespace winrt::AgentManagerWinUI::implementation
             Windows::ApplicationModel::DataTransfer::DataPackageView data);
 
         ::AmCore *m_core{nullptr};
-        std::map<std::wstring, LivePty> m_live; /* roster id -> live PTY */
-        std::wstring m_selected;                /* selected roster row id */
+        /* Roster row id -> live PTY, plus shell-local "local-N" terminals
+         * (New Session on an empty or fully-live roster). Local entries
+         * render in the terminal pane but never in the roster lists. */
+        std::map<std::wstring, LivePty> m_live;
+        std::wstring m_selected; /* selected roster row id or local id */
+        unsigned m_localNext{1}; /* next local terminal number */
         bool m_syncing{false}; /* true while moving shared selection */
         std::string m_filter;                   /* sidebar filter (UTF-8) */
         std::string m_fingerprint; /* roster rebuild gate */
