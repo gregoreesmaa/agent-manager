@@ -56,7 +56,7 @@ struct NewSessionPicker {
 
     /// Blank folder means inherit (the historic behavior); anything else
     /// spawns in the typed directory (the shell validates is-dir before
-    /// confirming, mirroring the gpui picker's inline refuse-and-fix).
+    /// confirming, mirroring the shared picker's inline refuse-and-fix).
     var effectiveFolder: String? {
         let trimmed = folder.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? nil : trimmed

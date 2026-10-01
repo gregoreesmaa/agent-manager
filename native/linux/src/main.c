@@ -453,7 +453,7 @@ static void on_spawn(GtkButton *btn, gpointer data) {
      * default, so a picker-confirmed claude/yolo combo repeats here).
      * The fresh PTY mints a local id like the picker path: the core
      * roster snapshot is launch-time, so there is no row to attach to.
-     * Local PTYs are capped (same 10-run ceiling as the gpui shell) so
+     * Local PTYs are capped (same 10-run ceiling as the macOS shell) so
      * one-click spawning cannot grow the live set without bound. */
     if (g_hash_table_size(sh->live) >= 10) {
         toast(sh, "At 10 live sessions — close one first.");

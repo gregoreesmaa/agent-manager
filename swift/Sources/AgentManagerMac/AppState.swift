@@ -115,7 +115,7 @@ final class AppState: ObservableObject {
 
     /// Attach a freshly spawned PTY under a new local id (native shells
     /// mint their own rows: the roster snapshot is launch-time, while
-    /// live PTYs key by id like the gpui shell's run map). The row joins
+    /// live PTYs key by id like the shared run map). The row joins
     /// the roster immediately so triage (counts, groups, filter) sees it;
     /// folder/CLI choice is recorded on the row for the detail header.
     private func attachFreshPty(_ pty: Pty, cli: String, folder: String?) {

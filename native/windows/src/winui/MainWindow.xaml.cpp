@@ -478,7 +478,7 @@ namespace winrt::AgentManagerWinUI::implementation
         if (!m_core) {
             return;
         }
-        /* Live-set cap (same 10-run ceiling as the gpui shell): locals
+        /* Live-set cap (same 10-run ceiling as the macOS shell): locals
          * never join the roster, so nothing else would bound them. */
         if (m_live.size() >= 10) {
             SetStatus(L"At 10 live sessions — close one first.");
