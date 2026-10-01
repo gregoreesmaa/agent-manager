@@ -563,12 +563,13 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     /* Thumb drag: HorizontalChange is already in DIPs along the drag
-     * axis, so it adds straight onto the column width. */
+     * axis, so it adds straight onto the column width. (Unlike
+     * KeyRoutedEventArgs, DragDeltaEventArgs carries no Handled flag
+     * — there is nothing to mark: the event has no routing to stop.) */
     void MainWindow::SidebarThumb_DragDelta(
         IInspectable const &,
         Controls::Primitives::DragDeltaEventArgs const &args) {
         SetSidebarWidth(SidebarWidthPx() + args.HorizontalChange());
-        args.Handled(true);
     }
 
     /* Keyboard parity for the grip (fail-visible + non-color cue: the
