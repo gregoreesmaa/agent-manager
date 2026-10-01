@@ -17,4 +17,5 @@ pub mod parsers;
 pub mod persist;
 pub mod providers;
 pub mod scrollback;
+pub mod shell_shared;
 pub mod transcript;

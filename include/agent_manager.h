@@ -118,6 +118,36 @@ size_t am_session_count(const AmCore *core);
  * `am_screen_text_free`. */
 char *am_session_json(const AmCore *core, size_t row);
 
+/* Snapshot-to-stream feed reconciler for C shells (shared
+ * `shell_shared::feed_delta`): feed text that advances a view showing
+ * `old_text` to also show `new_text`, or NULL when the view is already
+ * current. Either argument may be NULL (treated as ""). The result is
+ * freshly allocated; free it with `am_screen_text_free`. Newlines are
+ * normalized to CRLF; a redraw/reflow replays after an ESC[2J ESC[H
+ * clear prefix. */
+char *am_feed_delta(const char *old_text, const char *new_text);
+
+/* True (1) when a roster row with this title/project/id passes the
+ * sidebar `query` (case-insensitive substring; blank query passes
+ * everything), else false (0). NULL means empty; invalid UTF-8 reports
+ * false and records a message. */
+int32_t am_roster_matches(const char *title, const char *project,
+                           const char *id, const char *query);
+
+/* Owned glanceable age label for `then_secs` (unix seconds) relative to
+ * `now_secs` (`just now` / `Nm ago` / `Nh ago` / `Nd ago`); free with
+ * `am_screen_text_free`. */
+char *am_relative_age(int64_t now_secs, int64_t then_secs);
+
+/* Total link count (PR + related) of roster row `row`, or -1 on null
+ * handle / out-of-bounds row. */
+int32_t am_link_count(const AmCore *core, size_t row);
+
+/* Unix seconds of `last_active` for roster row `row`, or -1 on null
+ * handle / out-of-bounds row (feed to `am_relative_age` with the
+ * shell's own clock). */
+int64_t am_last_active(const AmCore *core, size_t row);
+
 /* Last error message for this thread (UTF-8, NUL-terminated). Never
  * NULL; valid until the next failing `am_*` call on this thread. */
 const char *am_last_error(void);

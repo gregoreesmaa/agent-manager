@@ -244,15 +244,16 @@ The Linux shell is the portability proof: it links only the core
   `cargo test --lib`, and the meson suite — `cargo test --all-targets`
   stays the macOS gate.
 - One emulator only: no PTY is spawned inside VTE. The shell encodes keys
-  itself (`bridge_write`) and feeds core snapshots as a stream
-  (`src/feed.c`, a C port of Swift's `TerminalFeed`, unit-pinned by
-  `am-feed-test` mirroring `TerminalFeedTests`). A second line discipline
-  would double-echo.
-- Reconciler parity is deliberate: `feed.c` ports
-  `swift/Sources/ShellSupport/TerminalFeed.swift` case for case
-  (append-suffix hot path, scroll overlap, clear-and-replay, CRLF
-  normalization), so both shells show identical screens from identical
-  snapshots.
+  itself (`bridge_write`) and feeds core snapshots as a stream through
+  the core reconciler (`am_feed_delta` in `src/shell_shared.rs`,
+  unit-pinned by `am-feed-test` mirroring `TerminalFeedTests`). A second
+  line discipline would double-echo.
+- Reconciler parity is structural, not ported: every C shell calls the
+  same `am_feed_delta` (append-suffix hot path, scroll overlap,
+  clear-and-replay, CRLF normalization), so all shells show identical
+  screens from identical snapshots. Swift's `TerminalFeed` stays as the
+  Swift-idiomatic original feeding the SwiftTerm view directly; the old
+  per-shell `feed.c` ports are gone.
 
 ### Windows notes (`native/windows/`, #64)
 
@@ -265,11 +266,16 @@ WinUI 3 UI over the same C ABI. What future maintainers should know:
   spawn. The WinUI surface never creates a console — the same
   single-emulator rule as Linux's "no PTY inside VTE", which keeps
   exactly one line discipline and no double-echo.
-- The portable C core (`core_bridge`, `feed`, `smoke`) is shared
+- The portable C core (`core_bridge`, `smoke`) is shared
   design, not shared files, with `native/linux/`: each shell vendors
   its own copy so per-OS shells stay independently buildable (the
   Windows copy adds only `extern "C"` guards for its C++ consumer).
-  `feed.c` is verbatim logic-identical; `am-win-feed-test` pins it.
+  Shared presentation logic (feed reconciler, roster filter match,
+  relative-age label, per-row link/age getters) lives in the core
+  itself (`src/shell_shared.rs`, bound as `am_feed_delta` /
+  `am_roster_matches` / `am_relative_age` / `am_link_count` /
+  `am_last_active`); `am-win-feed-test` and `am-feed-test` pin that C
+  ABI edge instead of a vendored copy.
 - Key encoding (`src/terminal_keys.h`) ports the Linux key controller
   case for case but resolves printables through the thread layout
   (`ToUnicode`), with AltGr-as-character documented at the one place
@@ -327,16 +333,24 @@ presence flags — `Option` stays on the Rust side).
 | `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
 | `am_session_count` | roster row count; 0 on null (#62) |
 | `am_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `am_screen_text_free` (#62) |
+| `am_feed_delta(old, new)` | shared feed reconciler (`shell_shared`); owned string or null when current; freed with `am_screen_text_free` |
+| `am_roster_matches(title, project, id, query)` | shared sidebar filter match; 1 pass / 0 reject |
+| `am_relative_age(now, then)` | shared glanceable age label; owned string, freed with `am_screen_text_free` |
+| `am_link_count(core, row)` | PR + related link total; -1 on null/OOB |
+| `am_last_active(core, row)` | row `last_active` unix seconds; -1 on null/OOB |
 | `am_last_error` | thread-local message; never null |
 | `am_pty_free` | reaps the child; null no-op |
 
 ### C header (`include/agent_manager.h`, hardened #61)
 
-The header is checked in and mirrors `src/ffi.rs` exactly (15 exports;
-verified: every `am_*` in the header is a `T` symbol in
-`target/debug/libagent_manager.a` and vice versa). Regenerate after any
-FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)
-(`cbindgen.toml` at the repo root):
+The header is checked in and mirrors `src/ffi.rs` exactly (20 exports:
+the 15 original plus `am_feed_delta`, `am_roster_matches`,
+`am_relative_age`, `am_link_count`, `am_last_active`; verified: every
+`am_*` in the header is a `T` symbol in `target/debug/libagent_manager.a`
+and vice versa). Keep it hand-maintained in the existing style — a raw
+cbindgen regen dumps every `pub const` into the contract — and extend it
+by hand after any FFI change (cbindgen config stays at `cbindgen.toml`
+at the repo root for reference):
 
 ```sh
 cargo install cbindgen

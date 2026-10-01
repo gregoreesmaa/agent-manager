@@ -6,7 +6,9 @@ import SwiftUI
 ///   inline sidebar filter field matching title/project/id.
 /// - Spawn: the sidebar New Session button (or the detail Spawn
 ///   button) starts the selected row's child via `am_spawn`; with no
-///   selection New Session takes the first visible row. Typing in
+///   selection New Session takes the first unstarted visible row, and
+///   with no unstarted row at all (empty roster included) it mints a
+///   shell-local terminal instead (Windows parity). Typing in
 ///   the terminal converses through `am_write`.
 /// - History: every row shows its project, harness, and last-active age;
 ///   the rows themselves come from discovery + the persisted store, so
@@ -22,7 +24,6 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 Button("New Session", action: state.newSession)
                     .keyboardShortcut("n", modifiers: .command)
-                    .disabled(state.rows.isEmpty)
                     .help("Start the selected session (am_spawn)")
                     .padding(8)
                 Divider()
@@ -157,8 +158,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailView: some View {
-        if let id = state.selection,
-           let row = state.rows.first(where: { $0.id == id })
+        if let id = state.selection, state.isLocalId(id),
+           state.hasLivePty(id)
+        {
+            // Shell-local terminal (Windows parity): no roster row, just
+            // the live PTY the pump already feeds.
+            CoreTerminalView(
+                state: state, rowId: id,
+                darkMode: colorScheme == .dark
+            )
+        } else if let id = state.selection,
+                  let row = state.rows.first(where: { $0.id == id })
         {
             if state.hasLivePty(id) {
                 CoreTerminalView(
@@ -177,10 +187,16 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else if state.rows.isEmpty {
+            // Clickable New CTA next to the key hint (orientation
+            // bundle): the empty roster is a starting point, opening a
+            // live terminal through the core even with no rows.
             VStack(spacing: 12) {
                 Text("No sessions yet").font(.title2)
                 Text("Spawned sessions appear here; history is restored on launch.")
                     .foregroundStyle(.secondary)
+                Button("New Session", action: state.newSession)
+                    .buttonStyle(.borderedProminent)
+                    .help("Open a live terminal (am_spawn, or Cmd-N)")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {

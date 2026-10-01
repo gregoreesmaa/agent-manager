@@ -7,7 +7,7 @@
  * Epic DoD wiring (mirrors swift/README.md's table):
  *   roster      am_session_count + am_session_json at launch, am_status ticks
  *   spawn       toolbar New-run button -> bridge_spawn (current VTE grid)
- *   converse    key controller -> bridge_write; pump -> am_feed_delta -> VTE
+ *   converse    key controller -> bridge_write; pump -> am_feed_delta (core) -> VTE
  *   copy/paste  native VTE selection + Ctrl+Shift+C/V + right-click menu
  *   scroll      VTE scrollback (capped) in a GtkScrolledWindow
  *   search      sidebar filter entry; terminal find bar (Ctrl+F, VTE search)
@@ -17,7 +17,8 @@
  *   persist     Save button + close hook -> bridge_core_save
  *
  * The core owns its emulator; the VTE widget owns a second one fed with
- * snapshot deltas (feed.h, a port of Swift's TerminalFeed). No PTY is ever
+ * snapshot deltas (the core reconciler in `src/shell_shared.rs`, bound as
+ * `am_feed_delta`). No PTY is ever
  * spawned inside VTE: typed keys are encoded by the shell and forwarded
  * with bridge_write, and echoed output arrives via the pump. This keeps
  * exactly one line discipline (the core's) so nothing double-echoes.
@@ -26,6 +27,7 @@
 #define _POSIX_C_SOURCE 200809L /* strdup under strict C11 */
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -35,7 +37,10 @@
 #include <vte/vte.h>
 
 #include "core_bridge.h"
-#include "feed.h"
+/* am_feed_delta / am_roster_matches / am_relative_age come from the core
+ * itself now (`include/agent_manager.h`, via core_bridge.h): the vendored
+ * feed.c port is gone, so every C shell reconciles through
+ * `src/shell_shared.rs`. */
 
 /* Bounded per-session VTE scrollback (local-only trust + bounded growth:
  * an accumulate-forever buffer would leak memory over long agent runs). */
@@ -250,25 +255,11 @@ static const char *status_label(int st) {
     }
 }
 
+/* Relative-age label for a roster row: the shared core label
+ * (`am_relative_age` in `src/shell_shared.rs`), so every shell renders
+ * the same glanceable text. Owned; free with free(). */
 static char *age_string(long long epoch) {
-    long long dt = (long long)time(NULL) - epoch;
-    if (dt < 0) {
-        dt = 0;
-    }
-    char *s = malloc(32);
-    if (!s) {
-        return NULL;
-    }
-    if (dt < 60) {
-        snprintf(s, 32, "%llds ago", dt);
-    } else if (dt < 3600) {
-        snprintf(s, 32, "%lldm ago", dt / 60);
-    } else if (dt < 86400) {
-        snprintf(s, 32, "%lldh ago", dt / 3600);
-    } else {
-        snprintf(s, 32, "%lldd ago", dt / 86400);
-    }
-    return s;
+    return am_relative_age((int64_t)time(NULL), (int64_t)epoch);
 }
 
 /* ------------------------------------------------------------------ */
@@ -375,26 +366,17 @@ static void reload_statuses(Shell *sh) {
     g_free(sub);
 }
 
+/* Sidebar filter: the shared core match (`am_roster_matches` in
+ * `src/shell_shared.rs`) — case-insensitive title/project/id, blank
+ * passes — so every shell filters identically. */
 static gboolean row_matches(GtkListBoxRow *row, gpointer data) {
     Shell *sh = data;
     const char *q = gtk_editable_get_text(GTK_EDITABLE(sh->filter));
-    if (!q || !*q) {
-        return TRUE;
-    }
     SessionRow *r = g_object_get_data(G_OBJECT(row), "am-row");
     if (!r) {
         return TRUE;
     }
-    char *ql = g_utf8_strdown(q, -1);
-    char *t = g_utf8_strdown(r->title, -1);
-    char *p = g_utf8_strdown(r->project, -1);
-    char *id = g_utf8_strdown(r->id, -1);
-    gboolean hit = strstr(t, ql) || strstr(p, ql) || strstr(id, ql);
-    g_free(ql);
-    g_free(t);
-    g_free(p);
-    g_free(id);
-    return hit;
+    return am_roster_matches(r->title, r->project, r->id, q ? q : "");
 }
 
 /* Order: needs-input first, then active, then idle; recent first within. */
