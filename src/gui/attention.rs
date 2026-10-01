@@ -94,7 +94,8 @@ impl ShellView {
     fn base_status_text_for_width(&self, viewport_w: f32) -> String {
         // 2D-launch picker capture outranks everything while it owns the
         // keyboard: the folder input, the CLI axis, yolo, and the exits.
-        if let Some(picker) = self.launch_picker.as_ref() {
+        if self.picker_open() {
+            let picker = self.launch_picker.as_ref().expect("picker open");
             let cli = picker.selected_cli();
             let cli_state = if cli.available {
                 "ready"

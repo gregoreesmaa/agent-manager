@@ -18,8 +18,9 @@ use super::shell::ShellView;
 impl ShellView {
     /// Picker capture state (2D launch): `Some` while the picker owns the
     /// keyboard. `None` is every other mode (filter/folder captures,
-    /// terminal, nav).
-    pub fn picker_open(&self) -> bool {
+    /// terminal, nav). Read by nav dispatch tests and (on macOS) the
+    /// status-bar render.
+    pub(crate) fn picker_open(&self) -> bool {
         self.launch_picker.is_some()
     }
 
