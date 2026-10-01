@@ -934,6 +934,14 @@ mod tests {
         }
     }
 
+    /// Serializes the PATH-mutating hermetic spawn tests: `cargo test`
+    /// runs threads in one process, so two tests prepending different
+    /// fake-CLI dirs would clobber each other's PATH mid-spawn (a lost
+    /// fake reads as a spawn failure). Hold this across the whole
+    /// prepend-spawn-restore window.
+    #[cfg(unix)]
+    static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn unique_dir(tag: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -973,6 +981,7 @@ mod tests {
         }
         let old_path = std::env::var("PATH").unwrap_or_default();
         let joined = format!("{}:{}", dir.display(), old_path);
+        let _lock = PATH_LOCK.lock().unwrap();
         let _path = EnvGuard::set("PATH", std::ffi::OsStr::new(&joined));
         unsafe {
             let core = am_core_new();
@@ -1216,6 +1225,7 @@ mod tests {
         }
         let old_path = std::env::var("PATH").unwrap_or_default();
         let joined = format!("{}:{}", dir.display(), old_path);
+        let _lock = PATH_LOCK.lock().unwrap();
         let _path = EnvGuard::set("PATH", std::ffi::OsStr::new(&joined));
         // Opt the agent into yolo by default: default(0) and force-on(1)
         // must show `--yolo`, force-off(-1) must not.
