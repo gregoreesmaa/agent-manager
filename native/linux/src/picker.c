@@ -13,9 +13,12 @@
  * are GTK-free so the meson `picker` test pins them without a display.
  */
 
+#define _POSIX_C_SOURCE 200809L /* strdup under strict C11 (see main.c) */
+
 #include "picker.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

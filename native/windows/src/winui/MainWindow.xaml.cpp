@@ -518,7 +518,7 @@ namespace winrt::AgentManagerWinUI::implementation
         char *eff_raw = bridge_effective_cli(m_core, nullptr);
         std::string eff = eff_raw ? eff_raw : "terminal";
         bridge_string_free(eff_raw);
-        SetStatus(to_wide("New " + eff + " session started."));
+        SetStatus(hstring{to_wide("New " + eff + " session started.")});
     }
 
     /* Picker button: open the 2D new-session ContentDialog (folder x
