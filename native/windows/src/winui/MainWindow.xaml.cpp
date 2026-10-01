@@ -541,6 +541,11 @@ namespace winrt::AgentManagerWinUI::implementation
         m_fingerprint.clear();
         RefreshRoster();
         ShowSelected();
+        /* Hand the keyboard to the new session (takes the keyboard on
+         * spawn, like the macOS shell's `n` key): without this, focus stays on
+         * the New Session button, where Return re-clicks instead of
+         * submitting the typed prompt. */
+        TermBox().Focus(Microsoft::UI::Xaml::FocusState::Programmatic);
         SetStatus(local ? L"New terminal started." : L"Session started.");
     }
 
@@ -664,7 +669,13 @@ namespace winrt::AgentManagerWinUI::implementation
      * App shortcuts (Ctrl+S persist, Ctrl+N spawn) ride here too,
      * mirroring the GTK shell's app-level shortcuts. Paste arrives
      * via the clipboard (async); the reserve rule keeps Ctrl+Shift+C/V
-     * with the native control for copy. */
+     * with the native control for copy.
+     *
+     * Two documented converse keys never reach this bubbling handler:
+     * the read-only output box swallows Return (newline insertion) and
+     * plain Ctrl+C (copy) before they bubble. Those ride
+     * `TermBox_PreviewKeyDown` (tunneling) instead, through the same
+     * encoder below — one key table, no fork. */
     void MainWindow::RootGrid_KeyDown(
         IInspectable const &, KeyRoutedEventArgs const &args) {
         /* WinUI 3 KeyRoutedEventArgs carries no modifiers: query the
@@ -714,6 +725,46 @@ namespace winrt::AgentManagerWinUI::implementation
         std::size_t n = amkeys::encode_key(key, buf);
         if (n == 0) {
             return; /* Native control keeps it (selection, copy, ...). */
+        }
+        ForwardBytes(buf, n);
+        args.Handled(true);
+    }
+
+    /* Tunneling converse keys for the terminal surface: the read-only
+     * output box swallows Return (newline insertion) and plain Ctrl+C
+     * (copy) before they can bubble to `RootGrid_KeyDown`, so without
+     * this handler a prompt can be typed but never submitted and the
+     * child can never be interrupted. Only these two documented keys
+     * are intercepted here — everything else flows untouched, so text
+     * selection, roster navigation, and the search box keep working.
+     * Encoding reuses `amkeys::encode_key` (the same table the bubble
+     * handler uses); the reserve rule stays intact because
+     * Ctrl+Shift+C/V encode to nothing and fall through to the box. */
+    void MainWindow::TermBox_PreviewKeyDown(
+        IInspectable const &, KeyRoutedEventArgs const &args) {
+        int vk = static_cast<int>(args.Key());
+        bool isReturn = (vk == amkeys::kVkReturn);
+        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        bool isPlainCtrlC = ctrl && !shift && !alt && (vk == 'C');
+        if (!isReturn && !isPlainCtrlC) {
+            return;
+        }
+        LivePty *lp = SelectedLive();
+        if (!lp) {
+            return;
+        }
+        amkeys::WinKey key;
+        key.vk = vk;
+        key.text = key_char(vk, ctrl);
+        key.ctrl = ctrl;
+        key.shift = shift;
+        key.alt = alt;
+        char buf[8]{};
+        std::size_t n = amkeys::encode_key(key, buf);
+        if (n == 0) {
+            return; /* Reserved for the control (e.g. Ctrl+Shift+C). */
         }
         ForwardBytes(buf, n);
         args.Handled(true);
