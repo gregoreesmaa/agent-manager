@@ -53,6 +53,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -60,13 +61,20 @@
                                Text="Runs"
                                Style="{StaticResource SubtitleTextBlockStyle}"/>
                     <Button x:Name="NewButton"
-                            Grid.Row="1"
-                            Content="New Session"
-                            Style="{StaticResource AccentButtonStyle}"
-                            HorizontalAlignment="Stretch"
-                            Click="NewButton_Click"/>
-                    <TextBox x:Name="FilterBox"
+                             Grid.Row="1"
+                             Content="New Session"
+                             Style="{StaticResource AccentButtonStyle}"
+                             HorizontalAlignment="Stretch"
+                             ToolTipService.ToolTip="Repeat the last session (Ctrl+N)"
+                             Click="NewButton_Click"/>
+                    <Button x:Name="PickButton"
                              Grid.Row="2"
+                             Content="Choose folder, CLI, options…"
+                             HorizontalAlignment="Stretch"
+                             ToolTipService.ToolTip="Pick folder x CLI + yolo (Ctrl+Shift+N)"
+                             Click="PickButton_Click"/>
+                    <TextBox x:Name="FilterBox"
+                             Grid.Row="3"
                              PlaceholderText="Search sessions"
                              TextChanged="FilterBox_TextChanged"/>
                     <!-- Group lists size to content (inner scrolling off)
@@ -74,7 +82,7 @@
                          until the user expands it. All four headers always
                          show, so the group order is stable even when a
                          group is empty. -->
-                    <ScrollViewer Grid.Row="3"
+                    <ScrollViewer Grid.Row="4"
                                   VerticalScrollMode="Auto"
                                   VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="2">
@@ -124,7 +132,7 @@
                          lives at the sidebar bottom now that the terminal
                          fills the right pane. -->
                     <TextBlock x:Name="StatusText"
-                               Grid.Row="4"
+                               Grid.Row="5"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>

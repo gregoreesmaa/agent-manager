@@ -13,6 +13,11 @@ All notable changes, newest first. Issue numbers track `gh issue`.
   seam (`src/launch.rs`, `SpawnKind::NewOn`, `App::start_launch`, FFI
   `am_spawn_launch`/`am_clis_json`/`am_recent_json`/`am_note_launch`;
   see `docs/new-session-picker.md` for the 10-persona synthesis).
+  Native shells bind the same model: Swift picker sheet + repeat-last
+  menu (`swift test` pins the pure-Swift picker model), GTK split-button
+  + AdwDialog picker (`am-picker-test` + smoke catalog check), WinUI
+  repeat + ContentDialog picker (`am-win-picker-test` + smoke catalog
+  check).
 - UX: restore window resizing — hidden titlebar is `Some`-transparent
   again (`None` dropped `NSResizableWindowMask` on macOS), edges/corners
   resize, minimum + narrow/wide breakpoints unchanged (#58).

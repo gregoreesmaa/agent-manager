@@ -15,6 +15,7 @@
 #define AM_JSON_MINI_H
 
 #include <string>
+#include <vector>
 
 namespace amjson {
 
@@ -123,6 +124,126 @@ inline std::string get_string(const std::string &json, const std::string &key) {
         return {};
     }
     return {};
+}
+
+/* Top-level `true` flag of `key` inside a flat object span (1 when
+ * present-true, 0 otherwise). Ports the catalog `available` read. */
+inline bool get_bool(const std::string &json, const std::string &key) {
+    const std::string pat = "\"" + key + "\"";
+    std::size_t p = json.find(pat);
+    if (p == std::string::npos) {
+        return false;
+    }
+    p = json.find(':', p + pat.size());
+    if (p == std::string::npos) {
+        return false;
+    }
+    ++p;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) {
+        ++p;
+    }
+    return json.compare(p, 4, "true") == 0;
+}
+
+/* Split a top-level JSON array of flat objects into its `{...}` spans.
+ * Stops at the first malformed span (fail visible: short vector). */
+inline std::vector<std::string> split_objects(const std::string &json) {
+    std::vector<std::string> out;
+    std::size_t p = json.find('[');
+    if (p == std::string::npos) {
+        return out;
+    }
+    ++p;
+    auto skip_ws = [&]() {
+        while (p < json.size() && (json[p] == ' ' || json[p] == '\t' ||
+                                   json[p] == '\n' || json[p] == '\r' ||
+                                   json[p] == ',')) {
+            ++p;
+        }
+    };
+    skip_ws();
+    while (p < json.size() && json[p] != ']') {
+        if (json[p] != '{') {
+            break;
+        }
+        std::size_t start = p;
+        int depth = 0;
+        bool in_str = false, esc = false;
+        for (; p < json.size(); ++p) {
+            char c = json[p];
+            if (in_str) {
+                if (esc) {
+                    esc = false;
+                } else if (c == '\\') {
+                    esc = true;
+                } else if (c == '"') {
+                    in_str = false;
+                }
+            } else if (c == '"') {
+                in_str = true;
+            } else if (c == '{') {
+                ++depth;
+            } else if (c == '}') {
+                if (--depth == 0) {
+                    ++p;
+                    break;
+                }
+            }
+        }
+        if (depth != 0) {
+            break;
+        }
+        out.push_back(json.substr(start, p - start));
+        skip_ws();
+    }
+    return out;
+}
+
+/* Parse a top-level JSON string array into items (unescaped via
+ * get_string on synthetic single-key objects). Malformed tail stops
+ * the parse; the head still returns. */
+inline std::vector<std::string> parse_string_array(const std::string &json) {
+    std::vector<std::string> out;
+    std::size_t p = json.find('[');
+    if (p == std::string::npos) {
+        return out;
+    }
+    ++p;
+    while (p < json.size() && json[p] != ']') {
+        while (p < json.size() && (json[p] == ' ' || json[p] == '\t' ||
+                                   json[p] == '\n' || json[p] == '\r' ||
+                                   json[p] == ',')) {
+            ++p;
+        }
+        if (p >= json.size() || json[p] != '"') {
+            break;
+        }
+        /* Find the closing quote (escape-aware), then decode through
+         * the object reader on a synthetic wrapper. */
+        std::size_t q = p + 1;
+        bool esc = false;
+        for (; q < json.size(); ++q) {
+            if (esc) {
+                esc = false;
+            } else if (json[q] == '\\') {
+                esc = true;
+            } else if (json[q] == '"') {
+                break;
+            }
+        }
+        if (q >= json.size()) {
+            break;
+        }
+        std::string wrapped =
+            "{\"v\":" + json.substr(p, q - p + 1) + "}";
+        std::string val = get_string(wrapped, "v");
+        /* get_string returns {} on failure: distinguish by re-check —
+         * an empty item decodes to "" through a valid span, so only
+         * accept when the wrapper parsed (the span was well-formed). */
+        out.push_back(val);
+        p = q + 1;
+    }
+    return out;
 }
 
 } /* namespace amjson */

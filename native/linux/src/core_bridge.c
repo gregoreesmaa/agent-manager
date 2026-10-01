@@ -72,8 +72,40 @@ AmPty *bridge_spawn(const AmCore *core, unsigned cols, unsigned rows,
     return pty;
 }
 
-void bridge_pty_free(AmPty *pty) {
-    am_pty_free(pty);
+AmPty *bridge_spawn_launch(const AmCore *core, const char *cli,
+                            const char *cwd, int yolo, unsigned cols,
+                            unsigned rows, char **msg_out) {
+    AmPty *pty = NULL;
+    int rc = am_spawn_launch(core, &pty, cli, cwd, (int32_t)yolo,
+                             (uint16_t)cols, (uint16_t)rows);
+    if (rc != 0) {
+        if (msg_out) {
+            *msg_out = copy_last_error();
+        }
+        return NULL;
+    }
+    return pty;
+}
+
+char *bridge_clis_json(void) {
+    return am_clis_json();
+}
+
+char *bridge_recent_json(const AmCore *core) {
+    return am_recent_json(core);
+}
+
+char *bridge_effective_cli(const AmCore *core, const char *cli) {
+    return am_effective_cli(core, cli);
+}
+
+int bridge_note_launch(AmCore *core, const char *cli, const char *cwd,
+                       char **msg_out) {
+    int rc = am_note_launch(core, cli, cwd);
+    if (rc != 0 && msg_out) {
+        *msg_out = copy_last_error();
+    }
+    return rc;
 }
 
 int bridge_pump(AmPty *pty) {

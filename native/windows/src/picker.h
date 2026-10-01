@@ -1,0 +1,244 @@
+/* Two-dimensional new-session picker for the WinUI shell (issue #64).
+ *
+ * Pure parsing/logic over the core 2D-launch JSON (no WinUI types), so
+ * the CMake `am-win-picker-test` pins it on every runner. The dialog
+ * itself lives in MainWindow.xaml.cpp over these helpers.
+ *
+ * Catalog rows come from `bridge_clis_json`
+ * ([{id,program,path,available}] in core order); recents from
+ * `bridge_recent_json` ([String], MRU-first). Missing CLIs stay listed
+ * (available=false) with an install hint, never hidden.
+ */
+
+#ifndef AM_WIN_PICKER_H
+#define AM_WIN_PICKER_H
+
+#include <string>
+#include <vector>
+
+namespace picker {
+
+/* One CLI catalog row. `path` is empty when the CLI is missing. */
+struct CliRow {
+    std::string id;
+    std::string program;
+    std::string path; /* empty when unavailable */
+    bool available = false;
+};
+
+/* Parse the `bridge_clis_json` catalog (core order). Malformed input
+ * yields zero rows, never a throw. */
+inline std::vector<CliRow> parse_clis(const std::string &json) {
+    std::vector<CliRow> out;
+    std::size_t p = json.find('[');
+    if (p == std::string::npos) {
+        return out;
+    }
+    ++p;
+    while (p < json.size() && json[p] != ']') {
+        while (p < json.size() &&
+               (json[p] == ' ' || json[p] == '\t' || json[p] == '\n' ||
+                json[p] == '\r' || json[p] == ',')) {
+            ++p;
+        }
+        if (p >= json.size() || json[p] != '{') {
+            break;
+        }
+        std::size_t start = p;
+        int depth = 0;
+        bool in_str = false, esc = false;
+        for (; p < json.size(); ++p) {
+            char c = json[p];
+            if (in_str) {
+                if (esc) {
+                    esc = false;
+                } else if (c == '\\') {
+                    esc = true;
+                } else if (c == '"') {
+                    in_str = false;
+                }
+            } else if (c == '"') {
+                in_str = true;
+            } else if (c == '{') {
+                ++depth;
+            } else if (c == '}') {
+                if (--depth == 0) {
+                    ++p;
+                    break;
+                }
+            }
+        }
+        if (depth != 0) {
+            break;
+        }
+        std::string obj = json.substr(start, p - start);
+        auto raw = [&](const char *key) -> std::string {
+            std::string pat = std::string("\"") + key + "\"";
+            std::size_t q = obj.find(pat);
+            if (q == std::string::npos) {
+                return {};
+            }
+            q = obj.find(':', q + pat.size());
+            if (q == std::string::npos) {
+                return {};
+            }
+            ++q;
+            while (q < obj.size() &&
+                   (obj[q] == ' ' || obj[q] == '\t')) {
+                ++q;
+            }
+            if (q >= obj.size()) {
+                return {};
+            }
+            if (obj[q] != '"') {
+                /* Non-string scalar (null/false/true): return the token
+                 * so callers can compare it literally. */
+                std::size_t e = q;
+                while (e < obj.size() && obj[e] != ',' && obj[e] != '}' &&
+                       obj[e] != ' ' && obj[e] != '\t') {
+                    ++e;
+                }
+                return obj.substr(q, e - q);
+            }
+            /* Quoted string: reuse the amjson decoder when present by
+             * re-quoting is unnecessary — decode inline (escapes). */
+            std::string val;
+            ++q;
+            bool ok = true;
+            while (q < obj.size() && obj[q] != '"') {
+                if (obj[q] != '\\') {
+                    val += obj[q++];
+                    continue;
+                }
+                ++q;
+                if (q >= obj.size()) {
+                    ok = false;
+                    break;
+                }
+                char e = obj[q++];
+                switch (e) {
+                case '"': val += '"'; break;
+                case '\\': val += '\\'; break;
+                case '/': val += '/'; break;
+                case 'n': val += '\n'; break;
+                case 't': val += '\t'; break;
+                case 'r': val += '\r'; break;
+                default: val += e; break;
+                }
+            }
+            if (!ok) {
+                return {};
+            }
+            return val;
+        };
+        CliRow row;
+        row.id = raw("id");
+        row.program = raw("program");
+        std::string path = raw("path");
+        row.path = (path == "null") ? std::string{} : path;
+        row.available = raw("available") == "true";
+        if (row.id.empty()) {
+            row.id = "muse";
+        }
+        if (row.program.empty()) {
+            row.program = row.id;
+        }
+        out.push_back(std::move(row));
+    }
+    return out;
+}
+
+/* Parse the `bridge_recent_json` string array. Malformed input yields
+ * zero recents, never a throw. */
+inline std::vector<std::string> parse_recents(const std::string &json) {
+    std::vector<std::string> out;
+    std::size_t p = json.find('[');
+    if (p == std::string::npos) {
+        return out;
+    }
+    ++p;
+    while (p < json.size() && json[p] != ']') {
+        while (p < json.size() &&
+               (json[p] == ' ' || json[p] == '\t' || json[p] == '\n' ||
+                json[p] == '\r' || json[p] == ',')) {
+            ++p;
+        }
+        if (p >= json.size() || json[p] != '"') {
+            break;
+        }
+        ++p;
+        std::string val;
+        bool ok = true;
+        while (p < json.size() && json[p] != '"') {
+            if (json[p] != '\\') {
+                val += json[p++];
+                continue;
+            }
+            ++p;
+            if (p >= json.size()) {
+                ok = false;
+                break;
+            }
+            char e = json[p++];
+            switch (e) {
+            case '"': val += '"'; break;
+            case '\\': val += '\\'; break;
+            case '/': val += '/'; break;
+            case 'n': val += '\n'; break;
+            case 't': val += '\t'; break;
+            case 'r': val += '\r'; break;
+            default: val += e; break;
+            }
+        }
+        if (!ok || p >= json.size()) {
+            break;
+        }
+        ++p; /* closing quote */
+        out.push_back(std::move(val));
+    }
+    return out;
+}
+
+/* Blank/whitespace folder means inherit (empty return). Otherwise the
+ * trimmed folder. */
+inline std::string effective_folder(const std::string &folder) {
+    std::size_t b = folder.find_first_not_of(" \t\n\r");
+    if (b == std::string::npos) {
+        return {};
+    }
+    std::size_t e = folder.find_last_not_of(" \t\n\r");
+    return folder.substr(b, e - b + 1);
+}
+
+/* Tri-state yolo int for `bridge_spawn_launch` from the segmented
+ * index (1 = force on, 2 = force off, else config default). */
+inline int yolo_value(int selected) {
+    if (selected == 1) {
+        return 1;
+    }
+    if (selected == 2) {
+        return -1;
+    }
+    return 0;
+}
+
+/* One-line spawn preview (`runs: muse in <dir> + yolo`). */
+inline std::string preview(const std::string &cli, const std::string &folder,
+                           int yolo) {
+    std::string c = cli.empty() ? "muse" : cli;
+    std::string eff = effective_folder(folder);
+    std::string tag;
+    if (yolo > 0) {
+        tag = " + yolo";
+    } else if (yolo < 0) {
+        tag = " (yolo off)";
+    }
+    if (eff.empty()) {
+        return "runs: " + c + tag;
+    }
+    return "runs: " + c + " in " + eff + tag;
+}
+
+} /* namespace picker */
+
+#endif /* AM_WIN_PICKER_H */

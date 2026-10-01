@@ -204,7 +204,8 @@ pub unsafe extern "C" fn am_spawn(
 /// Spawn a 2D-launch session PTY (folder × CLI + yolo) of `cols` x `rows`.
 /// `cli` names the harness id (`muse`, `claude`, …; null/empty repeats the
 /// last-used/default resolution), `cwd` is null (inherit) or a path,
-/// `yolo` nonzero forces the canonical yolo flag for this spawn only.
+/// `yolo` is tri-state: >0 forces the canonical yolo flag on for this
+/// spawn only, <0 forces it off, 0 follows the per-agent config default.
 /// Returns an [`AmError`] code; the handle lands in `*out`.
 ///
 /// # Safety
@@ -254,7 +255,15 @@ pub unsafe extern "C" fn am_spawn_launch(
         &launch::detect_available_clis(),
     );
     let harness = crate::embedded::Harness::from_id(&resolved_cli);
-    let yolo_on = yolo != 0 || app.config_yolo_default(harness.id());
+    // Tri-state yolo (mirrors `launch::YoloChoice`): positive forces on,
+    // negative forces off, zero follows the per-agent config default.
+    let yolo_on = if yolo > 0 {
+        true
+    } else if yolo < 0 {
+        false
+    } else {
+        app.config_yolo_default(harness.id())
+    };
     let (program, mut args) = harness.new_command();
     args.extend(app.config_extra_args(&program));
     if yolo_on {
@@ -265,6 +274,48 @@ pub unsafe extern "C" fn am_spawn_launch(
         }
     }
     spawn_into(out, &program, &args, cwd, cols, rows)
+}
+
+/// Owned harness id of the effective CLI for `cli` (2D launch): the
+/// explicit id when non-empty, else the core's last-used / configured /
+/// autodetected resolution (same rule as [`am_spawn_launch`]). Lets
+/// shells label a repeat-last spawn before starting it. Null `cli`
+/// means "resolve the default". Free with [`am_screen_text_free`].
+///
+/// # Safety
+/// `core` must be null or a live pointer from [`am_core_new`]; `cli`
+/// must be null or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn am_effective_cli(core: *const AmCore, cli: *const c_char) -> *mut c_char {
+    let explicit = if cli.is_null() {
+        None
+    } else {
+        match CStr::from_ptr(cli).to_str() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                set_error("am_effective_cli: cli is not valid UTF-8".to_string());
+                return std::ptr::null_mut();
+            }
+        }
+    };
+    let catalog = launch::detect_available_clis();
+    let (last, default) = if core.is_null() {
+        (None, None)
+    } else {
+        (
+            (*core).app.config_last_cli(),
+            (*core).app.config_default_cli(),
+        )
+    };
+    let resolved =
+        launch::resolve_effective_cli(explicit.filter(|s| !s.is_empty()), last, default, &catalog);
+    match CString::new(resolved) {
+        Ok(s) => s.into_raw(),
+        Err(_) => {
+            set_error("am_effective_cli: id contains NUL".to_string());
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Owned JSON of the autodetected CLI catalog (2D launch):
@@ -1122,7 +1173,84 @@ mod tests {
             let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
             am_screen_text_free(raw);
             assert_eq!(text, "[\"/tmp/api\"]");
+            // Effective CLI: explicit wins, null resolves the default
+            // (here the noted last_cli), null core still resolves.
+            let explicit = CString::new("codex").unwrap();
+            let raw = am_effective_cli(core_ptr, explicit.as_ptr());
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            assert_eq!(text, "codex");
+            let raw = am_effective_cli(core_ptr, std::ptr::null());
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            assert_eq!(text, "claude");
+            let raw = am_effective_cli(std::ptr::null(), std::ptr::null());
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            assert!(!text.is_empty());
         }
+    }
+
+    // Unix-only like `public_spawn_success_path`: the fake is a shell
+    // script (CreateProcess cannot execute it; Windows coverage is the
+    // smoke-live harness).
+    #[cfg(unix)]
+    #[test]
+    fn spawn_launch_yolo_tristate_reaches_child_argv() {
+        // 2D launch: the tri-state yolo int flows into the child argv —
+        // force-on appends the canonical flag, force-off suppresses the
+        // opted-in config default, default follows it. The fake `muse`
+        // echoes its argv, so the screen proves the flag story.
+        use std::time::Duration;
+        let dir = unique_dir("launch-yolo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("muse"), "#!/bin/sh\necho ARGV:$*\nsleep 30\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("muse"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let joined = format!("{}:{}", dir.display(), old_path);
+        let _path = EnvGuard::set("PATH", std::ffi::OsStr::new(&joined));
+        // Opt the agent into yolo by default: default(0) and force-on(1)
+        // must show `--yolo`, force-off(-1) must not.
+        unsafe {
+            let core = am_core_new();
+            assert!(!core.is_null());
+            (*core).app.config_mut().agents.insert(
+                "muse".to_string(),
+                crate::config::AgentConfig {
+                    extra_args: Vec::new(),
+                    yolo: true,
+                },
+            );
+            for (yolo, want_flag) in [(0, true), (1, true), (-1, false)] {
+                let mut pty: *mut AmPty = std::ptr::null_mut();
+                let cli = CString::new("muse").unwrap();
+                let rc =
+                    am_spawn_launch(core, &mut pty, cli.as_ptr(), std::ptr::null(), yolo, 80, 24);
+                assert_eq!(rc, AmError::Ok.code());
+                assert!(!pty.is_null());
+                assert!(pump_until_text(pty, "ARGV:", Duration::from_secs(10)));
+                let raw = am_screen_text(pty);
+                assert!(!raw.is_null());
+                let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+                am_screen_text_free(raw);
+                am_pty_free(pty);
+                assert_eq!(
+                    text.contains("--yolo"),
+                    want_flag,
+                    "yolo={yolo}: screen {text:?}"
+                );
+            }
+            am_core_free(core);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Test-only spawn with an explicit argv (the public [`am_spawn`] runs

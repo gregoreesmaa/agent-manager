@@ -93,8 +93,24 @@ resolved below.
 
 ## Follow-ups (not in this change)
 
-- Native per-shell picker widgets (SwiftUI Menu, GtkPopover, MenuFlyout)
-  over `am_clis_json` / `am_recent_json` / `am_spawn_launch`.
 - List-level `[yolo]` row suffix for triage parity.
 - `R` rescan affordance + `--version` background verification.
+- Settings-menu UI for per-agent yolo defaults (config-file only today).
 - cbindgen header regen for the new FFI entry points.
+
+## Native shells (landed)
+
+All three native shells bind the same core model over the additive FFI
+(`am_spawn_launch` with tri-state yolo, `am_clis_json`, `am_recent_json`,
+`am_effective_cli`, `am_note_launch`):
+
+- Swift (`swift/`): split Menu (repeat-last + picker sheet with folder
+  field/recents, CLI radio, tri-state yolo, preview); pure-Swift
+  `NewSessionPicker` model pinned by `swift test`.
+- GTK (`native/linux/`): linked New-run + ▾ caret (Ctrl+N / Ctrl+Shift+N);
+  AdwDialog picker over `picker.c` pure logic pinned by `am-picker-test`;
+  smoke asserts the catalog surface.
+- WinUI (`native/windows/`): New Session repeat + Choose dialog
+  (ContentDialog with folder/CLI/yolo + preview, Ctrl+N / Ctrl+Shift+N);
+  pure `picker.h` logic pinned by `am-win-picker-test`; smoke asserts
+  the catalog surface.

@@ -12,7 +12,7 @@
 # the portable C core every shell shares (reconciler, bridge, smoke) so
 # the logic stays green even where XAML cannot compile.
 cmake_minimum_required(VERSION 3.21)
-project(agent-manager-win C)
+project(agent-manager-win C CXX)
 
 enable_testing()
 
@@ -38,6 +38,13 @@ set(SYS_LIBS ${CORE_LIB} ws2_32 userenv bcrypt ntdll)
 # Pure-logic reconciler unit tests: no WinUI needed, runs anywhere.
 add_executable(am-win-feed-test src/feed.c src/feed_test.c)
 add_test(NAME feed COMMAND am-win-feed-test)
+
+# 2D-launch picker logic tests (catalog/recents/folder/yolo/preview):
+# header-only C++, no WinUI, runs anywhere.
+add_executable(am-win-picker-test src/picker_test.cpp)
+target_compile_features(am-win-picker-test PRIVATE cxx_std_17)
+add_test(NAME picker COMMAND am-win-picker-test)
+set_tests_properties(picker PROPERTIES PASS_REGULAR_EXPRESSION "PICKER-OK")
 
 # Headless C ABI runtime check: no session needed, CI-greppable output.
 add_executable(am-win-smoke src/smoke.c src/core_bridge.c)
