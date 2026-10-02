@@ -71,6 +71,7 @@ powershell -ExecutionPolicy Bypass `
 | Test | What it proves |
 |---|---|
 | `feed` | `am-win-feed-test`: the snapshot→stream reconciler, mirroring Swift's `TerminalFeedTests` 1:1 |
+| `keys` | `am-win-keys-test`: the converse-key contract the terminal preview-tunnel relies on (Return→CR, Ctrl+C→ETX, Ctrl+Shift+C/V reserve stays with the control) |
 | `smoke` | `am-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`) |
 | `smoke-live` | `smoke_live.ps1`: compiles `tests/fake_muse.c` to `muse.exe`, then spawn/pump/write/resize against it in a scratch profile (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
 
@@ -81,7 +82,7 @@ powershell -ExecutionPolicy Bypass `
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
 | Spawn | New-run button / Ctrl+N → `bridge_spawn` at 80x25; 2D-launch entry points (`am_spawn_launch` with folder × CLI + yolo, `am_clis_json` catalog, `am_recent_json` recents, `am_note_launch` memory) available for the picker follow-up |
 | Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
-| Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box |
+| Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box. Return and plain Ctrl+C ride `TermBox_PreviewKeyDown` (tunneling: the read-only box would otherwise swallow them before they bubble); everything else bubbles via `RootGrid_KeyDown`. New Session focuses the terminal, so typing + Enter submits immediately |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |
 | Scroll | output TextBox in a `ScrollViewer`, auto-tails; per-run text retained (capped at 100 000 chars) |
 | Search / filter | sidebar search box filters every roster group |

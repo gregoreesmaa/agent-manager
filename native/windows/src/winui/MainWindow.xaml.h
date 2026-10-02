@@ -42,6 +42,9 @@ namespace winrt::AgentManagerWinUI::implementation
         void RootGrid_KeyDown(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args);
+        void TermBox_PreviewKeyDown(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args);
 
     private:
         void OnTick(
