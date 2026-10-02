@@ -124,6 +124,183 @@ pub fn extract_project(tail: &str) -> Option<String> {
     None
 }
 
+/// opencode session tail: export-shaped JSON (`opencode export <id>`)
+/// with `messages: [{info: {role}, parts: [{type, text}]}]` — or, on older
+/// rows, a bare `messages` array of `{role, content}` objects. `text`
+/// parts with non-empty text become chat messages; `tool` parts surface
+/// as `🔧 <tool>` summaries; `step-start`/`step-finish` markers and other
+/// scaffolding are skipped. Non-JSON lines are kept as [`Role::Unknown`]
+/// (same contract as [`parse_transcript`).
+pub fn parse_opencode_tail(tail: &str) -> ParsedTranscript {
+    // Fast path: whole-tail export document.
+    if let Ok(doc) = serde_json::from_str::<serde_json::Value>(
+        tail.trim_start_matches(|c: char| c.is_whitespace()),
+    ) {
+        if doc.get("messages").and_then(|v| v.as_array()).is_some() {
+            let mut messages = Vec::new();
+            extract_opencode_doc(&doc, &mut messages);
+            return cap_messages(messages);
+        }
+    }
+    // Fallback: line-delimited message objects / plain text.
+    let mut messages = Vec::new();
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => extract_opencode_value(&value, &mut messages),
+            Err(_) => push_capped(&mut messages, Role::Unknown, line.to_string()),
+        }
+    }
+    cap_messages(messages)
+}
+
+fn cap_messages(mut messages: Vec<TranscriptMessage>) -> ParsedTranscript {
+    let mut truncated = false;
+    if messages.len() > MAX_MESSAGES {
+        messages.drain(..messages.len() - MAX_MESSAGES);
+        truncated = true;
+    }
+    ParsedTranscript {
+        messages,
+        truncated,
+    }
+}
+
+fn opencode_role(role: &str) -> Option<Role> {
+    match role {
+        "user" => Some(Role::User),
+        "assistant" => Some(Role::Assistant),
+        _ => None,
+    }
+}
+
+fn opencode_part_text(role: Role, part: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    match part.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+        "text" => {
+            let text = part
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !text.is_empty() {
+                push_capped(out, role, text);
+            }
+        }
+        "tool" => {
+            let name = part
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool")
+                .trim();
+            if !name.is_empty() {
+                push_capped(out, Role::Assistant, format!("🔧 {name}"));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_opencode_doc(doc: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    let Some(messages) = doc.get("messages").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for m in messages {
+        let role = m
+            .get("info")
+            .and_then(|i| i.get("role"))
+            .or_else(|| m.get("role"))
+            .and_then(|v| v.as_str())
+            .and_then(opencode_role);
+        let Some(role) = role else { continue };
+        // Export shape: `parts: [{type, text}]`.
+        if let Some(parts) = m.get("parts").and_then(|v| v.as_array()) {
+            for part in parts {
+                opencode_part_text(role, part, out);
+            }
+            continue;
+        }
+        // Compact shape: string or block-array `content`.
+        match m.get("content") {
+            Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+                push_capped(out, role, s.trim().to_string());
+            }
+            Some(serde_json::Value::Array(blocks)) => {
+                for block in blocks {
+                    if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                        let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        push_capped(out, Role::Assistant, format!("🔧 {name}"));
+                    } else if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        if !text.trim().is_empty() {
+                            push_capped(out, role, text.trim().to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn extract_opencode_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    // Single message object (export shape or compact shape).
+    if value.get("parts").is_some() || value.get("info").is_some() {
+        let mut tmp = Vec::new();
+        extract_opencode_doc(&serde_json::json!({"messages": [value]}), &mut tmp);
+        out.extend(tmp);
+        return;
+    }
+    if let Some(role) = value
+        .get("role")
+        .and_then(|v| v.as_str())
+        .and_then(opencode_role)
+    {
+        match value.get("content") {
+            Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+                push_capped(out, role, s.trim().to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Best-effort project name for an opencode export tail: basename of the
+/// top-level `info.directory` (both `/` and `\` split, so Windows paths
+/// work too).
+pub fn extract_opencode_project(tail: &str) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_str(tail.trim_start()).ok()?;
+    let dir = doc
+        .get("info")
+        .and_then(|i| i.get("directory"))
+        .and_then(|v| v.as_str())?;
+    if dir.trim().is_empty() {
+        return None;
+    }
+    let name = dir
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(dir);
+    if name.trim().is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Best-effort session title for an opencode export tail: the top-level
+/// `info.title` opencode itself assigns.
+pub fn extract_opencode_title(tail: &str) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_str(tail.trim_start()).ok()?;
+    doc.get("info")
+        .and_then(|i| i.get("title"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+}
+
 /// Best-effort session auto-name (`session.name.changed` record), for use as
 /// a title fallback when the tail holds no messages.
 pub fn extract_session_name(tail: &str) -> Option<String> {
@@ -381,5 +558,58 @@ mod tests {
         .to_string();
         assert_eq!(extract_project(&tail).as_deref(), Some("myproj"));
         assert_eq!(extract_project("not json\n"), None);
+    }
+
+    #[test]
+    fn parses_opencode_export_doc_in_order() {
+        let tail = serde_json::json!({
+            "info": {"id": "ses-1", "directory": "/tmp/work/shop",
+                "title": "Claude, Codex, Antigravity CLI worktree PRs"},
+            "messages": [
+                {"info": {"role": "user"},
+                 "parts": [{"type": "text", "text": "Fix login"}]},
+                {"info": {"role": "assistant"},
+                 "parts": [
+                    {"type": "step-start"},
+                    {"type": "text", "text": "Done"},
+                    {"type": "tool", "tool": "read"},
+                    {"type": "step-finish"},
+                ]},
+            ]
+        })
+        .to_string();
+        let parsed = parse_opencode_tail(&tail);
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.messages.len(), 3);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(parsed.messages[0].text, "Fix login");
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[1].text, "Done");
+        assert_eq!(parsed.messages[2].text, "🔧 read");
+        // Titles prefer opencode's own; project is the directory basename.
+        assert_eq!(
+            extract_opencode_title(&tail).as_deref(),
+            Some("Claude, Codex, Antigravity CLI worktree PRs")
+        );
+        assert_eq!(extract_opencode_project(&tail).as_deref(), Some("shop"));
+        assert_eq!(extract_opencode_project("not json\n"), None);
+        assert_eq!(extract_opencode_title("not json\n"), None);
+    }
+
+    #[test]
+    fn opencode_windows_directory_projects_split_on_backslash() {
+        let tail =
+            r#"{"info": {"directory": "C:\\Users\\grego\\projects\\agent-manager", "title": "t"}}"#;
+        assert_eq!(
+            extract_opencode_project(tail).as_deref(),
+            Some("agent-manager")
+        );
+    }
+
+    #[test]
+    fn opencode_plain_text_lines_become_unknown_messages() {
+        let parsed = parse_opencode_tail("Fix login\n");
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Unknown);
     }
 }

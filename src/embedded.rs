@@ -23,6 +23,76 @@ pub fn new_session_command() -> (String, Vec<String>) {
     ("muse".to_string(), Vec::new())
 }
 
+/// Which agent CLI backs a spawn.
+///
+/// `Muse` is the default: bare [`SpawnKind::New`] / [`SpawnKind::Resume`]
+/// keep meaning muse, so every existing call site compiles untouched.
+/// Other harnesses spawn through [`SpawnKind::NewOn`] /
+/// [`SpawnKind::ResumeOn`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Harness {
+    /// `muse` — the original and default harness.
+    #[default]
+    Muse,
+    /// `opencode` — the opencode CLI.
+    Opencode,
+}
+
+impl Harness {
+    /// Stable harness id, matching [`crate::app::harness_badge`] and the
+    /// `harness` field stored on [`crate::app::ChatSession`].
+    pub fn id(self) -> &'static str {
+        match self {
+            Harness::Muse => crate::app::HARNESS_MUSE,
+            Harness::Opencode => crate::app::HARNESS_OPENCODE,
+        }
+    }
+
+    /// Map a stored harness id back to a harness. Unknown/future ids fall
+    /// back to muse (whose resume shape is the long-standing default), so
+    /// old or foreign rows still re-attach instead of failing to spawn.
+    pub fn from_id(id: &str) -> Self {
+        if id == crate::app::HARNESS_OPENCODE {
+            Harness::Opencode
+        } else {
+            Harness::Muse
+        }
+    }
+
+    /// Program to spawn for this harness.
+    pub fn program(self) -> &'static str {
+        match self {
+            Harness::Muse => "muse",
+            Harness::Opencode => "opencode",
+        }
+    }
+
+    /// argv (after the program) starting a fresh interactive session.
+    pub fn new_args(self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// argv (after the program) resuming a historic conversation.
+    /// Shape is per-CLI: muse takes `--resume <id>`, opencode takes
+    /// `--session <id>`.
+    pub fn resume_args(self, session_id: &str) -> Vec<String> {
+        match self {
+            Harness::Muse => vec!["--resume".to_string(), session_id.to_string()],
+            Harness::Opencode => vec!["--session".to_string(), session_id.to_string()],
+        }
+    }
+
+    /// Full fresh-session command for this harness.
+    pub fn new_command(self) -> (String, Vec<String>) {
+        (self.program().to_string(), self.new_args())
+    }
+
+    /// Full resume command for this harness.
+    pub fn resume_command(self, session_id: &str) -> (String, Vec<String>) {
+        (self.program().to_string(), self.resume_args(session_id))
+    }
+}
+
 /// What the app asked the PTY layer to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnKind {
@@ -32,16 +102,26 @@ pub enum SpawnKind {
     /// The app routes the spawn to the selected run entry, so no run id
     /// travels with the request.
     Resume { session_id: String },
+    /// Start a brand-new session on another harness (`New` stays muse).
+    NewOn(Harness),
+    /// Resume a historic conversation on another harness (per-harness
+    /// resume shape via [`Harness::resume_command`]).
+    ResumeOn {
+        harness: Harness,
+        session_id: String,
+    },
 }
 
 impl SpawnKind {
     pub fn command(&self) -> (String, Vec<String>) {
         match self {
-            SpawnKind::New => new_session_command(),
-            SpawnKind::Resume { session_id } => (
-                "muse".to_string(),
-                vec!["--resume".to_string(), session_id.clone()],
-            ),
+            SpawnKind::New => Harness::Muse.new_command(),
+            SpawnKind::Resume { session_id } => Harness::Muse.resume_command(session_id),
+            SpawnKind::NewOn(harness) => harness.new_command(),
+            SpawnKind::ResumeOn {
+                harness,
+                session_id,
+            } => harness.resume_command(session_id),
         }
     }
 }
@@ -698,6 +778,40 @@ mod tests {
     fn new_session_command_shape() {
         assert_eq!(new_session_command(), ("muse".to_string(), vec![]));
         assert_eq!(SpawnKind::New.command(), ("muse".to_string(), vec![]));
+    }
+
+    #[test]
+    fn harness_ids_map_and_route_spawn_commands() {
+        // opencode spawn surface: plain `opencode` starts fresh,
+        // `opencode --session <id>` re-attaches a discovered session.
+        assert_eq!(
+            SpawnKind::NewOn(Harness::Opencode).command(),
+            ("opencode".to_string(), vec![])
+        );
+        assert_eq!(
+            SpawnKind::ResumeOn {
+                harness: Harness::Opencode,
+                session_id: "ses-1".to_string(),
+            }
+            .command(),
+            (
+                "opencode".to_string(),
+                vec!["--session".to_string(), "ses-1".to_string()]
+            )
+        );
+        // Muse still routes through the same table (default harness).
+        assert_eq!(
+            SpawnKind::NewOn(Harness::Muse).command(),
+            ("muse".to_string(), vec![])
+        );
+        assert_eq!(Harness::Opencode.id(), crate::app::HARNESS_OPENCODE);
+        assert_eq!(Harness::Muse.id(), crate::app::HARNESS_MUSE);
+        // Unknown/future harness ids fall back to muse instead of failing.
+        assert_eq!(Harness::from_id("opencode"), Harness::Opencode);
+        assert_eq!(Harness::from_id("muse"), Harness::Muse);
+        assert_eq!(Harness::from_id("future-harness"), Harness::Muse);
+        assert_eq!(Harness::Opencode.program(), "opencode");
+        assert_eq!(Harness::default(), Harness::Muse);
     }
 
     #[test]

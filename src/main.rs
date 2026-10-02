@@ -37,18 +37,27 @@ use gpui_component::{Root, Theme};
 #[cfg(target_os = "macos")]
 use gui::shell::ShellView;
 #[cfg(target_os = "macos")]
-use providers::{MuseCliProvider, Provider};
+use providers::{MuseCliProvider, OpencodeCliProvider, Provider};
 
 #[cfg(target_os = "macos")]
 fn main() {
     // Historic attach: provider-discovered sessions seed the list before
-    // any PTY exists (unreachable store degrades to an empty list, never
-    // a startup failure). `r` on a seeded entry re-attaches it.
-    let discovered = MuseCliProvider::new(
+    // any PTY exists (unreachable stores degrade to an empty list, never
+    // a startup failure). `r` on a seeded entry re-attaches it. Muse and
+    // opencode sessions merge here; ids are provider-scoped (muse session
+    // dirs, opencode `ses-*` ids), and `merge_sessions` keeps one row per
+    // id — opencode rows re-attach via `opencode --session <id>`.
+    let mut discovered = MuseCliProvider::new(
         MuseCliProvider::default_store_root(),
         Box::new(parsers::registry::RegistryParser::default()),
     )
     .discover_sessions();
+    discovered.extend(
+        OpencodeCliProvider::with_default_program(Box::new(
+            parsers::registry::RegistryParser::default(),
+        ))
+        .discover_sessions(),
+    );
     // Issues #33/#34: user config (per-agent flags, theme choice); a
     // missing file means plain `muse` + follow-system theme.
     let config = config::Config::load();

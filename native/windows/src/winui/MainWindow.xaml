@@ -222,7 +222,8 @@
                              BorderThickness="0"
                              FontFamily="Cascadia Mono, Consolas, monospace"
                              FontSize="13"
-                             KeyDown="RootGrid_KeyDown"/>
+                             KeyDown="RootGrid_KeyDown"
+                             PreviewKeyDown="TermBox_PreviewKeyDown"/>
                 </ScrollViewer>
             </Border>
         </Grid>
