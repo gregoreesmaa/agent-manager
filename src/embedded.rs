@@ -444,7 +444,11 @@ fn locate_on_process_path(program: &str) -> Option<std::path::PathBuf> {
 /// shim (`.cmd`/`.bat`) found on the process `PATH`. Returns `None` when
 /// `program` is not a bare name, resolves nowhere, or already spawns
 /// directly (native `.exe`) — those keep the existing path untouched.
-#[cfg(windows)]
+///
+/// Defined on every OS (pure PATH probing + string building) so the
+/// `cfg!(windows)`-gated call site and the headless tests compile in the
+/// cross-platform contract; it only ever returns `Some` for real `.cmd` /
+/// `.bat` hits, which only occur on Windows.
 fn script_shim_command(program: &str, args: &[String]) -> Option<(String, Vec<String>)> {
     let hit = locate_on_process_path(program)?;
     if is_directly_spawnable(&hit) {
@@ -1029,11 +1033,12 @@ mod tests {
         assert!(!is_directly_spawnable(std::path::Path::new("muse")));
     }
 
-    #[cfg(windows)]
     #[test]
     fn cmd_shim_routes_through_comspec() {
-        // A `.cmd` hit on PATH becomes `cmd /d /s /c "<shim> <args>"`;
+        // A `.cmd` hit on PATH becomes `cmd /d /s /c <shim> <args>`;
         // native `.exe` hits and misses stay on the direct path (None).
+        // Runs on every OS: pure PATH probing + string building, joined
+        // with the platform separator so the fake dir scans first.
         let dir = std::env::temp_dir().join(format!(
             "agent-manager-shim-test-{}",
             std::time::SystemTime::now()
@@ -1046,7 +1051,7 @@ mod tests {
         let old_path = std::env::var_os("PATH");
         let mut new_path = dir.as_os_str().to_owned();
         if let Some(old) = &old_path {
-            new_path.push(";");
+            new_path.push(if cfg!(windows) { ";" } else { ":" });
             new_path.push(old);
         }
         std::env::set_var("PATH", &new_path);
