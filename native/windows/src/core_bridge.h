@@ -109,6 +109,19 @@ void bridge_resize(AmPty *pty, unsigned cols, unsigned rows);
  * handle). Free with bridge_string_free(). */
 char *bridge_screen_text(const AmPty *pty);
 
+/* Shared presentation helpers owned by the core (`shell_shared`,
+ * exposed as `am_feed_delta` / `am_roster_matches` / `am_relative_age`
+ * / `am_link_count` / `am_last_active` in `agent_manager.h`): the
+ * snapshot-to-stream feed reconciler, the sidebar filter match, the
+ * relative-age label, and per-row link/age getters. Owned-string results
+ * free with bridge_string_free(). */
+char *bridge_feed_delta(const char *old_text, const char *new_text);
+int bridge_roster_matches(const char *title, const char *project,
+                           const char *id, const char *query);
+char *bridge_relative_age(long long now_secs, long long then_secs);
+int bridge_link_count(const AmCore *core, size_t row);
+long long bridge_last_active(const AmCore *core, size_t row);
+
 /* Copy of the thread-local last-error message (never NULL;
  * caller frees with free()). */
 char *bridge_last_error(void);

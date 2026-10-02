@@ -7,12 +7,17 @@
 //
 // Epic DoD wiring (mirrors swift/README.md's table):
 //   roster      am_session_count + am_session_json at launch, am_status ticks;
-//               live runs grouped needs-input/idle/working, one shared
-//               selection across the group lists (#73)
-//   spawn       New Session button / Ctrl+N -> bridge_spawn_launch
-//               (repeat-last: null CLI/folder, zero yolo); picker button /
-//               Ctrl+Shift+N -> ContentDialog (folder x CLI + yolo) below
-//   converse    key encoding -> bridge_write; pump -> am_feed_delta -> append
+//               live runs grouped needs-input/working/idle (macOS parity),
+//               one shared selection across the group lists (#73); rows show
+//               age + link badges from the core (am_last_active /
+//               am_relative_age / am_link_count), filtered by
+//               am_roster_matches; no heading, no idle status line
+//   spawn       New Session button / Ctrl+N / empty-overlay button ->
+//               bridge_spawn_launch (repeat-last: null CLI/folder, zero
+//               yolo); picker button / Ctrl+Shift+N -> ContentDialog
+//               (folder x CLI + yolo) below
+//   converse    key encoding -> bridge_write; pump -> bridge_feed_delta
+//               (core reconciler) -> append
 //   copy/paste  native TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via
 //               Clipboard -> bridge_write; Ctrl+C forwards ETX (interrupts)
 //   scroll      output TextBox in a ScrollViewer, per-run text retained
@@ -35,11 +40,11 @@
 #endif
 
 #include "core_bridge.h"
-#include "feed.h"
 #include "terminal_keys.h"
 #include "json_mini.h"
 #include "picker.h"
 
+#include <ctime>
 #include <utility>
 
 using namespace winrt;
@@ -53,14 +58,17 @@ namespace winrt::AgentManagerWinUI::implementation
     /* Roster/status refresh rides on the same 50ms pump tick as the
      * Swift and GTK shells. Fixed spawn grid: there is no backing
      * widget grid to measure (the surface is snapshot-fed), so spawns
-     * and resizes use the classic 80x25. */
+     * use the shared 80x24 default the macOS shell starts from. */
     constexpr int kPumpMs = 50;
     constexpr unsigned kCols = 80;
-    constexpr unsigned kRows = 25;
+    constexpr unsigned kRows = 24;
     /* Bounded per-run output (local-only trust + bounded growth: an
      * accumulate-forever buffer would leak memory over long runs). */
     constexpr std::size_t kShownCap = 100000;
-    constexpr const char *kFeedClear = AM_FEED_CLEAR;
+    /* Redraw marker prefixing core clear-and-replay feeds: must match
+     * the core's FEED_CLEAR (`shell_shared`), checked after every
+     * `bridge_feed_delta` below. */
+    constexpr const char *kFeedClear = "\x1b[2J\x1b[H";
     /* Resizable sidebar: the Thumb between the roster card and the
      * terminal card drives SidebarColumn (the XAML default is 320px;
      * clamped to the GTK shell's 220px floor and a 480px ceiling so
@@ -181,7 +189,8 @@ namespace winrt::AgentManagerWinUI::implementation
         m_closedToken = Closed({this, &MainWindow::OnClosed});
         RefreshRoster();
         ShowSelected();
-        SetStatus(L"Ready.");
+        /* No "Ready." banner: the status line stays empty until a real
+         * failure needs it (fail-visible; macOS shows no status either). */
     }
 
     MainWindow::~MainWindow() {
@@ -233,9 +242,11 @@ namespace winrt::AgentManagerWinUI::implementation
      * otherwise leave the selection alone. Live runs group by urgency,
      * needs-input first; rows with no live PTY in this shell are
      * history, collapsed at the end. The search box filters every
-     * group. Group order is fixed (issue #73): Needs input, Idle,
-     * Working, History — every row still shows its status glyph,
-     * title, project/harness, restored every launch by am_core_new. */
+     * group through the core match (case-insensitive title/project/id,
+     * like the macOS sidebar). Group order is fixed: Needs input,
+     * Working, Idle, History (macOS parity) — every row still shows
+     * its status glyph, title, project/harness, relative age, and link
+     * badge, restored every launch by am_core_new. */
     void MainWindow::RefreshRoster() {
         if (!m_core) {
             return;
@@ -243,8 +254,8 @@ namespace winrt::AgentManagerWinUI::implementation
         using Rows = std::vector<std::pair<std::wstring, std::wstring>>;
         size_t n = bridge_session_count(m_core);
         Rows needs;
-        Rows idle;
         Rows working;
+        Rows idle;
         Rows history;
         std::string fingerprint;
         fingerprint += std::to_string(n);
@@ -267,19 +278,34 @@ namespace winrt::AgentManagerWinUI::implementation
             fingerprint += std::to_string(st);
             fingerprint += live ? 'L' : 'h';
             fingerprint += ';';
-            if (!m_filter.empty() &&
-                js.find(m_filter) == std::string::npos) {
-                continue;
-            }
             std::string title = amjson::get_string(js, "title");
             std::string project = amjson::get_string(js, "project");
             std::string harness = amjson::get_string(js, "harness");
+            if (!bridge_roster_matches(title.c_str(), project.c_str(),
+                                       id.c_str(), m_filter.c_str())) {
+                continue;
+            }
             std::string line = (title.empty() ? id : title);
             if (!project.empty()) {
                 line += " — " + project;
             }
             if (!harness.empty()) {
                 line += " · " + harness;
+            }
+            long long last = bridge_last_active(m_core, i);
+            if (last >= 0) {
+                char *age =
+                    bridge_relative_age((long long)std::time(nullptr), last);
+                if (age) {
+                    line += " · ";
+                    line += age;
+                    bridge_string_free(age);
+                }
+            }
+            int links = bridge_link_count(m_core, i);
+            if (links > 0) {
+                line += " · " + std::to_string(links) +
+                        (links == 1 ? " link" : " links");
             }
             std::pair<std::wstring, std::wstring> row{
                 wid, std::wstring(status_glyph(st)) + to_wide(line)};
@@ -299,16 +325,16 @@ namespace winrt::AgentManagerWinUI::implementation
         m_fingerprint = fingerprint;
         NeedsHeader().Text(winrt::hstring(
             L"Needs input (" + std::to_wstring(needs.size()) + L")"));
-        IdleHeader().Text(winrt::hstring(
-            L"Idle (" + std::to_wstring(idle.size()) + L")"));
         WorkingHeader().Text(winrt::hstring(
             L"Working (" + std::to_wstring(working.size()) + L")"));
+        IdleHeader().Text(winrt::hstring(
+            L"Idle (" + std::to_wstring(idle.size()) + L")"));
         HistoryExpander().Header(box_value(winrt::hstring(
             L"History (" + std::to_wstring(history.size()) + L")")));
         m_syncing = true;
         RebuildGroupList(NeedsInputList(), needs);
-        RebuildGroupList(IdleList(), idle);
         RebuildGroupList(WorkingList(), working);
+        RebuildGroupList(IdleList(), idle);
         RebuildGroupList(HistoryList(), history);
         m_syncing = false;
         if (!m_selected.empty()) {
@@ -339,7 +365,7 @@ namespace winrt::AgentManagerWinUI::implementation
     /* Move the shared selection to the row with this id, clearing the
      * other three lists. No-op when no list holds the id. */
     void MainWindow::SelectRowById(std::wstring const &id) {
-        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
+        ListView lists[] = {NeedsInputList(), WorkingList(), IdleList(),
                             HistoryList()};
         bool found = false;
         m_syncing = true;
@@ -367,7 +393,7 @@ namespace winrt::AgentManagerWinUI::implementation
     /* First row id across the groups in display order; false when every
      * list is empty (no runs yet, or the search matches nothing). */
     bool MainWindow::FirstRowId(std::wstring &id) {
-        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
+        ListView lists[] = {NeedsInputList(), WorkingList(), IdleList(),
                             HistoryList()};
         for (auto const &list : lists) {
             auto items = list.Items();
@@ -383,6 +409,7 @@ namespace winrt::AgentManagerWinUI::implementation
         return false;
     }
 
+
     bool MainWindow::IsLocalId(std::wstring const &id) {
         constexpr wchar_t kPrefix[] = L"local-";
         return id.compare(0, 6, kPrefix) == 0;
@@ -397,39 +424,106 @@ namespace winrt::AgentManagerWinUI::implementation
         }
     }
 
-    /* Show the selected run's current output from scratch (selection
-     * change or fresh spawn): restore retained per-run text when the
-     * run is live, else the latest snapshot, else the empty hint. */
+    /* Index of the roster row with this id, or -1 (local terminal ids
+     * and stale selections have no roster row). */
+    long long MainWindow::RowIndexById(std::wstring const &id) {
+        if (!m_core || id.empty()) {
+            return -1;
+        }
+        std::string want = to_utf8(hstring(id));
+        size_t n = bridge_session_count(m_core);
+        for (size_t i = 0; i < n; ++i) {
+            char *json = bridge_session_json(m_core, i);
+            std::string js = json ? json : "";
+            bridge_string_free(json);
+            if (amjson::get_string(js, "id") == want) {
+                return static_cast<long long>(i);
+            }
+        }
+        return -1;
+    }
+
+    /* Show one empty-overlay state (macOS parity): title + detail +
+     * one prominent button, or no button when there is nothing to
+     * start. The terminal surface hides behind the overlay. */
+    void MainWindow::ShowEmpty(std::wstring const &title,
+                               std::wstring const &detail,
+                               std::wstring const &button) {
+        TermScroll().Visibility(Visibility::Collapsed);
+        EmptyTitle().Text(hstring(title));
+        EmptyDetail().Text(hstring(detail));
+        if (button.empty()) {
+            EmptyButton().Visibility(Visibility::Collapsed);
+        } else {
+            EmptyButton().Content(box_value(hstring(button)));
+            EmptyButton().Visibility(Visibility::Visible);
+        }
+        EmptyPanel().Visibility(Visibility::Visible);
+    }
+
+    /* Show the selected run: the live terminal surface when its PTY is
+     * live, else the empty overlay — the selected row's title with a
+     * Spawn button, "Select a session" when nothing is picked, or the
+     * "No sessions yet" CTA on an empty roster (all macOS parity). */
     void MainWindow::ShowSelected() {
         LivePty *lp = SelectedLive();
-        if (!lp) {
-            TermBox().Text(
-                m_selected.empty()
-                    ? L"(no run selected)"
-                    : L"(no live session — press New Session)");
+        if (lp) {
+            EmptyPanel().Visibility(Visibility::Collapsed);
+            TermScroll().Visibility(Visibility::Visible);
+            const std::string &text =
+                lp->shown.empty() ? lp->last_snapshot : lp->shown;
+            TermBox().Text(to_hstring(text));
+            auto scroll = TermScroll();
+            scroll.UpdateLayout();
+            scroll.ChangeView(nullptr, scroll.ScrollableHeight(), nullptr);
             return;
         }
-        const std::string &text =
-            lp->shown.empty() ? lp->last_snapshot : lp->shown;
-        TermBox().Text(to_hstring(text));
-        auto scroll = TermScroll();
-        scroll.UpdateLayout();
-        scroll.ChangeView(nullptr, scroll.ScrollableHeight(), nullptr);
+        long long at = RowIndexById(m_selected);
+        if (at >= 0) {
+            char *json = bridge_session_json(
+                m_core, static_cast<size_t>(at));
+            std::string js = json ? json : "";
+            bridge_string_free(json);
+            std::string title = amjson::get_string(js, "title");
+            std::string project = amjson::get_string(js, "project");
+            std::string harness = amjson::get_string(js, "harness");
+            if (title.empty()) {
+                title = amjson::get_string(js, "id");
+            }
+            std::string detail = project;
+            if (!harness.empty()) {
+                if (!detail.empty()) {
+                    detail += " · ";
+                }
+                detail += harness;
+            }
+            ShowEmpty(to_wide(title), to_wide(detail), L"Spawn session");
+            return;
+        }
+        if (bridge_session_count(m_core) == 0) {
+            ShowEmpty(L"No sessions yet",
+                      L"Spawned sessions appear here; history is restored on "
+                      L"launch.",
+                      L"New Session");
+            return;
+        }
+        ShowEmpty(L"Select a session", L"", L"");
     }
 
     /* The shell's only repaint gate: pump the selected PTY, reconcile
-     * the new snapshot against the last one with am_feed_delta, and
-     * append (or replay after a clear). */
+     * the new snapshot against the last one with the core feed
+     * reconciler, and append (or replay after a clear). */
     void MainWindow::OnTick(IInspectable const &, IInspectable const &) {
         LivePty *lp = SelectedLive();
         if (lp && bridge_pump(lp->pty)) {
             char *snap = bridge_screen_text(lp->pty);
             std::string cur = snap ? snap : "";
             bridge_string_free(snap);
-            char *feed = am_feed_delta(lp->last_snapshot.c_str(), cur.c_str());
+            char *feed =
+                bridge_feed_delta(lp->last_snapshot.c_str(), cur.c_str());
             if (feed) {
                 std::string chunk = feed;
-                free(feed);
+                bridge_string_free(feed);
                 if (chunk.compare(0, strlen(kFeedClear), kFeedClear) == 0) {
                     /* Redraw/reflow: clear first, then replay. */
                     lp->shown = chunk.substr(strlen(kFeedClear));
@@ -799,7 +893,7 @@ namespace winrt::AgentManagerWinUI::implementation
         }
         m_selected = std::wstring(unbox_value<hstring>(item.Tag()));
         m_syncing = true;
-        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
+        ListView lists[] = {NeedsInputList(), WorkingList(), IdleList(),
                             HistoryList()};
         for (auto const &list : lists) {
             if (list != picked) {

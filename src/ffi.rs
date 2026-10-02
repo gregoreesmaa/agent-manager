@@ -658,6 +658,146 @@ pub unsafe extern "C" fn am_session_json(core: *const AmCore, row: usize) -> *mu
     }
 }
 
+/// Snapshot-to-stream feed reconciler for C shells (Windows + Linux
+/// parity): computes the text that advances a view showing `old_text` to
+/// also show `new_text`, or null when the view is already current. Either
+/// argument may be null (treated as ""). The result is freshly allocated;
+/// free it with [`am_screen_text_free`].
+///
+/// This is the shared [`crate::shell_shared::feed_delta`] (append-only
+/// suffix hot path, scroll overlap, clear-and-replay redraw, CRLF
+/// normalization), replacing the per-shell `feed.c` ports.
+///
+/// # Safety
+/// `old_text`/`new_text` must be null or valid NUL-terminated UTF-8
+/// C strings.
+#[no_mangle]
+pub unsafe extern "C" fn am_feed_delta(
+    old_text: *const c_char,
+    new_text: *const c_char,
+) -> *mut c_char {
+    let old = c_str_or_empty(old_text);
+    let new = c_str_or_empty(new_text);
+    let (Some(old), Some(new)) = (old, new) else {
+        set_error("am_feed_delta: argument is not valid UTF-8".to_string());
+        return std::ptr::null_mut();
+    };
+    match crate::shell_shared::feed_delta(old, new) {
+        Some(feed) => match CString::new(feed) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_error("am_feed_delta: feed contains NUL".to_string());
+                std::ptr::null_mut()
+            }
+        },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Decode a nullable C string to `Some(str)` (null becomes `Some("")`);
+/// `None` when the bytes are not valid UTF-8. Shared by the nullable
+/// string arguments below so invalid UTF-8 degrades uniformly.
+unsafe fn c_str_or_empty(ptr: *const c_char) -> Option<&'static str> {
+    if ptr.is_null() {
+        return Some("");
+    }
+    // Extend the borrow to 'static: the pointer is only read during this
+    // call and never retained, matching every other getter in this file.
+    CStr::from_ptr(ptr)
+        .to_str()
+        .ok()
+        .map(|s| unsafe { &*(s as *const str) })
+}
+
+/// True (1) when a roster row with this title/project/id passes the
+/// sidebar `query` (case-insensitive substring; blank query passes
+/// everything), else false (0). Null pointers mean empty strings; invalid
+/// UTF-8 in any argument reports false and records a message.
+///
+/// # Safety
+/// Each argument must be null or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn am_roster_matches(
+    title: *const c_char,
+    project: *const c_char,
+    id: *const c_char,
+    query: *const c_char,
+) -> c_int {
+    let (Some(title), Some(project), Some(id), Some(query)) = (
+        c_str_or_empty(title),
+        c_str_or_empty(project),
+        c_str_or_empty(id),
+        c_str_or_empty(query),
+    ) else {
+        set_error("am_roster_matches: argument is not valid UTF-8".to_string());
+        return 0;
+    };
+    i32::from(crate::shell_shared::roster_matches(
+        title, project, id, query,
+    ))
+}
+
+/// Owned glanceable age label for `then_secs` (unix seconds) relative to
+/// `now_secs`: `just now` / `Nm ago` / `Nh ago` / `Nd ago`. Free with
+/// [`am_screen_text_free`].
+///
+/// # Safety
+/// Always safe: pure computation, no pointers read.
+#[no_mangle]
+pub unsafe extern "C" fn am_relative_age(now_secs: i64, then_secs: i64) -> *mut c_char {
+    match CString::new(crate::shell_shared::relative_age(now_secs, then_secs)) {
+        Ok(s) => s.into_raw(),
+        Err(_) => {
+            set_error("am_relative_age: label contains NUL".to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Total link count (PR + related) of roster row `row`, or -1 on null
+/// handle / out-of-bounds row. Lets shells show the same link badge
+/// without parsing `pr_links` / `related_links` themselves.
+///
+/// # Safety
+/// `core` must be null or a live pointer from [`am_core_new`].
+#[no_mangle]
+pub unsafe extern "C" fn am_link_count(core: *const AmCore, row: usize) -> c_int {
+    if core.is_null() {
+        set_error("am_link_count: null core".to_string());
+        return -1;
+    }
+    let sessions: &[ChatSession] = &(*core).app.sessions;
+    match sessions.get(row) {
+        Some(session) => (session.pr_links.len() + session.related_links.len()) as c_int,
+        None => {
+            set_error(format!("am_link_count: row {row} out of bounds"));
+            -1
+        }
+    }
+}
+
+/// Unix seconds of `last_active` for roster row `row`, or -1 on null
+/// handle / out-of-bounds row. Shells feed it to [`am_relative_age`]
+/// with their own clock, so all shells render the same relative label.
+///
+/// # Safety
+/// `core` must be null or a live pointer from [`am_core_new`].
+#[no_mangle]
+pub unsafe extern "C" fn am_last_active(core: *const AmCore, row: usize) -> i64 {
+    if core.is_null() {
+        set_error("am_last_active: null core".to_string());
+        return -1;
+    }
+    let sessions: &[ChatSession] = &(*core).app.sessions;
+    match sessions.get(row) {
+        Some(session) => session.last_active,
+        None => {
+            set_error(format!("am_last_active: row {row} out of bounds"));
+            -1
+        }
+    }
+}
+
 /// Last error message for this thread (UTF-8, NUL-terminated). Never
 /// null; valid until the next failing `am_*` call on this thread.
 ///
@@ -1261,6 +1401,148 @@ mod tests {
             am_core_free(core);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shell_shared_feed_matches_swift_contract() {
+        unsafe fn feed(old: &str, new: &str) -> Option<String> {
+            let old_c = CString::new(old).unwrap();
+            let new_c = CString::new(new).unwrap();
+            let raw = am_feed_delta(old_c.as_ptr(), new_c.as_ptr());
+            if raw.is_null() {
+                return None;
+            }
+            let out = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            Some(out)
+        }
+        unsafe {
+            // Mirrors swift TerminalFeedTests case for case over the C ABI.
+            assert_eq!(feed("a\nb", "a\nb"), None);
+            assert_eq!(feed("", ""), None);
+            assert_eq!(feed("hello", "hello world"), Some(" world".to_string()));
+            assert_eq!(feed("a", "a\nb\n"), Some("\r\nb\r\n".to_string()));
+            assert_eq!(feed("", "ready\n$ "), Some("ready\r\n$ ".to_string()));
+            assert_eq!(feed("a\nb", "b\nc"), Some("\r\nc".to_string()));
+            assert_eq!(feed("a\nb\nc", "c\nd\ne"), Some("\r\nd\r\ne".to_string()));
+            let redraw = feed("menu: [x]", "other screen").expect("redraw replays");
+            assert_eq!(redraw, "\x1b[2J\x1b[Hother screen");
+            let reflow =
+                feed("a very long line here", "a very\nlong line\nhere").expect("reflow replays");
+            assert!(reflow.starts_with("\x1b[2J\x1b[H"), "feed: {reflow:?}");
+            // Null means empty: the first snapshot still feeds whole.
+            let raw = am_feed_delta(std::ptr::null(), CString::new("hi").unwrap().as_ptr());
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            assert_eq!(text, "hi");
+            // Non-UTF8 reports null with a message.
+            let bad: [u8; 2] = [0xFF, 0x00];
+            assert!(am_feed_delta(
+                bad.as_ptr() as *const c_char,
+                CString::new("hi").unwrap().as_ptr()
+            )
+            .is_null());
+            let msg = CStr::from_ptr(am_last_error())
+                .to_string_lossy()
+                .into_owned();
+            assert!(msg.contains("am_feed_delta"), "last_error: {msg:?}");
+        }
+    }
+
+    #[test]
+    fn roster_match_age_and_link_count_round_trip() {
+        use crate::app::{App, ChatSession, HARNESS_MUSE};
+        fn row(id: &str, status: Status, last_active: i64) -> ChatSession {
+            ChatSession {
+                id: id.into(),
+                title: format!("{id} title"),
+                project: "proj".into(),
+                status,
+                harness: HARNESS_MUSE.into(),
+                last_active,
+                pr_links: vec!["https://github.com/o/r/pull/1".into()],
+                related_links: vec!["a".into(), "b".into()],
+                links_truncated: false,
+                transcript: vec![],
+                transcript_truncated: false,
+                title_locked: true,
+                pending_input: String::new(),
+                provider_session_id: None,
+                cwd: None,
+            }
+        }
+        let core = AmCore {
+            app: App::new(vec![row("a", Status::Attention, 1_700_000_000)]),
+        };
+        unsafe fn c(s: &str) -> CString {
+            CString::new(s).unwrap()
+        }
+        unsafe {
+            let title = c("a title");
+            let proj = c("proj");
+            let id = c("a");
+            let q_title = c("TITLE");
+            let q_proj = c("PROJ");
+            let q_id = c("A");
+            let q_blank = c("  ");
+            let q_miss = c("zzz");
+            assert_eq!(
+                am_roster_matches(title.as_ptr(), proj.as_ptr(), id.as_ptr(), q_blank.as_ptr()),
+                1
+            );
+            assert_eq!(
+                am_roster_matches(title.as_ptr(), proj.as_ptr(), id.as_ptr(), q_title.as_ptr()),
+                1
+            );
+            assert_eq!(
+                am_roster_matches(title.as_ptr(), proj.as_ptr(), id.as_ptr(), q_proj.as_ptr()),
+                1
+            );
+            assert_eq!(
+                am_roster_matches(title.as_ptr(), proj.as_ptr(), id.as_ptr(), q_id.as_ptr()),
+                1
+            );
+            assert_eq!(
+                am_roster_matches(title.as_ptr(), proj.as_ptr(), id.as_ptr(), q_miss.as_ptr()),
+                0
+            );
+            // Null query degrades to blank (everything passes).
+            assert_eq!(
+                am_roster_matches(title.as_ptr(), proj.as_ptr(), id.as_ptr(), std::ptr::null()),
+                1
+            );
+            // Non-UTF8 reports false with a message.
+            let bad: [u8; 2] = [0xFF, 0x00];
+            assert_eq!(
+                am_roster_matches(
+                    title.as_ptr(),
+                    proj.as_ptr(),
+                    id.as_ptr(),
+                    bad.as_ptr() as *const c_char
+                ),
+                0
+            );
+            let msg = CStr::from_ptr(am_last_error())
+                .to_string_lossy()
+                .into_owned();
+            assert!(msg.contains("am_roster_matches"), "last_error: {msg:?}");
+
+            // Age label: 5 minutes after last_active.
+            let raw = am_relative_age(1_700_000_300, 1_700_000_000);
+            assert!(!raw.is_null());
+            let label = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            am_screen_text_free(raw);
+            assert_eq!(label, "5m ago");
+
+            // Link count sums PR + related; last_active echoes the row.
+            let ptr = &core as *const AmCore;
+            assert_eq!(am_link_count(ptr, 0), 3);
+            assert_eq!(am_last_active(ptr, 0), 1_700_000_000);
+            assert_eq!(am_link_count(ptr, 7), -1);
+            assert_eq!(am_last_active(ptr, 7), -1);
+            assert_eq!(am_link_count(std::ptr::null(), 0), -1);
+        }
     }
 
     /// Test-only spawn with an explicit argv (the public [`am_spawn`] runs

@@ -70,7 +70,7 @@ powershell -ExecutionPolicy Bypass `
 
 | Test | What it proves |
 |---|---|
-| `feed` | `am-win-feed-test`: the snapshot→stream reconciler, mirroring Swift's `TerminalFeedTests` 1:1 |
+| `feed` | `am-win-feed-test`: the core snapshot→stream reconciler plus roster-match and age-label helpers over the real staticlib, mirroring Swift's `TerminalFeedTests` 1:1 |
 | `picker` | `am-win-picker-test`: 2D-launch picker logic (catalog/recents parse, folder/yolo mapping, preview copy), mirroring Linux `am-picker-test` |
 | `keys` | `am-win-keys-test`: the converse-key contract the terminal preview-tunnel relies on (Return→CR, Ctrl+C→ETX, Ctrl+Shift+C/V reserve stays with the control) |
 | `smoke` | `am-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog surface |
@@ -80,10 +80,10 @@ powershell -ExecutionPolicy Bypass `
 
 | Feature | Path |
 |---|---|
-| Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
-| Spawn | split-button 2D launch: New Session face / Ctrl+N repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); the chevron / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
+| Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick; live groups ordered needs-input / working / idle like the macOS sidebar; rows show age + link badges (`am_last_active` / `am_relative_age` / `am_link_count`); search filters every group via `am_roster_matches`; no heading, and the status line stays empty until a real failure needs it |
+| Spawn | split-button 2D launch: New Session face / Ctrl+N / empty-overlay button repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); the chevron / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
 | Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
-| Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box. Return and plain Ctrl+C ride `TermBox_PreviewKeyDown` (tunneling: the read-only box would otherwise swallow them before they bubble); everything else bubbles via `RootGrid_KeyDown`. New Session focuses the terminal, so typing + Enter submits immediately |
+| Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `bridge_feed_delta` (the core reconciler in `src/shell_shared.rs`) → append to the output box. Return and plain Ctrl+C ride `TermBox_PreviewKeyDown` (tunneling: the read-only box would otherwise swallow them before they bubble); everything else bubbles via `RootGrid_KeyDown`. New Session focuses the terminal, so typing + Enter submits immediately |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |
 | Scroll | output TextBox in a `ScrollViewer`, auto-tails; per-run text retained (capped at 100 000 chars) |
 | Search / filter | sidebar search box filters every roster group |

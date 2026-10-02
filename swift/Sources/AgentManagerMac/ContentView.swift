@@ -7,13 +7,16 @@ import SwiftUI
 ///   inline sidebar filter field matching title/project/id.
 /// - Spawn: the sidebar New Session button (or the detail Spawn
 ///   button) starts the selected row's child via `am_spawn`; with no
-///   selection New Session takes the first visible row. Typing in
+///   selection New Session takes the first unstarted visible row, and
+///   with no unstarted row at all (empty roster included) it mints a
+///   shell-local terminal instead (Windows parity). Typing in
 ///   the terminal converses through `am_write`.
 /// - History: every row shows its project, harness, and last-active age;
 ///   the rows themselves come from discovery + the persisted store, so
 ///   they survive relaunches.
 /// - Theme: follows the system appearance (no manual override).
-/// - Persistence: Save writes the core config; it also runs on quit.
+/// - Persistence: Cmd-S writes the core config; it also runs on quit
+///   (no sidebar button — Windows parity).
 struct ContentView: View {
     @ObservedObject var state: AppState
     @Environment(\.colorScheme) private var colorScheme
@@ -38,9 +41,7 @@ struct ContentView: View {
                 .padding(8)
                 Divider()
                 List(selection: $state.selection) {
-                    Text(title)
-                        .font(.headline)
-                    TextField("Filter sessions", text: $state.filter)
+                    TextField("Search sessions", text: $state.filter)
                         .textFieldStyle(.roundedBorder)
                     if state.filteredRows.isEmpty {
                         Text("No sessions match.").foregroundStyle(.secondary)
@@ -65,8 +66,6 @@ struct ContentView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                Divider()
-                sidebarFooter
             }
         } detail: {
             // SwiftUI counts the toolbar height as detail safe area,
@@ -91,22 +90,6 @@ struct ContentView: View {
     }
 
     // MARK: - Sidebar
-
-    /// Save lives in the sidebar footer (Cmd-S, additionally
-    /// wired app-wide in `AgentManagerMacApp.commands`); New Session
-    /// sits at the sidebar top (Cmd-N, likewise app-wide). The shell
-    /// follows the system appearance: no manual theme override.
-    private var sidebarFooter: some View {
-        Button("Save", action: state.save)
-            .keyboardShortcut("s", modifiers: .command)
-            .help("Persist the core config (am_core_save)")
-            .padding(8)
-    }
-
-    private var title: String {
-        let n = state.attentionCount
-        return n == 0 ? "Sessions" : "Sessions (\(n) need input)"
-    }
 
     private struct StatusSection {
         var status: Int
@@ -173,7 +156,8 @@ struct ContentView: View {
     private var detailView: some View {
         if let id = state.selection,
            let row = state.rows.first(where: { $0.id == id })
-        {            if state.hasLivePty(id) {
+        {
+            if state.hasLivePty(id) {
                 CoreTerminalView(
                     state: state, rowId: id,
                     darkMode: colorScheme == .dark
@@ -198,10 +182,16 @@ struct ContentView: View {
                 darkMode: colorScheme == .dark
             )
         } else if state.rows.isEmpty {
+            // Clickable New CTA next to the key hint (orientation
+            // bundle): the empty roster is a starting point, opening a
+            // live terminal through the core even with no rows.
             VStack(spacing: 12) {
                 Text("No sessions yet").font(.title2)
                 Text("Spawned sessions appear here; history is restored on launch.")
                     .foregroundStyle(.secondary)
+                Button("New Session", action: state.newSession)
+                    .buttonStyle(.borderedProminent)
+                    .help("Open a live terminal (am_spawn, or Cmd-N)")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {

@@ -24,13 +24,13 @@ Run the app with `swift run` or `.build/debug/AgentManagerMac`.
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch |
-| Spawn | split-button 2D launch: `Repeat last session` (Cmd-N) replays the last folder × CLI + yolo via `am_spawn_launch` (null CLI/folder); `Choose Folder, CLI, Options…` (Cmd-Shift-N) opens the picker sheet (folder field + recents from `am_recent_json`, CLI radio over `am_clis_json`, tri-state yolo, spawn preview) → `am_spawn_launch` + `am_note_launch` |
+| Spawn | split-button 2D launch: `Repeat last session` (Cmd-N) replays the last folder × CLI + yolo via `am_spawn_launch` (null CLI/folder) — including on an empty roster — plus the empty-pane New CTA; `Choose Folder, CLI, Options…` (Cmd-Shift-N) opens the picker sheet (folder field + recents from `am_recent_json`, CLI radio over `am_clis_json`, tri-state yolo, spawn preview) → `am_spawn_launch` + `am_note_launch` |
 | Converse | keystrokes `send` -> `am_write`; output `am_pump` -> `am_screen_text` -> view feed |
 | Select / copy / paste / scroll | native SwiftTerm view and scrollback |
 | Search / filter | sidebar search field; terminal find via Cmd-F (SwiftTerm find bar) |
 | History | roster rows carry project, harness, last-active age; restored every launch |
 | Theme | follows the system appearance (no manual override) + native terminal colors |
-| Persistence | Save button and quit hook call `am_core_save` |
+| Persistence | Cmd-S menu item and quit hook call `am_core_save` (no sidebar button — Windows parity) |
 
 ## Notes
 

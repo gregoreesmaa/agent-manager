@@ -19,7 +19,6 @@ final class AppState: ObservableObject {
     @Published var selection: String?
     @Published var filter = ""
     @Published var pendingError: String?
-    @Published var savedFlash = false
     /// 2D-launch picker sheet visibility (set by the menu, the caret,
     /// or Cmd-Shift-N; the sheet resets it on dismiss).
     @Published var pickerOpen = false
@@ -50,10 +49,6 @@ final class AppState: ObservableObject {
     deinit { timer?.invalidate() }
 
     // MARK: - Roster
-
-    var attentionCount: Int {
-        statuses.values.filter { $0 == RunStatus.attention.rawValue }.count
-    }
 
     var filteredRows: [SessionRow] {
         let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
@@ -88,9 +83,16 @@ final class AppState: ObservableObject {
 
     func spawnSelected() {
         guard let id = selection, ptys[id] == nil else { return }
+        spawn(id: id)
+    }
+
+    /// Spawn one live terminal through the core under `id`, selected on
+    /// success. Shared by roster rows and shell-local terminals alike.
+    private func spawn(id: String) {
         do {
             ptys[id] = try core.spawn(cols: grid.cols, rows: grid.rows)
             fedText[id] = ""
+            selection = id
         } catch {
             pendingError = error.localizedDescription
         }
@@ -112,6 +114,13 @@ final class AppState: ObservableObject {
             pendingError = error.localizedDescription
         }
     }
+
+    /// New Session entry point: repeat the last launch instantly, so
+    /// one click always opens something — including on an empty roster
+    /// (Windows parity: the empty roster is a starting point, not a
+    /// dead end). The fresh PTY mints its own roster row via
+    /// `attachFreshPty`, which also selects it.
+    func newSession() { repeatLastSession() }
 
     /// Attach a freshly spawned PTY under a new local id (native shells
     /// mint their own rows: the roster snapshot is launch-time, while
@@ -185,10 +194,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Persistence
 
+    /// Persist the core config (Cmd-S menu item + quit hook; no
+    /// sidebar button — Windows parity).
     func save() {
         do {
             try core.save()
-            savedFlash = true
         } catch {
             pendingError = error.localizedDescription
         }
