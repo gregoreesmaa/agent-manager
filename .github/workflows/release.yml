@@ -1,0 +1,262 @@
+name: Release
+
+# Tag-gated GitHub releases over the same per-shell build paths CI
+# proves on every PR (see ci.yml): pushing `v*` builds all six OS x
+# CPU ships and publishes them to the tag's GitHub release; a manual
+# dispatch dry-runs the matrix without publishing (publish is
+# tag-gated below). Per-shell gating (issue #65) holds: each build
+# job touches only its own shell + the core staticlib.
+#
+# Ships (unsigned; no signing/notarization/MSIX/dmg - non-goals, see
+# packaging/README.md):
+#   macOS   arm64 (macos-latest) + x64 (macos-26-intel): AgentManagerMac zip
+#   Linux   x64 (ubuntu-24.04) + arm64 (ubuntu-24.04-arm): GTK tarball
+#   Windows x64 (windows-latest) + arm64 (windows-11-vs2026-arm): WinUI app-folder zip
+#
+# CPU notes: GitHub hosts arm64 + x64 runners for all three OSes
+# (actions runner-images: ubuntu-24.04-arm, windows-11-arm,
+# macos-15/26-intel). windows-11-vs2026-arm - not windows-11-arm -
+# carries VS 2026, whose v145 toolset the vcxproj tracks.
+# macos-26-intel keeps the macOS 26 SDK the Swift package targets.
+#
+# Release-mode link, CI-grade gates: each job builds the core
+# staticlib with `--release` and links the real shell against it
+# (plus that shell's own test/smoke suite). The debug unit gates
+# stay in CI - this workflow proves the shipped link path, not a
+# second copy of `cargo test`.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    # Native macOS Swift shell (issue #62), release-linked: the same
+    # steps as CI's `macos` job minus the screenshot (not a release
+    # artifact), with `cargo --release` + `swift -c release` and a
+    # per-arch ditto'd zip. Runs on arm64 + Intel only and touches
+    # nothing outside swift/ + the core staticlib.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-26-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Matrix legs share one cache scope: scope the key by arch
+          # so the Intel leg never restores arm64 objects.
+          shared-key: release-macos-${{ matrix.arch }}
+      - name: core staticlib (release)
+        run: cargo build --release --lib
+      - name: no gpui in the macOS shell
+        run: |
+          ! grep -rni gpui swift/Sources swift/Tests swift/Package.swift
+      - name: swift build (release)
+        run: swift build -c release --package-path swift
+      - name: swift test
+        # Pure-Swift suite; the executable target links the release
+        # staticlib via Package.swift's target/release -L path.
+        run: swift test --package-path swift
+      - name: headless smoke (real C ABI)
+        run: swift/.build/release/AgentManagerMac --smoke
+      - name: package (ditto zip; dmg stubbed - see packaging/README.md)
+        run: |
+          mkdir -p dist
+          REF="${GITHUB_REF_NAME//\//-}"
+          ditto -c -k --sequesterRsrc --keepParent \
+            swift/.build/release/AgentManagerMac \
+            "dist/AgentManagerMac-${REF}-macos-${{ matrix.arch }}.zip"
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: dist/*.zip
+
+  build-linux:
+    # Native Linux GTK shell (issue #63), release-linked: the same
+    # steps as CI's `linux` job (meson suite + xvfb headless run prove
+    # the shipped binary starts), with the core staticlib built
+    # `--release` and meson pointed at target/release. Runs on x64 +
+    # arm64 only and touches nothing outside native/linux + the core
+    # staticlib. Ships a tarball; .deb/flatpak stay stubbed (see
+    # packaging/README.md).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-${{ matrix.arch }}
+      - name: system deps
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends
+          libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev
+          meson ninja-build pkg-config gcc xvfb
+      - name: core staticlib (release)
+        run: cargo build --release --lib
+      - name: no gpui in the Linux shell
+        run: |
+          ! grep -rni gpui native/linux/
+      - name: meson build (release core)
+        run: >
+          meson setup native/linux/build native/linux
+          -Dcore_lib_dir=$PWD/target/release &&
+          meson compile -C native/linux/build
+      - name: meson tests
+        run: meson test -C native/linux/build --print-errorlogs
+      - name: headless UI run
+        run: |
+          timeout -s TERM 15 xvfb-run -a ./native/linux/build/agent-manager-gtk > /tmp/app.log 2>&1 || true
+          grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' /tmp/app.log | head -n 20
+          ! grep -E 'Adwaita-ERROR|Gtk-CRITICAL|SMOKE-FAIL' /tmp/app.log
+      - name: package (tarball; .deb/flatpak stubbed - see packaging/README.md)
+        run: |
+          mkdir -p dist
+          REF="${GITHUB_REF_NAME//\//-}"
+          tar -czf "dist/agent-manager-${REF}-linux-${{ matrix.arch }}.tar.gz" \
+            -C native/linux/build agent-manager-gtk
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  build-windows:
+    # Native Windows shell (issue #64), release-linked: the same steps
+    # as CI's `windows` job (core suite + CMake/CTest + live converse
+    # smoke + msbuild WinUI app), with the core staticlib built
+    # `--release` and both CMake and msbuild pointed at target/release.
+    # Runs on x64 + arm64 only and touches nothing outside
+    # native/windows + the core staticlib. Ships the unpackaged WinUI
+    # app folder (the whole folder, never the exe alone — see
+    # native/windows/README.md); MSIX stays stubbed (see
+    # packaging/README.md).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+            msbuild_platform: x64
+            msvc_arch: x64
+          - runner: windows-11-vs2026-arm
+            arch: arm64
+            msbuild_platform: ARM64
+            msvc_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows-${{ matrix.arch }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+      - name: core staticlib (release)
+        run: cargo build --release --lib
+      - name: test
+        run: cargo test --all-targets
+      - name: no gpui in the Windows shell
+        shell: pwsh
+        run: |
+          $hits = Get-ChildItem native/windows -Recurse -File | Select-String -Pattern 'gpui'
+          if ($hits) { $hits; exit 1 }
+      - name: C suite (CMake, MSVC)
+        shell: pwsh
+        run: |
+          cmake -S native/windows -B native/windows/build `
+            "-Dcore_lib_dir=$env:GITHUB_WORKSPACE/target/release"
+          cmake --build native/windows/build --config Release
+          ctest --test-dir native/windows/build -C Release --output-on-failure
+      - name: live converse (fake muse.exe)
+        shell: pwsh
+        run: >
+          powershell -ExecutionPolicy Bypass
+          -File native/windows/tests/smoke_live.ps1
+          -Smoke ./native/windows/build/Release/am-win-smoke.exe
+      - name: WinUI app (msbuild, unpackaged)
+        # Same restore-then-build shape as CI's screenshot step, plus
+        # CoreLibDir at target/release. The vcxproj tracks the v145
+        # toolset (VS 2026 - hence windows-11-vs2026-arm for arm64).
+        shell: pwsh
+        run: |
+          msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
+          if ($LASTEXITCODE -ne 0) { throw "msbuild restore failed" }
+          msbuild native/windows/AgentManagerWinUI.vcxproj `
+            /p:Configuration=Release /p:Platform=${{ matrix.msbuild_platform }} `
+            "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/release"
+          if ($LASTEXITCODE -ne 0) { throw "msbuild build failed" }
+          $exe = Get-ChildItem native/windows -Recurse -Filter AgentManagerWinUI.exe -File | Select-Object -First 1
+          if (-not $exe) { throw "WinUI exe missing after build" }
+      - name: package app folder (unpackaged zip; MSIX stubbed - see packaging/README.md)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ref = ($env:GITHUB_REF_NAME -replace '/','-')
+          $exe = Get-ChildItem native/windows -Recurse -Filter AgentManagerWinUI.exe -File | Select-Object -First 1
+          if (-not $exe) { throw "WinUI exe missing for packaging" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path (Join-Path $exe.DirectoryName '*') `
+            -DestinationPath "dist/AgentManagerWinUI-$ref-windows-${{ matrix.arch }}.zip"
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: dist/*.zip
+
+  publish:
+    # Tag-gated publish: only a `v*` push reaches here (dispatch runs
+    # stop after the build jobs, leaving their archives as run
+    # artifacts for inspection). Needs every ship green - a red arch
+    # fails visible instead of cutting a partial release.
+    needs: [build-macos, build-linux, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      # Repo default is read-only: publishing a release needs write.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: list assets
+        run: ls -l dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            Unsigned build (no signing/notarization yet - see `packaging/README.md`):
+            - Windows: SmartScreen may warn on first launch - More info -> Run anyway. Unpack the whole zip and run the exe from its folder (self-contained, no installer).
+            - macOS: unsigned - right-click -> Open on first launch.
+            - Linux: needs GTK4 + libadwaita + VTE installed (see `native/linux/README.md`).
