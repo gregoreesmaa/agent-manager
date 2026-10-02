@@ -168,6 +168,33 @@ int main(int argc, char **argv) {
 
     printf("SMOKE-OK sessions=%zu\n", n);
 
+    /* 2D-launch surface: the catalog lists every supported CLI in core
+     * order (missing ones stay listed), recents decode as a JSON array,
+     * and the effective CLI resolves non-empty on a null hint. */
+    char *clis = bridge_clis_json();
+    if (!clis || clis[0] != '[' || !strstr(clis, "\"muse\"") ||
+        !strstr(clis, "\"claude\"") || !strstr(clis, "\"opencode\"") ||
+        !strstr(clis, "\"codex\"")) {
+        bridge_string_free(clis);
+        bridge_core_free(core);
+        return fail("catalog missing supported CLIs");
+    }
+    bridge_string_free(clis);
+    char *recents = bridge_recent_json(core);
+    if (!recents || recents[0] != '[') {
+        bridge_string_free(recents);
+        bridge_core_free(core);
+        return fail("recents not a JSON array");
+    }
+    bridge_string_free(recents);
+    char *eff = bridge_effective_cli(core, NULL);
+    if (!eff || !eff[0]) {
+        bridge_string_free(eff);
+        bridge_core_free(core);
+        return fail("effective CLI empty");
+    }
+    bridge_string_free(eff);
+
     int rc = 0;
     if (live) {
         rc = live_converse(core);

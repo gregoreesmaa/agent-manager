@@ -86,7 +86,8 @@ int32_t am_spawn(const AmCore *core, AmPty **out, const char *cwd,
 /* Spawn a 2D-launch session PTY (folder x CLI + yolo) of `cols` x `rows`.
  * `cli` names the harness id (`muse`, `claude`, ...; NULL/empty repeats
  * the last-used/default resolution), `cwd` is NULL (inherit) or a path,
- * `yolo` nonzero forces the canonical yolo flag for this spawn only.
+ * `yolo` is tri-state: >0 forces the canonical yolo flag on for this
+ * spawn only, <0 forces it off, 0 follows the per-agent config default.
  * Returns an `AmError` code; the handle lands in `*out`. Free the handle
  * with `am_pty_free`. */
 int32_t am_spawn_launch(const AmCore *core, AmPty **out, const char *cli,
@@ -133,6 +134,12 @@ char *am_session_json(const AmCore *core, size_t row);
  * order. Never NULL on allocation success; free with
  * `am_screen_text_free`. */
 char *am_clis_json(void);
+
+/* Owned harness id of the effective CLI for `cli` (2D launch): the
+ * explicit id when non-empty, else the core's last-used / configured /
+ * autodetected resolution (same rule as `am_spawn_launch`). Free with
+ * `am_screen_text_free`. */
+char *am_effective_cli(const AmCore *core, const char *cli);
 
 /* Owned JSON of the persisted folder recents (2D launch): a string array,
  * MRU-first. NULL core yields an empty list, never UB; free with

@@ -30,8 +30,12 @@ struct AgentManagerMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Session", action: appState.newSession)
+                Button("New Session", action: appState.repeatLastSession)
                     .keyboardShortcut("n", modifiers: .command)
+                Button("Choose Folder, CLI, Options…") {
+                    appState.pickerOpen = true
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandGroup(after: .saveItem) {
                 Button("Save Core Config", action: appState.save)

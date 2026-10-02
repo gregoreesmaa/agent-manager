@@ -39,6 +39,13 @@ set(SYS_LIBS ${CORE_LIB} ws2_32 userenv bcrypt ntdll)
 add_executable(am-win-feed-test src/feed.c src/feed_test.c)
 add_test(NAME feed COMMAND am-win-feed-test)
 
+# 2D-launch picker logic tests (catalog/recents/folder/yolo/preview):
+# header-only C++, no WinUI, runs anywhere.
+add_executable(am-win-picker-test src/picker_test.cpp)
+target_compile_features(am-win-picker-test PRIVATE cxx_std_17)
+add_test(NAME picker COMMAND am-win-picker-test)
+set_tests_properties(picker PROPERTIES PASS_REGULAR_EXPRESSION "PICKER-OK")
+
 # Converse-key contract tests (header-only, no WinUI): pins the Return /
 # Ctrl+C encodings the terminal preview-tunnel relies on, plus the
 # Ctrl+Shift+C/V reserve that stays with the native control.

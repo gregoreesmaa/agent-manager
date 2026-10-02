@@ -71,8 +71,9 @@ powershell -ExecutionPolicy Bypass `
 | Test | What it proves |
 |---|---|
 | `feed` | `am-win-feed-test`: the snapshot→stream reconciler, mirroring Swift's `TerminalFeedTests` 1:1 |
+| `picker` | `am-win-picker-test`: 2D-launch picker logic (catalog/recents parse, folder/yolo mapping, preview copy), mirroring Linux `am-picker-test` |
 | `keys` | `am-win-keys-test`: the converse-key contract the terminal preview-tunnel relies on (Return→CR, Ctrl+C→ETX, Ctrl+Shift+C/V reserve stays with the control) |
-| `smoke` | `am-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`) |
+| `smoke` | `am-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog surface |
 | `smoke-live` | `smoke_live.ps1`: compiles `tests/fake_muse.c` to `muse.exe`, then spawn/pump/write/resize against it in a scratch profile (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
 
 ## Wiring (all through the C ABI)
@@ -80,7 +81,7 @@ powershell -ExecutionPolicy Bypass `
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
-| Spawn | New-run button / Ctrl+N → `bridge_spawn` at 80x25; 2D-launch entry points (`am_spawn_launch` with folder × CLI + yolo, `am_clis_json` catalog, `am_recent_json` recents, `am_note_launch` memory) available for the picker follow-up |
+| Spawn | split-button 2D launch: New Session face / Ctrl+N repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); the chevron / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
 | Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
 | Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box. Return and plain Ctrl+C ride `TermBox_PreviewKeyDown` (tunneling: the read-only box would otherwise swallow them before they bubble); everything else bubbles via `RootGrid_KeyDown`. New Session focuses the terminal, so typing + Enter submits immediately |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |
@@ -98,8 +99,9 @@ powershell -ExecutionPolicy Bypass `
   thread layout (`ToUnicode`), so non-US layouts type correctly; AltGr
   (Ctrl+Alt) passes through as a character modifier while bare Alt keeps
   the Linux ESC-prefix parity.
-- Spawning runs the configured `muse` command; without it on PATH the
-  shell reports the core's error message in the status bar.
+- Spawning runs the effective CLI (last-used, configured default, or
+  first autodetected); without any CLI on PATH the shell reports the
+  core's error message in the status bar.
 - Styling (issue #72) targets the Windows App SDK gallery look: Mica system backdrop, content extended into the title bar with a custom drag region, card surfaces with rounded corners, Segoe UI Variable type ramp, and ThemeResource brushes throughout so the window follows the system theme. No behavior changes.
 - This directory must stay free of the macOS GUI framework in code and
   prose alike (CI enforces it with a literal grep gate): the Windows

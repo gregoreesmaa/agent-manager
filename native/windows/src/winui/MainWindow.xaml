@@ -59,12 +59,39 @@
                     <TextBlock Grid.Row="0"
                                Text="Runs"
                                Style="{StaticResource SubtitleTextBlockStyle}"/>
-                    <Button x:Name="NewButton"
-                            Grid.Row="1"
-                            Content="New Session"
-                            Style="{StaticResource AccentButtonStyle}"
-                            HorizontalAlignment="Stretch"
-                            Click="NewButton_Click"/>
+                    <!-- Dual-function New Session (split-button parity with
+                         the macOS Menu): the main face repeats the last
+                         launch instantly (Ctrl+N), the chevron opens the
+                         folder x CLI + yolo picker (Ctrl+Shift+N).
+                         NOTE: no AccentButtonStyle here — that style
+                         targets Button and throws on a SplitButton at
+                         runtime (launch crash); the face keeps the
+                         default accent via the flyout item instead. -->
+                    <SplitButton x:Name="NewSplitButton"
+                                 Grid.Row="1"
+                                 Content="New Session"
+                                 HorizontalAlignment="Stretch"
+                                 ToolTipService.ToolTip="Repeat the last session (Ctrl+N)"
+                                 Click="NewSplitButton_Click">
+                        <SplitButton.Flyout>
+                            <MenuFlyout Placement="Bottom">
+                                <MenuFlyoutItem Text="Repeat last session"
+                                                ToolTipService.ToolTip="Repeat the last session (Ctrl+N)"
+                                                Click="NewButton_Click">
+                                    <MenuFlyoutItem.KeyboardAccelerators>
+                                        <KeyboardAccelerator Modifiers="Control" Key="N"/>
+                                    </MenuFlyoutItem.KeyboardAccelerators>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Choose folder, CLI, options…"
+                                                ToolTipService.ToolTip="Pick folder x CLI + yolo (Ctrl+Shift+N)"
+                                                Click="PickButton_Click">
+                                    <MenuFlyoutItem.KeyboardAccelerators>
+                                        <KeyboardAccelerator Modifiers="Control,Shift" Key="N"/>
+                                    </MenuFlyoutItem.KeyboardAccelerators>
+                                </MenuFlyoutItem>
+                            </MenuFlyout>
+                        </SplitButton.Flyout>
+                    </SplitButton>
                     <TextBox x:Name="FilterBox"
                              Grid.Row="2"
                              PlaceholderText="Search sessions"

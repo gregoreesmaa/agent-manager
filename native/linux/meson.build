@@ -35,6 +35,16 @@ feed_test_exe = executable('am-feed-test',
   install: false)
 test('feed', feed_test_exe)
 
+# 2D-launch picker logic tests: catalog/recents parsing, folder/yolo
+# mapping, preview copy. No GTK, no core link (pure C under
+# AM_PICKER_TEST), so this runs on any runner.
+picker_test_exe = executable('am-picker-test',
+  'src/picker.c',
+  c_args: '-DAM_PICKER_TEST',
+  include_directories: src_inc,
+  install: false)
+test('picker', picker_test_exe)
+
 # The Rust staticlib's own link closure (sockets, threads, math).
 sys_libs = [core_lib,
             cc.find_library('dl', required: false),
@@ -54,7 +64,7 @@ test('smoke-live', find_program('tests/smoke_live.sh'),
 
 # The GTK shell itself.
 executable('agent-manager-gtk',
-  'src/main.c', 'src/core_bridge.c', 'src/feed.c',
+  'src/main.c', 'src/core_bridge.c', 'src/feed.c', 'src/picker.c',
   include_directories: [src_inc, core_inc],
   dependencies: [gtk4, adw, vte] + sys_libs,
   install: true)

@@ -363,6 +363,7 @@ presence flags — `Option` stays on the Rust side).
 | `am_session_count` | roster row count; 0 on null (#62) |
 | `am_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `am_screen_text_free` (#62) |
 | `am_clis_json()` | owned JSON of the autodetected CLI catalog (`AvailableCli` rows in `SUPPORTED_CLIS` order); freed with `am_screen_text_free` |
+| `am_effective_cli(core, cli)` | owned harness id of the effective CLI (explicit or core resolution); freed with `am_screen_text_free` |
 | `am_recent_json(core)` | owned JSON string array of folder recents (MRU-first); null core yields `[]`; freed with `am_screen_text_free` |
 | `am_note_launch(core, cli, cwd)` | record a confirmed FFI-side launch (last-used CLI + folder MRU); int code |
 | `am_last_error` | thread-local message; never null |
@@ -370,7 +371,7 @@ presence flags — `Option` stays on the Rust side).
 
 ### C header (`include/agent_manager.h`, hardened #61)
 
-The header is checked in and mirrors `src/ffi.rs` exactly (19 exports;
+The header is checked in and mirrors `src/ffi.rs` exactly (20 exports;
 verified: every `am_*` in the header is a `T` symbol in
 `target/debug/libagent_manager.a` and vice versa). Regenerate after any
 FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)

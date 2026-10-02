@@ -9,7 +9,9 @@
 //   roster      am_session_count + am_session_json at launch, am_status ticks;
 //               live runs grouped needs-input/idle/working, one shared
 //               selection across the group lists (#73)
-//   spawn       New Session button / Ctrl+N -> bridge_spawn (80x25 grid)
+//   spawn       New Session button / Ctrl+N -> bridge_spawn_launch
+//               (repeat-last: null CLI/folder, zero yolo); picker button /
+//               Ctrl+Shift+N -> ContentDialog (folder x CLI + yolo) below
 //   converse    key encoding -> bridge_write; pump -> am_feed_delta -> append
 //   copy/paste  native TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via
 //               Clipboard -> bridge_write; Ctrl+C forwards ETX (interrupts)
@@ -36,6 +38,7 @@
 #include "feed.h"
 #include "terminal_keys.h"
 #include "json_mini.h"
+#include "picker.h"
 
 #include <utility>
 
@@ -380,26 +383,6 @@ namespace winrt::AgentManagerWinUI::implementation
         return false;
     }
 
-    bool MainWindow::FirstUnstartedRowId(std::wstring &id) {
-        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
-                            HistoryList()};
-        for (auto const &list : lists) {
-            auto items = list.Items();
-            for (uint32_t i = 0; i < items.Size(); ++i) {
-                auto item = items.GetAt(i).try_as<ListViewItem>();
-                if (!item) {
-                    continue;
-                }
-                std::wstring row(unbox_value<hstring>(item.Tag()));
-                if (!m_live.count(row)) {
-                    id = row;
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     bool MainWindow::IsLocalId(std::wstring const &id) {
         constexpr wchar_t kPrefix[] = L"local-";
         return id.compare(0, 6, kPrefix) == 0;
@@ -483,16 +466,34 @@ namespace winrt::AgentManagerWinUI::implementation
         }
     }
 
-    /* New Session opens a live CLI terminal through the core bridge.
-     * The selected roster row starts when it has no live PTY yet (same
-     * as before); with no unstarted row (empty roster included) or an
-     * already-live roster selection, it mints a shell-local terminal
-     * instead — so one click always opens something and the empty
+    /* New Session repeats the last launch instantly through the core
+     * bridge (the null-CLI/null-folder/zero-yolo form resolves the
+     * effective default, so a picker-confirmed combo repeats here).
+     * The fresh PTY mints a shell-local terminal like the empty-roster
+     * path already did — one click always opens something and the empty
      * roster is a starting point, not a dead end. A live local stays
      * put (no orphan duplicates): it has no roster row to return to. */
     void MainWindow::NewButton_Click(IInspectable const &,
                                      RoutedEventArgs const &) {
+        RepeatLastSession();
+    }
+
+    void MainWindow::NewSplitButton_Click(
+        IInspectable const &,
+        Controls::SplitButtonClickEventArgs const &) {
+        RepeatLastSession();
+    }
+
+    /* Instant repeat-last shared by the SplitButton face, its menu item,
+     * and Ctrl+N: one path, no divergence. */
+    void MainWindow::RepeatLastSession() {
         if (!m_core) {
+            return;
+        }
+        /* Live-set cap (same 10-run ceiling as the macOS shell): locals
+         * never join the roster, so nothing else would bound them. */
+        if (m_live.size() >= 10) {
+            SetStatus(L"At 10 live sessions — close one first.");
             return;
         }
         /* A live local terminal is already the newest thing open:
@@ -503,26 +504,9 @@ namespace winrt::AgentManagerWinUI::implementation
             SetStatus(L"Terminal already open.");
             return;
         }
-        /* Unstarted roster selection starts as before; an already-live
-         * roster selection or an empty/exhausted roster mints a
-         * shell-local terminal instead, so one click always opens
-         * something. */
-        std::wstring id;
-        bool local = false;
-        if (!m_selected.empty() && !IsLocalId(m_selected) &&
-            m_live.count(m_selected) != 0) {
-            id = MintLocalId();
-            local = true;
-        } else if (m_selected.empty() || IsLocalId(m_selected)) {
-            if (!FirstUnstartedRowId(id)) {
-                id = MintLocalId();
-                local = true;
-            }
-        } else {
-            id = m_selected;
-        }
         char *err = nullptr;
-        AmPty *pty = bridge_spawn(m_core, kCols, kRows, &err);
+        AmPty *pty = bridge_spawn_launch(m_core, nullptr, nullptr, 0,
+                                         kCols, kRows, &err);
         if (!pty) {
             std::string msg = "Could not spawn: ";
             msg += err ? err : "unknown error";
@@ -530,10 +514,12 @@ namespace winrt::AgentManagerWinUI::implementation
             free(err);
             return;
         }
+        std::wstring id = MintLocalId();
         LivePty lp;
         lp.pty = pty;
         m_live[id] = std::move(lp);
         m_selected = id;
+        bridge_note_launch(m_core, nullptr, nullptr, nullptr);
         /* Force the roster rebuild (local PTYs never join its gate):
          * RefreshRoster restores the list selection for a roster row,
          * and clears the list visuals for a local id while keeping
@@ -546,7 +532,229 @@ namespace winrt::AgentManagerWinUI::implementation
          * the New Session button, where Return re-clicks instead of
          * submitting the typed prompt. */
         TermBox().Focus(Microsoft::UI::Xaml::FocusState::Programmatic);
-        SetStatus(local ? L"New terminal started." : L"Session started.");
+        char *eff_raw = bridge_effective_cli(m_core, nullptr);
+        std::string eff = eff_raw ? eff_raw : "terminal";
+        bridge_string_free(eff_raw);
+        SetStatus(hstring{to_wide("New " + eff + " session started.")});
+    }
+
+    /* Picker button: open the 2D new-session ContentDialog (folder x
+     * CLI + tri-state yolo) over the fresh catalog + recents. */
+    void MainWindow::PickButton_Click(IInspectable const &,
+                                      RoutedEventArgs const &) {
+        PickNewSessionAsync();
+    }
+    /* 2D new-session dialog. Folder: a TextBox (blank = inherit) plus
+     * the persisted recents for one-click refill; a missing folder is
+     * reported in the status line with the fix named. CLI: a ComboBox
+     * over the autodetected catalog; missing CLIs render disabled with
+     * an install hint, never hidden. Yolo: a tri-state ComboBox
+     * (Default / On once / Off once), safe by default; the preview line
+     * names the exact combination before Spawn. */
+    fire_and_forget MainWindow::PickNewSessionAsync() {
+        auto lifetime = get_strong();
+        if (!m_core) {
+            co_return;
+        }
+        char *clis_raw = bridge_clis_json();
+        std::string clis_json = clis_raw ? clis_raw : "[]";
+        bridge_string_free(clis_raw);
+        char *recents_raw = bridge_recent_json(m_core);
+        std::string recents_json = recents_raw ? recents_raw : "[]";
+        bridge_string_free(recents_raw);
+        auto clis = picker::parse_clis(clis_json);
+        auto recents = picker::parse_recents(recents_json);
+        if (clis.empty()) {
+            SetStatus(L"No agent CLI catalog: cannot open the picker.");
+            co_return;
+        }
+
+        ComboBox cliBox;
+        for (auto const &cli : clis) {
+            ComboBoxItem item;
+            std::string label = cli.id;
+            label += cli.available ? " — ready" : " — not installed";
+            if (cli.available && !cli.path.empty()) {
+                label += " (" + cli.path + ")";
+            }
+            item.Content(box_value(to_wide(label)));
+            item.Tag(box_value(to_wide(cli.id)));
+            item.IsEnabled(cli.available);
+            if (!cli.available) {
+                ToolTipService::SetToolTip(
+                    item, box_value(winrt::hstring(
+                              L"Install this CLI and ensure it is on PATH.")));
+            }
+            cliBox.Items().Append(item);
+        }
+        /* Preselect the first available CLI (catalog order). */
+        for (uint32_t i = 0; i < cliBox.Items().Size(); ++i) {
+            auto item = cliBox.Items().GetAt(i).try_as<ComboBoxItem>();
+            if (item && item.IsEnabled()) {
+                cliBox.SelectedIndex(static_cast<int32_t>(i));
+                break;
+            }
+        }
+
+        TextBox folderBox;
+        folderBox.PlaceholderText(L"Blank = current folder");
+        folderBox.Text(to_wide(recents.empty() ? "" : recents[0]));
+
+        ComboBox recentBox;
+        if (!recents.empty()) {
+            recentBox.Items().Append(box_value(winrt::hstring(L"Type a folder…")));
+            for (auto const &r : recents) {
+                recentBox.Items().Append(box_value(to_wide(r)));
+            }
+            recentBox.SelectedIndex(0);
+        }
+
+        ComboBox yoloBox;
+        yoloBox.Items().Append(box_value(winrt::hstring(L"Default")));
+        yoloBox.Items().Append(box_value(winrt::hstring(L"On (once)")));
+        yoloBox.Items().Append(box_value(winrt::hstring(L"Off (once)")));
+        yoloBox.SelectedIndex(0);
+        ToolTipService::SetToolTip(
+            yoloBox, box_value(winrt::hstring(
+                          L"Yolo lets the agent run commands without asking. "
+                          L"Default follows the per-agent config; once-choices "
+                          L"apply to this run only and are never saved.")));
+
+        TextBlock preview;
+        preview.Style(Application::Current()
+                          .Resources()
+                          .Lookup(box_value(L"CaptionTextBlockStyle"))
+                          .as<Style>());
+        auto refresh = [&]() {
+            int ci = cliBox.SelectedIndex();
+            std::string cli =
+                (ci >= 0 && static_cast<size_t>(ci) < clis.size())
+                    ? clis[static_cast<size_t>(ci)].id
+                    : "muse";
+            std::string folder = to_utf8(folderBox.Text());
+            int yolo = picker::yolo_value(yoloBox.SelectedIndex());
+            preview.Text(to_wide(picker::preview(cli, folder, yolo)));
+        };
+        cliBox.SelectionChanged(
+            [&refresh](IInspectable const &, SelectionChangedEventArgs const &) {
+                refresh();
+            });
+        yoloBox.SelectionChanged(
+            [&refresh](IInspectable const &, SelectionChangedEventArgs const &) {
+                refresh();
+            });
+        folderBox.TextChanged(
+            [&](IInspectable const &, TextChangedEventArgs const &) {
+                refresh();
+            });
+        if (!recents.empty()) {
+            recentBox.SelectionChanged(
+                [&](IInspectable const &,
+                    SelectionChangedEventArgs const &) {
+                    int ri = recentBox.SelectedIndex();
+                    if (ri > 0 &&
+                        static_cast<size_t>(ri - 1) < recents.size()) {
+                        folderBox.Text(to_wide(recents[static_cast<size_t>(ri - 1)]));
+                    }
+                    refresh();
+                });
+        }
+        refresh();
+
+        StackPanel panel;
+        panel.Spacing(8);
+        auto head = [](const wchar_t *t) {
+            TextBlock h;
+            h.Text(t);
+            h.Style(Application::Current()
+                        .Resources()
+                        .Lookup(box_value(L"SubtitleTextBlockStyle"))
+                        .as<Style>());
+            return h;
+        };
+        panel.Children().Append(head(L"Where should it work?"));
+        panel.Children().Append(folderBox);
+        if (!recents.empty()) {
+            panel.Children().Append(recentBox);
+        }
+        panel.Children().Append(head(L"Who should do it?"));
+        panel.Children().Append(cliBox);
+        panel.Children().Append(head(L"Permission mode"));
+        panel.Children().Append(yoloBox);
+        panel.Children().Append(preview);
+
+        ContentDialog dialog;
+        dialog.Title(box_value(winrt::hstring(L"Start a new run")));
+        dialog.Content(panel);
+        dialog.PrimaryButtonText(L"Spawn");
+        dialog.CloseButtonText(L"Cancel");
+        dialog.DefaultButton(ContentDialogButton::Primary);
+        dialog.XamlRoot(this->Content().XamlRoot());
+        /* Spawn stays disabled while a missing CLI is selected: the
+         * failure would be certain, so prevent it inline (fail visible
+         * at the control, not after the click). */
+        auto sync_spawn = [&]() {
+            int ci = cliBox.SelectedIndex();
+            bool avail =
+                (ci >= 0 && static_cast<size_t>(ci) < clis.size()) &&
+                clis[static_cast<size_t>(ci)].available;
+            dialog.IsPrimaryButtonEnabled(avail);
+        };
+        cliBox.SelectionChanged(
+            [&sync_spawn](IInspectable const &, SelectionChangedEventArgs const &) {
+                sync_spawn();
+            });
+        sync_spawn();
+        auto result = co_await dialog.ShowAsync();
+        if (result != ContentDialogResult::Primary) {
+            co_return;
+        }
+        int ci = cliBox.SelectedIndex();
+        std::string cli =
+            (ci >= 0 && static_cast<size_t>(ci) < clis.size())
+                ? clis[static_cast<size_t>(ci)].id
+                : "muse";
+        std::string folder = picker::effective_folder(to_utf8(folderBox.Text()));
+        /* is-dir check inline (fail visible, dialog already closed by
+         * ShowAsync: report in the status line with the fix named). */
+        if (!folder.empty()) {
+            DWORD attrs = GetFileAttributesA(folder.c_str());
+            if (attrs == INVALID_FILE_ATTRIBUTES ||
+                !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                SetStatus(winrt::hstring(to_wide("No such folder: " + folder +
+                                                 " — reopen the picker to fix it.")));
+                co_return;
+            }
+        }
+        int yolo = picker::yolo_value(yoloBox.SelectedIndex());
+        char *err = nullptr;
+        AmPty *pty = bridge_spawn_launch(
+            m_core, cli.c_str(), folder.empty() ? nullptr : folder.c_str(),
+            yolo, kCols, kRows, &err);
+        if (!pty) {
+            std::string msg = "Could not spawn: ";
+            msg += err ? err : "unknown error";
+            SetStatus(to_hstring(msg));
+            free(err);
+            co_return;
+        }
+        std::wstring id = MintLocalId();
+        LivePty lp;
+        lp.pty = pty;
+        m_live[id] = std::move(lp);
+        m_selected = id;
+        bridge_note_launch(m_core, cli.c_str(),
+                           folder.empty() ? nullptr : folder.c_str(),
+                           nullptr);
+        m_fingerprint.clear();
+        RefreshRoster();
+        ShowSelected();
+        SetStatus(winrt::hstring(to_wide(picker::preview(cli, folder, yolo))));
+        /* Hand the keyboard to the new session (takes the keyboard on
+         * spawn, like the macOS shell's `n` key): without this, focus stays on
+         * the New Session button, where Return re-clicks instead of
+         * submitting the typed prompt. */
+        TermBox().Focus(Microsoft::UI::Xaml::FocusState::Programmatic);
     }
 
     void MainWindow::PersistCore() {
@@ -666,10 +874,11 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     /* Converse path: every key the encoder accepts becomes child input.
-     * App shortcuts (Ctrl+S persist, Ctrl+N spawn) ride here too,
-     * mirroring the GTK shell's app-level shortcuts. Paste arrives
-     * via the clipboard (async); the reserve rule keeps Ctrl+Shift+C/V
-     * with the native control for copy.
+     * App shortcuts (Ctrl+S persist, Ctrl+N repeat-last spawn,
+     * Ctrl+Shift+N picker) ride here too, mirroring the GTK shell's
+     * app-level shortcuts. Paste arrives via the clipboard (async);
+     * the reserve rule keeps Ctrl+Shift+C/V with the native control
+     * for copy.
      *
      * Two documented converse keys never reach this bubbling handler:
      * the read-only output box swallows Return (newline insertion) and
@@ -685,18 +894,25 @@ namespace winrt::AgentManagerWinUI::implementation
         bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
         int vk = static_cast<int>(args.Key());
 
-        if (ctrl && !alt && !shift) {
-            if (vk == 'S') {
+        if (ctrl && !alt) {
+            if (!shift && vk == 'S') {
                 PersistCore();
                 args.Handled(true);
                 return;
             }
-            if (vk == 'N') {
+            if (!shift && vk == 'N') {
+                /* Ctrl+N repeats the last launch instantly. */
                 NewButton_Click(nullptr, nullptr);
                 args.Handled(true);
                 return;
             }
-            if (vk == 'V') {
+            if (shift && vk == 'N') {
+                /* Ctrl+Shift+N opens the full picker. */
+                PickButton_Click(nullptr, nullptr);
+                args.Handled(true);
+                return;
+            }
+            if (!shift && vk == 'V') {
                 /* Paste: clipboard text becomes child input. */
                 auto data =
                     Windows::ApplicationModel::DataTransfer::Clipboard::

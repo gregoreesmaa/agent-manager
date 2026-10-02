@@ -36,6 +36,7 @@
 
 #include "core_bridge.h"
 #include "feed.h"
+#include "picker.h"
 
 /* Bounded per-session VTE scrollback (local-only trust + bounded growth:
  * an accumulate-forever buffer would leak memory over long agent runs). */
@@ -438,24 +439,30 @@ static void toast(Shell *sh, const char *msg) {
 }
 
 static void update_spawn_state(Shell *sh) {
-    LivePty *lp =
-        sh->selected ? g_hash_table_lookup(sh->live, sh->selected) : NULL;
-    gtk_widget_set_sensitive(GTK_WIDGET(sh->spawn_btn),
-                             sh->selected && !lp ? TRUE : FALSE);
+    /* Split-button repeat-last mints a local id, so both header buttons
+     * stay sensitive with or without a selection (the empty roster is a
+     * starting point, not a dead end). */
+    (void)sh;
 }
 
 static void on_spawn(GtkButton *btn, gpointer data) {
     (void)btn;
     Shell *sh = data;
-    if (!sh->selected) {
-        return;
-    }
-    if (g_hash_table_lookup(sh->live, sh->selected)) {
+    /* Split-button main: repeat the last launch instantly (the
+     * null-CLI/null-folder/zero-yolo form resolves the core's effective
+     * default, so a picker-confirmed claude/yolo combo repeats here).
+     * The fresh PTY mints a local id like the picker path: the core
+     * roster snapshot is launch-time, so there is no row to attach to.
+     * Local PTYs are capped (same 10-run ceiling as the macOS shell) so
+     * one-click spawning cannot grow the live set without bound. */
+    if (g_hash_table_size(sh->live) >= 10) {
+        toast(sh, "At 10 live sessions — close one first.");
         return;
     }
     char *err = NULL;
-    AmPty *pty =
-        bridge_spawn(sh->core, (unsigned)sh->cols, (unsigned)sh->rows_grid, &err);
+    AmPty *pty = bridge_spawn_launch(sh->core, NULL, NULL, 0,
+                                     (unsigned)sh->cols,
+                                     (unsigned)sh->rows_grid, &err);
     if (!pty) {
         char *msg = g_strdup_printf("Could not start session: %s",
                                     err ? err : "unknown error");
@@ -464,13 +471,345 @@ static void on_spawn(GtkButton *btn, gpointer data) {
         free(err);
         return;
     }
+    char *id = g_strdup_printf("local-%u", g_random_int());
     LivePty *lp = calloc(1, sizeof *lp);
     lp->pty = pty;
     lp->fed = strdup("");
-    g_hash_table_insert(sh->live, g_strdup(sh->selected), lp);
+    g_hash_table_insert(sh->live, id, lp);
+    free(sh->selected);
+    sh->selected = strdup(id);
+    bridge_note_launch(sh->core, NULL, NULL, NULL);
+    /* Name the effective CLI so the repeat is verifiable (the null
+     * form resolves last-used / configured / autodetected). */
+    char *eff = bridge_effective_cli(sh->core, NULL);
+    char *preview = picker_preview(eff ? eff : NULL, NULL, 0);
+    bridge_string_free(eff);
+    toast(sh, preview ? preview : "Session started.");
+    free(preview);
     show_selected_in_terminal(sh);
     update_spawn_state(sh);
     reload_statuses(sh);
+}
+
+/* ------------------------------------------------------------------ */
+/* 2D new-session picker (folder x CLI + yolo).                        */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    Shell *sh;
+    PickerCli *clis;
+    size_t n_clis;
+    GtkCheckButton **cli_btns;
+    GtkEntry *folder;
+    GtkDropDown *recent;
+    char **recents;
+    size_t n_recents;
+    GtkDropDown *yolo;
+    GtkLabel *preview;
+    GtkLabel *error;
+    AdwDialog *dialog;
+} PickerUi;
+
+/* Refresh the `runs: <cli> in <folder> + yolo` preview line from the
+ * current widget state. */
+static void picker_refresh_preview(PickerUi *pu) {
+    const char *cli = "muse";
+    for (size_t i = 0; i < pu->n_clis; i++) {
+        if (gtk_check_button_get_active(pu->cli_btns[i])) {
+            cli = pu->clis[i].id;
+            break;
+        }
+    }
+    const char *folder = gtk_editable_get_text(GTK_EDITABLE(pu->folder));
+    int yolo =
+        picker_yolo_value((int)gtk_drop_down_get_selected(pu->yolo));
+    char *text = picker_preview(cli, folder, yolo);
+    gtk_label_set_text(pu->preview, text ? text : "runs: muse");
+    free(text);
+}
+
+static void picker_on_changed(PickerUi *pu) {
+    gtk_label_set_text(pu->error, "");
+    picker_refresh_preview(pu);
+}
+
+static void picker_cli_toggled(GtkCheckButton *btn, gpointer data) {
+    if (!gtk_check_button_get_active(btn)) {
+        return; /* the newly activated sibling refreshes */
+    }
+    picker_on_changed(data);
+}
+
+static void picker_folder_changed(GtkEditable *entry, gpointer data) {
+    (void)entry;
+    picker_on_changed(data);
+}
+
+static void picker_yolo_changed(GObject *obj, GParamSpec *pspec,
+                                gpointer data) {
+    (void)obj;
+    (void)pspec;
+    picker_on_changed(data);
+}
+
+/* A recent-folder pick refills the entry (which stays editable). */
+static void picker_recent_changed(GObject *obj, GParamSpec *pspec,
+                                  gpointer data) {
+    (void)pspec;
+    PickerUi *pu = data;
+    guint idx = gtk_drop_down_get_selected(GTK_DROP_DOWN(obj));
+    /* Index 0 is the "type a folder" placeholder; the rest are recents. */
+    if (idx > 0 && idx - 1 < pu->n_recents) {
+        gtk_editable_set_text(GTK_EDITABLE(pu->folder),
+                              pu->recents[idx - 1]);
+    }
+    picker_on_changed(pu);
+}
+
+static void picker_free(PickerUi *pu) {
+    if (!pu) {
+        return;
+    }
+    picker_clis_free(pu->clis, pu->n_clis);
+    picker_recents_free(pu->recents, pu->n_recents);
+    free(pu->cli_btns);
+    free(pu);
+}
+
+/* Spawn the confirmed combination: folder x CLI + one-shot yolo. A
+ * missing folder refuses inline (the dialog stays open for a fix);
+ * a spawn failure toasts and closes (the core error names the fix). */
+static void picker_confirm(PickerUi *pu) {
+    Shell *sh = pu->sh;
+    char *folder_raw =
+        g_strdup(gtk_editable_get_text(GTK_EDITABLE(pu->folder)));
+    char *folder = picker_effective_folder(folder_raw);
+    g_free(folder_raw);
+    if (folder && !g_file_test(folder, G_FILE_TEST_IS_DIR)) {
+        char *msg = g_strdup_printf("No such folder: %s", folder);
+        gtk_label_set_text(pu->error, msg);
+        g_free(msg);
+        free(folder);
+        return;
+    }
+    if (g_hash_table_size(sh->live) >= 10) {
+        gtk_label_set_text(pu->error,
+                           "At 10 live sessions — close one first.");
+        free(folder);
+        return;
+    }
+    const char *cli = "muse";
+    for (size_t i = 0; i < pu->n_clis; i++) {
+        if (gtk_check_button_get_active(pu->cli_btns[i])) {
+            cli = pu->clis[i].id;
+            break;
+        }
+    }
+    int yolo =
+        picker_yolo_value((int)gtk_drop_down_get_selected(pu->yolo));
+    char *err = NULL;
+    AmPty *pty = bridge_spawn_launch(sh->core, cli, folder, yolo,
+                                     (unsigned)sh->cols,
+                                     (unsigned)sh->rows_grid, &err);
+    if (!pty) {
+        char *msg = g_strdup_printf("Could not start session: %s",
+                                    err ? err : "unknown error");
+        toast(sh, msg);
+        g_free(msg);
+        free(err);
+        free(folder);
+        adw_dialog_close(pu->dialog);
+        return;
+    }
+    /* Native shells mint their own live ids (the roster snapshot is
+     * launch-time): track the PTY under a local id and select it. */
+    char *id = g_strdup_printf("local-%u", g_random_int());
+    LivePty *lp = calloc(1, sizeof *lp);
+    lp->pty = pty;
+    lp->fed = strdup("");
+    g_hash_table_insert(sh->live, id, lp);
+    free(sh->selected);
+    sh->selected = strdup(id);
+    bridge_note_launch(sh->core, cli, folder, NULL);
+    char *preview = picker_preview(cli, folder, yolo);
+    toast(sh, preview ? preview : "Session started.");
+    free(preview);
+    free(folder);
+    adw_dialog_close(pu->dialog);
+    show_selected_in_terminal(sh);
+    update_spawn_state(sh);
+    reload_statuses(sh);
+}
+
+static void picker_spawn_clicked(GtkButton *btn, gpointer data) {
+    (void)btn;
+    picker_confirm(data);
+}
+
+static void picker_closed(AdwDialog *dialog, gpointer data) {
+    (void)dialog;
+    picker_free(data);
+}
+
+/* Open the 2D picker dialog: folder entry + recents, CLI radio rows
+ * (missing CLIs disabled with an install hint), yolo tri-state, and
+ * the live `runs: ...` preview. Catalog + recents re-read on every
+ * open so the list is never stale. */
+static void on_pick_session(GtkButton *btn, gpointer data) {
+    (void)btn;
+    Shell *sh = data;
+    GtkWindow *win =
+        gtk_application_get_active_window(GTK_APPLICATION(sh->app));
+
+    PickerUi *pu = calloc(1, sizeof *pu);
+    if (!pu) {
+        return;
+    }
+    pu->sh = sh;
+    char *clis_json = bridge_clis_json();
+    pu->clis = picker_parse_clis(clis_json ? clis_json : "[]", &pu->n_clis);
+    bridge_string_free(clis_json);
+    char *recents_json = bridge_recent_json(sh->core);
+    pu->recents =
+        picker_parse_recents(recents_json ? recents_json : "[]",
+                             &pu->n_recents);
+    bridge_string_free(recents_json);
+    if (!pu->clis) {
+        picker_free(pu);
+        toast(sh, "Could not load the agent catalog.");
+        return;
+    }
+    pu->cli_btns = calloc(pu->n_clis ? pu->n_clis : 1, sizeof *pu->cli_btns);
+    if (!pu->cli_btns) {
+        picker_free(pu);
+        return;
+    }
+
+    AdwDialog *dialog = ADW_DIALOG(adw_dialog_new());
+    pu->dialog = dialog;
+    adw_dialog_set_title(dialog, "Start a new run");
+    adw_dialog_set_content_width(dialog, 420);
+    g_signal_connect(dialog, "closed", G_CALLBACK(picker_closed), pu);
+
+    GtkWidget *box =
+        gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_start(box, 20);
+    gtk_widget_set_margin_end(box, 20);
+    gtk_widget_set_margin_top(box, 20);
+    gtk_widget_set_margin_bottom(box, 20);
+
+    GtkWidget *folder_label = gtk_label_new("Where should it work?");
+    gtk_label_set_xalign(GTK_LABEL(folder_label), 0);
+    gtk_widget_add_css_class(folder_label, "heading");
+    gtk_box_append(GTK_BOX(box), folder_label);
+    pu->folder = GTK_ENTRY(gtk_entry_new());
+    gtk_entry_set_placeholder_text(pu->folder, "Blank = current folder");
+    if (pu->n_recents > 0) {
+        gtk_editable_set_text(GTK_EDITABLE(pu->folder), pu->recents[0]);
+    }
+    g_signal_connect(pu->folder, "changed",
+                     G_CALLBACK(picker_folder_changed), pu);
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(pu->folder));
+    if (pu->n_recents > 0) {
+        GtkStringList *recent_list =
+            GTK_STRING_LIST(gtk_string_list_new(NULL));
+        gtk_string_list_append(recent_list, "Type a folder…");
+        for (size_t i = 0; i < pu->n_recents; i++) {
+            gtk_string_list_append(recent_list, pu->recents[i]);
+        }
+        pu->recent = GTK_DROP_DOWN(gtk_drop_down_new(
+            G_LIST_MODEL(recent_list), NULL));
+        gtk_drop_down_set_selected(pu->recent, 0);
+        g_signal_connect(pu->recent, "notify::selected",
+                         G_CALLBACK(picker_recent_changed), pu);
+        gtk_box_append(GTK_BOX(box), GTK_WIDGET(pu->recent));
+    }
+    pu->error = GTK_LABEL(gtk_label_new(""));
+    gtk_label_set_xalign(pu->error, 0);
+    gtk_widget_add_css_class(GTK_WIDGET(pu->error), "error");
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(pu->error));
+
+    GtkWidget *cli_label = gtk_label_new("Who should do it?");
+    gtk_label_set_xalign(GTK_LABEL(cli_label), 0);
+    gtk_widget_add_css_class(cli_label, "heading");
+    gtk_box_append(GTK_BOX(box), cli_label);
+    GtkCheckButton *group = NULL;
+    for (size_t i = 0; i < pu->n_clis; i++) {
+        char *label;
+        if (pu->clis[i].available) {
+            label = g_strdup_printf(
+                "%s — ready%s%s", pu->clis[i].id,
+                pu->clis[i].path ? " (" : "",
+                pu->clis[i].path ? pu->clis[i].path : "");
+            if (pu->clis[i].path) {
+                char *tmp = g_strdup_printf("%s)", label);
+                g_free(label);
+                label = tmp;
+            }
+        } else {
+            label = g_strdup_printf("%s — not installed", pu->clis[i].id);
+        }
+        GtkWidget *row = gtk_check_button_new_with_label(label);
+        g_free(label);
+        gtk_check_button_set_group(GTK_CHECK_BUTTON(row), group);
+        if (!group) {
+            group = GTK_CHECK_BUTTON(row);
+        }
+        gtk_widget_set_sensitive(row, pu->clis[i].available ? TRUE : FALSE);
+        gtk_widget_set_tooltip_text(
+            row, pu->clis[i].available
+                     ? (pu->clis[i].path ? pu->clis[i].path : pu->clis[i].id)
+                     : "Install this CLI and ensure it is on PATH.");
+        g_signal_connect(row, "toggled", G_CALLBACK(picker_cli_toggled),
+                         pu);
+        gtk_box_append(GTK_BOX(box), row);
+        pu->cli_btns[i] = GTK_CHECK_BUTTON(row);
+    }
+    /* Preselect the first available CLI (catalog order: muse first). */
+    for (size_t i = 0; i < pu->n_clis; i++) {
+        if (pu->clis[i].available) {
+            gtk_check_button_set_active(pu->cli_btns[i], TRUE);
+            break;
+        }
+    }
+
+    GtkWidget *yolo_label = gtk_label_new("Permission mode");
+    gtk_label_set_xalign(GTK_LABEL(yolo_label), 0);
+    gtk_widget_add_css_class(yolo_label, "heading");
+    gtk_box_append(GTK_BOX(box), yolo_label);
+    const char *yolo_opts[] = { "Default", "On (once)", "Off (once)",
+                                NULL };
+    pu->yolo = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(yolo_opts));
+    gtk_widget_set_tooltip_text(
+        GTK_WIDGET(pu->yolo),
+        "Yolo lets the agent run commands without asking. "
+        "Default follows the per-agent config; once-choices apply to "
+        "this run only and are never saved.");
+    g_signal_connect(pu->yolo, "notify::selected",
+                     G_CALLBACK(picker_yolo_changed), pu);
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(pu->yolo));
+
+    pu->preview = GTK_LABEL(gtk_label_new("runs: muse"));
+    gtk_label_set_xalign(pu->preview, 0);
+    gtk_widget_add_css_class(GTK_WIDGET(pu->preview), "dim-label");
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(pu->preview));
+
+    GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(actions, GTK_ALIGN_END);
+    GtkWidget *cancel = gtk_button_new_with_label("Cancel");
+    g_signal_connect_swapped(cancel, "clicked",
+                             G_CALLBACK(adw_dialog_close), dialog);
+    gtk_box_append(GTK_BOX(actions), cancel);
+    GtkWidget *spawn = gtk_button_new_with_label("Spawn");
+    gtk_widget_add_css_class(spawn, "suggested-action");
+    g_signal_connect(spawn, "clicked", G_CALLBACK(picker_spawn_clicked),
+                     pu);
+    gtk_box_append(GTK_BOX(actions), spawn);
+    gtk_box_append(GTK_BOX(box), actions);
+
+    picker_refresh_preview(pu);
+    adw_dialog_set_child(dialog, box);
+    adw_dialog_present(dialog, GTK_WIDGET(win));
 }
 
 /* Encode one key press into the raw bytes the child expects and forward
@@ -660,6 +999,7 @@ static void on_term_resize(VteTerminal *term, guint w, guint h,
 }
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
 /* UI construction. */
 /* ------------------------------------------------------------------ */
 
@@ -804,14 +1144,15 @@ static void on_term_menu(GtkGestureClick *gest, int n_press, double x,
     g_object_unref(ag);
 }
 
-/* App-level shortcuts: Ctrl+F find, Ctrl+S save, Ctrl+N spawn. */
+/* App-level shortcuts: Ctrl+F find, Ctrl+S save, Ctrl+N spawn,
+ * Ctrl+Shift+N picker. */
 static gboolean on_window_key(GtkEventControllerKey *ctl, guint keyval,
                               guint keycode, GdkModifierType state,
                               gpointer data) {
     (void)ctl;
     (void)keycode;
     Shell *sh = data;
-    if ((state & GDK_CONTROL_MASK) && !(state & (GDK_SHIFT_MASK | GDK_ALT_MASK))) {
+    if ((state & GDK_CONTROL_MASK) && !(state & GDK_ALT_MASK)) {
         if (keyval == GDK_KEY_f || keyval == GDK_KEY_F) {
             toggle_find(sh);
             return TRUE;
@@ -820,8 +1161,14 @@ static gboolean on_window_key(GtkEventControllerKey *ctl, guint keyval,
             on_save(NULL, sh);
             return TRUE;
         }
-        if (keyval == GDK_KEY_n || keyval == GDK_KEY_N) {
+        if ((keyval == GDK_KEY_n || keyval == GDK_KEY_N) &&
+            !(state & GDK_SHIFT_MASK)) {
             on_spawn(NULL, sh);
+            return TRUE;
+        }
+        if ((keyval == GDK_KEY_n || keyval == GDK_KEY_N) &&
+            (state & GDK_SHIFT_MASK)) {
+            on_pick_session(NULL, sh);
             return TRUE;
         }
     }
@@ -857,10 +1204,23 @@ static void build_ui(Shell *sh) {
     sh->header_title = ADW_WINDOW_TITLE(title);
     adw_header_bar_set_title_widget(bar, title);
 
+    /* Header: split-button 2D launch — "New run" repeats the last
+     * launch instantly, the caret opens the folder x CLI picker. */
+    GtkWidget *new_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(new_box, "linked");
     sh->spawn_btn = GTK_BUTTON(gtk_button_new_with_label("New run"));
     gtk_widget_add_css_class(GTK_WIDGET(sh->spawn_btn), "suggested-action");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(sh->spawn_btn),
+                                "Repeat the last session (Ctrl+N)");
     g_signal_connect(sh->spawn_btn, "clicked", G_CALLBACK(on_spawn), sh);
-    adw_header_bar_pack_start(ADW_HEADER_BAR(bar), GTK_WIDGET(sh->spawn_btn));
+    gtk_box_append(GTK_BOX(new_box), GTK_WIDGET(sh->spawn_btn));
+    GtkWidget *pick_btn = gtk_button_new_with_label("▾");
+    gtk_widget_set_tooltip_text(pick_btn,
+                                "Choose folder, CLI, options… (Ctrl+Shift+N)");
+    g_signal_connect(pick_btn, "clicked", G_CALLBACK(on_pick_session), sh);
+    gtk_box_append(GTK_BOX(new_box), pick_btn);
+    gtk_widget_set_sensitive(pick_btn, TRUE);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(bar), new_box);
 
     sh->save_btn = GTK_BUTTON(gtk_button_new_with_label("Save"));
     g_signal_connect(sh->save_btn, "clicked", G_CALLBACK(on_save), sh);

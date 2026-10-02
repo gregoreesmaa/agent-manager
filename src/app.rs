@@ -488,7 +488,6 @@ impl App {
     pub fn config_last_cli(&self) -> Option<&str> {
         self.config.last_cli.as_deref()
     }
-
     pub fn config_default_cli(&self) -> Option<&str> {
         self.config.default_cli.as_deref()
     }
@@ -514,6 +513,14 @@ impl App {
 
     pub fn config_yolo_default(&self, agent: &str) -> bool {
         self.config.yolo_default_for(agent)
+    }
+
+    /// Mutable config for tests that set up launch scenarios (the FFI
+    /// tri-state test opts an agent into yolo). Production mutates via
+    /// the typed helpers (`set_config`, `note_launch`, …), never this.
+    #[cfg(test)]
+    pub fn config_mut(&mut self) -> &mut crate::config::Config {
+        &mut self.config
     }
 
     /// Record a confirmed launch from a shell that spawns via FFI (the

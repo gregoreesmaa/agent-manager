@@ -20,6 +20,9 @@ final class AppState: ObservableObject {
     @Published var filter = ""
     @Published var pendingError: String?
     @Published var savedFlash = false
+    /// 2D-launch picker sheet visibility (set by the menu, the caret,
+    /// or Cmd-Shift-N; the sheet resets it on dismiss).
+    @Published var pickerOpen = false
 
     /// Feeds waiting for the terminal view: row id -> (text, sequence).
     /// The sequence lets the view skip what it already fed.
@@ -93,18 +96,67 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// New Session entry point (issue #74, WinUI #71 parity): start
-    /// the selected row's child through the core and keep it
-    /// selected. With no selection yet (fresh launch, or the filter
-    /// cleared it), take the first visible row so one click always
-    /// starts something. An already-live or still-empty selection is
-    /// a silent no-op: the roster already shows the wanted state.
-    func newSession() {
-        if selection == nil {
-            selection = filteredRows.first?.id ?? rows.first?.id
+    // MARK: - 2D launch (folder × CLI + yolo)
+
+    /// Split-button main action: repeat the last launch instantly (the
+    /// null-CLI/null-folder/zero-yolo form of `am_spawn_launch`, which
+    /// resolves the core's effective default: last-used, configured,
+    /// autodetected). A failed repeat surfaces in `pendingError`, never
+    /// silently.
+    func repeatLastSession() {
+        do {
+            let pty = try core.spawnLaunch(cli: nil, cwd: nil, yolo: 0,
+                                           cols: grid.cols, rows: grid.rows)
+            attachFreshPty(pty, cli: core.effectiveCli(), folder: nil)
+        } catch {
+            pendingError = error.localizedDescription
         }
-        spawnSelected()
     }
+
+    /// Attach a freshly spawned PTY under a new local id (native shells
+    /// mint their own rows: the roster snapshot is launch-time, while
+    /// live PTYs key by id like the shared run map). The row joins
+    /// the roster immediately so triage (counts, groups, filter) sees it;
+    /// folder/CLI choice is recorded on the row for the detail header.
+    private func attachFreshPty(_ pty: Pty, cli: String, folder: String?) {
+        let id = "local-\(UInt64.random(in: 0 ... UInt64.max))"
+        ptys[id] = pty
+        fedText[id] = ""
+        let project: String
+        if let folder, !folder.isEmpty {
+            project = URL(fileURLWithPath: folder).lastPathComponent
+        } else {
+            project = "local"
+        }
+        rows.append(SessionRow(
+            id: id, title: project, project: project, statusName: "Working",
+            harness: cli, lastActive: Int64(Date.now.timeIntervalSince1970),
+            cwd: folder, prLinks: nil, relatedLinks: nil
+        ))
+        statuses[id] = RunStatus.working.rawValue
+        selection = id
+    }
+
+    /// Confirmed picker launch: explicit folder × CLI + tri-state yolo
+    /// (1 = on once, -1 = off once, 0 = config default). Records the
+    /// combination via `am_note_launch` so the next repeat replays it.
+    func confirmPicker(cli: String, folder: String?, yolo: Int32) {
+        do {
+            let pty = try core.spawnLaunch(cli: cli, cwd: folder, yolo: yolo,
+                                           cols: grid.cols, rows: grid.rows)
+            attachFreshPty(pty, cli: cli, folder: folder)
+            core.noteLaunch(cli: cli, cwd: folder)
+        } catch {
+            pendingError = error.localizedDescription
+        }
+    }
+
+    /// Fresh CLI catalog for the picker sheet (re-read on every open so
+    /// the list is never stale).
+    func pickerCatalog() -> [CliRow] { core.cliCatalog() }
+
+    /// Folder recents for the picker sheet (MRU-first).
+    func pickerRecents() -> [String] { core.recentFolders() }
 
     func hasLivePty(_ id: String) -> Bool { ptys[id] != nil }
 

@@ -48,6 +48,38 @@ AmPty *bridge_spawn(const AmCore *core, unsigned cols, unsigned rows,
                     char **msg_out);
 void bridge_pty_free(AmPty *pty);
 
+/* 2D-launch spawn (folder x CLI + yolo) of `cols` x `rows`. `cli` is
+ * NULL/empty (repeat the core's effective default: last-used, configured,
+ * autodetected) or a harness id; `cwd` is NULL (inherit) or a path;
+ * `yolo` is tri-state (1 = force on once, -1 = force off once, 0 = the
+ * per-agent config default). Returns NULL on failure with `msg_out`
+ * set like bridge_spawn. Free the handle with bridge_pty_free(). */
+AmPty *bridge_spawn_launch(const AmCore *core, const char *cli,
+                           const char *cwd, int yolo, unsigned cols,
+                           unsigned rows, char **msg_out);
+
+/* Owned JSON of the autodetected CLI catalog ([{id,program,path,
+ * available}] in core order) or NULL on allocation failure. Free with
+ * bridge_string_free(). Missing CLIs stay listed (available=false). */
+char *bridge_clis_json(void);
+
+/* Owned JSON string array of folder recents (MRU-first), or NULL on
+ * allocation failure. Free with bridge_string_free(). */
+char *bridge_recent_json(const AmCore *core);
+
+/* Owned harness id of the effective CLI for `cli` (2D launch): the
+ * explicit id when non-empty, else the core's last-used / configured /
+ * autodetected resolution. NULL `cli` resolves the default. Free with
+ * bridge_string_free(). */
+char *bridge_effective_cli(const AmCore *core, const char *cli);
+
+/* Record a confirmed picker launch (last-used CLI + folder MRU), so the
+ * next repeat replays it. NULL/empty `cli` keeps the previous CLI; NULL
+ * `cwd` records no folder. Returns 0 on success with `msg_out` set like
+ * bridge_spawn on failure. */
+int bridge_note_launch(AmCore *core, const char *cli, const char *cwd,
+                       char **msg_out);
+
 /* Feed queued output into the emulator. Nonzero when the screen may
  * have changed (the shell's only repaint gate). */
 int bridge_pump(AmPty *pty);

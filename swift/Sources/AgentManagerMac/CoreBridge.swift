@@ -18,6 +18,36 @@ import Foundation
     _ cols: UInt16,
     _ rows: UInt16
 ) -> Int32
+// 2D-launch entry points (folder × CLI + yolo). `cli`/`cwd` are NULL
+// (inherit / effective default) or NUL-terminated UTF-8; `yolo` is
+// tri-state (1 = force on once, -1 = force off once, 0 = config default).
+@_silgen_name("am_spawn_launch") private func am_spawn_launch(
+    _ core: OpaquePointer?,
+    _ out: UnsafeMutablePointer<OpaquePointer?>,
+    _ cli: UnsafePointer<CChar>?,
+    _ cwd: UnsafePointer<CChar>?,
+    _ yolo: Int32,
+    _ cols: UInt16,
+    _ rows: UInt16
+) -> Int32
+// Owned JSON of the autodetected CLI catalog ([{id,program,path,
+// available}]) and of the folder recents ([String], MRU-first).
+@_silgen_name("am_clis_json") private func am_clis_json() -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_recent_json") private func am_recent_json(
+    _ core: OpaquePointer?
+) -> UnsafeMutablePointer<CChar>?
+// Owned harness id of the effective CLI for `cli` (explicit id, or the
+// core's last-used / configured / autodetected resolution for NULL).
+@_silgen_name("am_effective_cli") private func am_effective_cli(
+    _ core: OpaquePointer?,
+    _ cli: UnsafePointer<CChar>?
+) -> UnsafeMutablePointer<CChar>?
+// Record a confirmed FFI-side launch (last-used CLI + folder MRU).
+@_silgen_name("am_note_launch") private func am_note_launch(
+    _ core: OpaquePointer?,
+    _ cli: UnsafePointer<CChar>?,
+    _ cwd: UnsafePointer<CChar>?
+) -> Int32
 @_silgen_name("am_pump") private func am_pump(_ pty: OpaquePointer?) -> Bool
 @_silgen_name("am_write") private func am_write(
     _ pty: OpaquePointer?, _ data: UnsafePointer<UInt8>?, _ len: Int
@@ -61,6 +91,16 @@ enum CoreError: Error, LocalizedError {
         case let .save(m): "Could not save: \(m)"
         }
     }
+}
+
+/// One CLI catalog row decoded from `am_clis_json`. `available` with a
+/// `path` means launchable; anything else renders disabled with its
+/// install hint (fail visible, never a silent blank row).
+struct CliRow: Decodable {
+    var id: String
+    var program: String
+    var path: String?
+    var available: Bool
 }
 
 /// One roster row decoded from the core's `ChatSession` JSON
@@ -142,6 +182,81 @@ final class Core {
         }
         return Pty(handle: handle)
     }
+
+    /// 2D-launch spawn (folder × CLI + yolo). `cli` nil/empty repeats the
+    /// core's effective default (last-used, configured, autodetected);
+    /// `cwd` nil inherits; `yolo` is tri-state (1 = force on once,
+    /// -1 = force off once, 0 = per-agent config default). Callers
+    /// record confirmed picker launches with `noteLaunch` so repeat-last
+    /// memory stays fresh.
+    func spawnLaunch(cli: String?, cwd: String?, yolo: Int32, cols: Int, rows: Int) throws -> Pty {
+        var out: OpaquePointer?
+        let rc = withOptionalCString(cli) { cliPtr in
+            withOptionalCString(cwd) { cwdPtr in
+                am_spawn_launch(
+                    handle, &out, cliPtr, cwdPtr, yolo,
+                    UInt16(clamping: cols), UInt16(clamping: rows)
+                )
+            }
+        }
+        guard rc == 0, let handle = out else {
+            throw CoreError.spawn(message: Self.lastError())
+        }
+        return Pty(handle: handle)
+    }
+
+    /// Autodetected CLI catalog ([CliRow] in core order). Decodes to []
+    /// (never throws): an unreachable catalog renders as an empty picker
+    /// section, not a startup failure.
+    func cliCatalog() -> [CliRow] {
+        guard let text = copyOwnedString(am_clis_json()),
+              let data = text.data(using: .utf8),
+              let rows = try? JSONDecoder().decode([CliRow].self, from: data)
+        else { return [] }
+        return rows
+    }
+
+    /// Persisted folder recents (MRU-first). Decodes to [] when absent.
+    func recentFolders() -> [String] {
+        guard let text = copyOwnedString(am_recent_json(handle)),
+              let data = text.data(using: .utf8),
+              let recents = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return recents
+    }
+
+    /// Harness id of the effective CLI for `cli` (explicit id, or the
+    /// core's resolution for nil): what a repeat-last spawn will run.
+    /// Falls back to "muse" when the core cannot answer.
+    func effectiveCli(_ cli: String? = nil) -> String {
+        let text = withOptionalCString(cli) { cliPtr in
+            copyOwnedString(am_effective_cli(handle, cliPtr))
+        }
+        guard let text, !text.isEmpty else { return "muse" }
+        return text
+    }
+
+    /// Record a confirmed picker launch (last-used CLI + folder MRU).
+    /// Best effort: a failure only means repeat-last goes stale.
+    func noteLaunch(cli: String?, cwd: String?) {
+        withOptionalCString(cli) { cliPtr in
+            withOptionalCString(cwd) { cwdPtr in
+                _ = am_note_launch(handle, cliPtr, cwdPtr)
+            }
+        }
+    }
+}
+
+/// Run `body` with an optional Swift string as a nullable C string
+/// (nil or empty Swift maps to NULL: inherit / effective default).
+private func withOptionalCString<T>(
+    _ value: String?,
+    _ body: (UnsafePointer<CChar>?) throws -> T
+) rethrows -> T {
+    guard let value, !value.isEmpty else {
+        return try body(nil)
+    }
+    return try value.withCString { try body($0) }
 }
 
 /// Owned wrapper around one live session PTY.
