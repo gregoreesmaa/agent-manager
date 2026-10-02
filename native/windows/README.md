@@ -28,7 +28,7 @@ double-echoes — the same single-emulator rule as the Linux shell's
 ## Build
 
 The core staticlib must exist first (CMake and msbuild search
-`target/debug` by default, or pass `-Dcore_lib_dir=` /
+`target/debug` by default, or pass `-DCORE_LIB_DIR=` /
 `/p:CoreLibDir=`):
 
 ```powershell
