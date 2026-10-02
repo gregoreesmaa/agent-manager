@@ -368,39 +368,29 @@ presence flags — `Option` stays on the Rust side).
 | `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
 | `am_session_count` | roster row count; 0 on null (#62) |
 | `am_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `am_screen_text_free` (#62) |
-<<<<<<< HEAD
 | `am_clis_json()` | owned JSON of the autodetected CLI catalog (`AvailableCli` rows in `SUPPORTED_CLIS` order); freed with `am_screen_text_free` |
 | `am_effective_cli(core, cli)` | owned harness id of the effective CLI (explicit or core resolution); freed with `am_screen_text_free` |
 | `am_recent_json(core)` | owned JSON string array of folder recents (MRU-first); null core yields `[]`; freed with `am_screen_text_free` |
 | `am_note_launch(core, cli, cwd)` | record a confirmed FFI-side launch (last-used CLI + folder MRU); int code |
-=======
 | `am_feed_delta(old, new)` | shared feed reconciler (`shell_shared`); owned string or null when current; freed with `am_screen_text_free` |
 | `am_roster_matches(title, project, id, query)` | shared sidebar filter match; 1 pass / 0 reject |
 | `am_relative_age(now, then)` | shared glanceable age label; owned string, freed with `am_screen_text_free` |
 | `am_link_count(core, row)` | PR + related link total; -1 on null/OOB |
 | `am_last_active(core, row)` | row `last_active` unix seconds; -1 on null/OOB |
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
 | `am_last_error` | thread-local message; never null |
 | `am_pty_free` | reaps the child; null no-op |
 
 ### C header (`include/agent_manager.h`, hardened #61)
 
-<<<<<<< HEAD
-The header is checked in and mirrors `src/ffi.rs` exactly (20 exports;
-verified: every `am_*` in the header is a `T` symbol in
-`target/debug/libagent_manager.a` and vice versa). Regenerate after any
-FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)
-(`cbindgen.toml` at the repo root):
-=======
-The header is checked in and mirrors `src/ffi.rs` exactly (20 exports:
-the 15 original plus `am_feed_delta`, `am_roster_matches`,
-`am_relative_age`, `am_link_count`, `am_last_active`; verified: every
-`am_*` in the header is a `T` symbol in `target/debug/libagent_manager.a`
-and vice versa). Keep it hand-maintained in the existing style — a raw
-cbindgen regen dumps every `pub const` into the contract — and extend it
-by hand after any FFI change (cbindgen config stays at `cbindgen.toml`
-at the repo root for reference):
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
+The header is checked in and mirrors `src/ffi.rs` exactly (25 exports:
+the 15 original plus the 5 2D-launch fns plus `am_feed_delta`,
+`am_roster_matches`, `am_relative_age`, `am_link_count`,
+`am_last_active`; verified: every `am_*` in the header is a `T` symbol
+in `target/debug/libagent_manager.a` and vice versa). Keep it
+hand-maintained in the existing style — a raw cbindgen regen dumps
+every `pub const` into the contract — and extend it by hand after any
+FFI change (cbindgen config stays at `cbindgen.toml` at the repo root
+for reference):
 
 ```sh
 cargo install cbindgen

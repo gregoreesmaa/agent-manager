@@ -19,7 +19,6 @@ final class AppState: ObservableObject {
     @Published var selection: String?
     @Published var filter = ""
     @Published var pendingError: String?
-    @Published var savedFlash = false
     /// 2D-launch picker sheet visibility (set by the menu, the caret,
     /// or Cmd-Shift-N; the sheet resets it on dismiss).
     @Published var pickerOpen = false
@@ -34,11 +33,6 @@ final class AppState: ObservableObject {
     private var feedSeq: UInt64 = 0
     private var grid = (cols: defaultCols, rows: defaultRows)
     private var timer: Timer?
-    /// Shell-local terminal ids (`local-N`, Windows parity): New Session
-    /// with no unstarted roster row (empty roster included) still opens a
-    /// live terminal through the core. Locals pump/converse like roster
-    /// rows but never join the roster lists.
-    private var localNext = 1
 
     init(core: Core) {
         self.core = core
@@ -55,10 +49,6 @@ final class AppState: ObservableObject {
     deinit { timer?.invalidate() }
 
     // MARK: - Roster
-
-    var attentionCount: Int {
-        statuses.values.filter { $0 == RunStatus.attention.rawValue }.count
-    }
 
     var filteredRows: [SessionRow] {
         let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
@@ -108,7 +98,6 @@ final class AppState: ObservableObject {
         }
     }
 
-<<<<<<< HEAD
     // MARK: - 2D launch (folder × CLI + yolo)
 
     /// Split-button main action: repeat the last launch instantly (the
@@ -124,61 +113,14 @@ final class AppState: ObservableObject {
         } catch {
             pendingError = error.localizedDescription
         }
-=======
-    /// True for shell-local terminal ids (`local-N`): live terminals
-    /// with no roster row (Windows #84 parity).
-    func isLocalId(_ id: String) -> Bool { id.hasPrefix("local-") }
-
-    private func mintLocalId() -> String {
-        defer { localNext += 1 }
-        var id = "local-\(localNext)"
-        while ptys[id] != nil {
-            localNext += 1
-            id = "local-\(localNext)"
-        }
-        return id
     }
 
-    private func firstUnstartedRowId() -> String? {
-        filteredRows.first { ptys[$0.id] == nil }?.id
-            ?? rows.first { ptys[$0.id] == nil }?.id
-    }
-
-    /// New Session entry point (issue #74, WinUI #71 parity): start
-    /// the selected row's child through the core and keep it
-    /// selected. With no selection yet (fresh launch, or the filter
-    /// cleared it), take the first unstarted visible row so one click
-    /// always starts something. With no unstarted row at all (empty
-    /// roster included) or an already-live roster selection, mint a
-    /// shell-local terminal instead — the empty roster is a starting
-    /// point, not a dead end. A live local stays put (no orphan
-    /// duplicates: locals have no roster row to return to).
-    func newSession() {
-        if let id = selection, isLocalId(id) {
-            // A live local terminal is already the newest thing open:
-            // keep it selected rather than orphaning it behind a newer
-            // one (locals never die in-shell, so this is always live).
-            return
-        }
-        if let id = selection, ptys[id] != nil {
-            // Already-live roster selection: mint a shell-local
-            // terminal, so one click always opens something.
-            spawn(id: mintLocalId())
-            return
-        }
-        if selection == nil, let id = firstUnstartedRowId() {
-            spawn(id: id)
-            return
-        }
-        if let id = selection {
-            // Unstarted roster selection.
-            spawn(id: id)
-            return
-        }
-        // Empty roster, cleared filter, or every row already live.
-        spawn(id: mintLocalId())
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
-    }
+    /// New Session entry point: repeat the last launch instantly, so
+    /// one click always opens something — including on an empty roster
+    /// (Windows parity: the empty roster is a starting point, not a
+    /// dead end). The fresh PTY mints its own roster row via
+    /// `attachFreshPty`, which also selects it.
+    func newSession() { repeatLastSession() }
 
     /// Attach a freshly spawned PTY under a new local id (native shells
     /// mint their own rows: the roster snapshot is launch-time, while
@@ -252,10 +194,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Persistence
 
+    /// Persist the core config (Cmd-S menu item + quit hook; no
+    /// sidebar button — Windows parity).
     func save() {
         do {
             try core.save()
-            savedFlash = true
         } catch {
             pendingError = error.localizedDescription
         }

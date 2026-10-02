@@ -15,7 +15,8 @@ import SwiftUI
 ///   the rows themselves come from discovery + the persisted store, so
 ///   they survive relaunches.
 /// - Theme: follows the system appearance (no manual override).
-/// - Persistence: Save writes the core config; it also runs on quit.
+/// - Persistence: Cmd-S writes the core config; it also runs on quit
+///   (no sidebar button — Windows parity).
 struct ContentView: View {
     @ObservedObject var state: AppState
     @Environment(\.colorScheme) private var colorScheme
@@ -23,7 +24,6 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-<<<<<<< HEAD
                 // Split-button 2D launch: the main action repeats the
                 // last launch instantly; the menu opens the full picker
                 // (folder × CLI + yolo) or repeats explicitly.
@@ -39,17 +39,9 @@ struct ContentView: View {
                 .keyboardShortcut("n", modifiers: .command)
                 .help("Repeat the last session, or pick folder × CLI + yolo")
                 .padding(8)
-=======
-                Button("New Session", action: state.newSession)
-                    .keyboardShortcut("n", modifiers: .command)
-                    .help("Start the selected session (am_spawn)")
-                    .padding(8)
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
                 Divider()
                 List(selection: $state.selection) {
-                    Text(title)
-                        .font(.headline)
-                    TextField("Filter sessions", text: $state.filter)
+                    TextField("Search sessions", text: $state.filter)
                         .textFieldStyle(.roundedBorder)
                     if state.filteredRows.isEmpty {
                         Text("No sessions match.").foregroundStyle(.secondary)
@@ -74,8 +66,6 @@ struct ContentView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                Divider()
-                sidebarFooter
             }
         } detail: {
             // SwiftUI counts the toolbar height as detail safe area,
@@ -100,22 +90,6 @@ struct ContentView: View {
     }
 
     // MARK: - Sidebar
-
-    /// Save lives in the sidebar footer (Cmd-S, additionally
-    /// wired app-wide in `AgentManagerMacApp.commands`); New Session
-    /// sits at the sidebar top (Cmd-N, likewise app-wide). The shell
-    /// follows the system appearance: no manual theme override.
-    private var sidebarFooter: some View {
-        Button("Save", action: state.save)
-            .keyboardShortcut("s", modifiers: .command)
-            .help("Persist the core config (am_core_save)")
-            .padding(8)
-    }
-
-    private var title: String {
-        let n = state.attentionCount
-        return n == 0 ? "Sessions" : "Sessions (\(n) need input)"
-    }
 
     private struct StatusSection {
         var status: Int
@@ -180,25 +154,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailView: some View {
-<<<<<<< HEAD
         if let id = state.selection,
            let row = state.rows.first(where: { $0.id == id })
-        {            if state.hasLivePty(id) {
-=======
-        if let id = state.selection, state.isLocalId(id),
-           state.hasLivePty(id)
-        {
-            // Shell-local terminal (Windows parity): no roster row, just
-            // the live PTY the pump already feeds.
-            CoreTerminalView(
-                state: state, rowId: id,
-                darkMode: colorScheme == .dark
-            )
-        } else if let id = state.selection,
-                  let row = state.rows.first(where: { $0.id == id })
         {
             if state.hasLivePty(id) {
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
                 CoreTerminalView(
                     state: state, rowId: id,
                     darkMode: colorScheme == .dark

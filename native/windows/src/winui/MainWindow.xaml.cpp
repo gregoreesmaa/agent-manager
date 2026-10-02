@@ -189,7 +189,8 @@ namespace winrt::AgentManagerWinUI::implementation
         m_closedToken = Closed({this, &MainWindow::OnClosed});
         RefreshRoster();
         ShowSelected();
-        SetStatus(L"Ready.");
+        /* No "Ready." banner: the status line stays empty until a real
+         * failure needs it (fail-visible; macOS shows no status either). */
     }
 
     MainWindow::~MainWindow() {
@@ -423,24 +424,90 @@ namespace winrt::AgentManagerWinUI::implementation
         }
     }
 
-    /* Show the selected run's current output from scratch (selection
-     * change or fresh spawn): restore retained per-run text when the
-     * run is live, else the latest snapshot, else the empty hint. */
+    /* Index of the roster row with this id, or -1 (local terminal ids
+     * and stale selections have no roster row). */
+    long long MainWindow::RowIndexById(std::wstring const &id) {
+        if (!m_core || id.empty()) {
+            return -1;
+        }
+        std::string want = to_utf8(hstring(id));
+        size_t n = bridge_session_count(m_core);
+        for (size_t i = 0; i < n; ++i) {
+            char *json = bridge_session_json(m_core, i);
+            std::string js = json ? json : "";
+            bridge_string_free(json);
+            if (amjson::get_string(js, "id") == want) {
+                return static_cast<long long>(i);
+            }
+        }
+        return -1;
+    }
+
+    /* Show one empty-overlay state (macOS parity): title + detail +
+     * one prominent button, or no button when there is nothing to
+     * start. The terminal surface hides behind the overlay. */
+    void MainWindow::ShowEmpty(std::wstring const &title,
+                               std::wstring const &detail,
+                               std::wstring const &button) {
+        TermScroll().Visibility(Visibility::Collapsed);
+        EmptyTitle().Text(hstring(title));
+        EmptyDetail().Text(hstring(detail));
+        if (button.empty()) {
+            EmptyButton().Visibility(Visibility::Collapsed);
+        } else {
+            EmptyButton().Content(box_value(hstring(button)));
+            EmptyButton().Visibility(Visibility::Visible);
+        }
+        EmptyPanel().Visibility(Visibility::Visible);
+    }
+
+    /* Show the selected run: the live terminal surface when its PTY is
+     * live, else the empty overlay — the selected row's title with a
+     * Spawn button, "Select a session" when nothing is picked, or the
+     * "No sessions yet" CTA on an empty roster (all macOS parity). */
     void MainWindow::ShowSelected() {
         LivePty *lp = SelectedLive();
-        if (!lp) {
-            TermBox().Text(
-                m_selected.empty()
-                    ? L"(no run selected)"
-                    : L"(no live session — press New Session)");
+        if (lp) {
+            EmptyPanel().Visibility(Visibility::Collapsed);
+            TermScroll().Visibility(Visibility::Visible);
+            const std::string &text =
+                lp->shown.empty() ? lp->last_snapshot : lp->shown;
+            TermBox().Text(to_hstring(text));
+            auto scroll = TermScroll();
+            scroll.UpdateLayout();
+            scroll.ChangeView(nullptr, scroll.ScrollableHeight(), nullptr);
             return;
         }
-        const std::string &text =
-            lp->shown.empty() ? lp->last_snapshot : lp->shown;
-        TermBox().Text(to_hstring(text));
-        auto scroll = TermScroll();
-        scroll.UpdateLayout();
-        scroll.ChangeView(nullptr, scroll.ScrollableHeight(), nullptr);
+        long long at = RowIndexById(m_selected);
+        if (at >= 0) {
+            char *json = bridge_session_json(
+                m_core, static_cast<size_t>(at));
+            std::string js = json ? json : "";
+            bridge_string_free(json);
+            std::string title = amjson::get_string(js, "title");
+            std::string project = amjson::get_string(js, "project");
+            std::string harness = amjson::get_string(js, "harness");
+            if (title.empty()) {
+                title = amjson::get_string(js, "id");
+            }
+            std::string detail = project;
+            if (!harness.empty()) {
+                if (!detail.empty()) {
+                    detail += " · ";
+                }
+                detail += harness;
+            }
+            ShowEmpty(to_wide(title), to_wide(detail), L"Spawn session");
+            return;
+        }
+        if (bridge_session_count(m_core) == 0) {
+            ShowEmpty(L"No sessions yet",
+                      L"Spawned sessions appear here; history is restored on "
+                      L"launch.",
+                      L"New Session");
+            return;
+        }
+        ShowEmpty(L"Select a session", L"", L"");
     }
 
     /* The shell's only repaint gate: pump the selected PTY, reconcile

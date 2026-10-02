@@ -37,15 +37,11 @@
 #include <vte/vte.h>
 
 #include "core_bridge.h"
-<<<<<<< HEAD
-#include "feed.h"
 #include "picker.h"
-=======
 /* am_feed_delta / am_roster_matches / am_relative_age come from the core
  * itself now (`include/agent_manager.h`, via core_bridge.h): the vendored
  * feed.c port is gone, so every C shell reconciles through
  * `src/shell_shared.rs`. */
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
 
 /* Bounded per-session VTE scrollback (local-only trust + bounded growth:
  * an accumulate-forever buffer would leak memory over long agent runs). */

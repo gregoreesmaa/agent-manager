@@ -37,14 +37,9 @@ meson test -C native/linux/build
 
 | Test | What it proves |
 |---|---|
-<<<<<<< HEAD
-| `feed` | `am-feed-test`: the snapshot→stream reconciler, mirroring Swift's `TerminalFeedTests` 1:1 |
+| `feed` | `am-feed-test`: the core snapshot→stream reconciler plus roster-match and age-label helpers over the real staticlib, mirroring Swift's `TerminalFeedTests` 1:1 |
 | `picker` | `am-picker-test`: 2D-launch picker logic (catalog/recents parse, folder/yolo mapping, preview copy), no GTK, no core link |
 | `smoke` | `am-gtk-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog surface |
-=======
-| `feed` | `am-feed-test`: the core snapshot→stream reconciler plus roster-match and age-label helpers over the real staticlib, mirroring Swift's `TerminalFeedTests` 1:1 |
-| `smoke` | `am-gtk-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`) |
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
 | `smoke-live` | `smoke_live.sh`: spawn/pump/write/resize against a fake `muse` on `PATH` in a scratch `HOME` (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
 
 Headless UI run (window opens, pump ticks, quits on timeout):
@@ -58,13 +53,8 @@ xvfb-run -a ./native/linux/build/agent-manager-gtk
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
-<<<<<<< HEAD
 | Spawn | split-button 2D launch: New-run button / Ctrl+N repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); the ▾ caret / Ctrl+Shift+N opens the picker dialog (folder entry + recents, CLI radios over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
-| Converse | key controller encodes → `bridge_write`; pump → `am_feed_delta` → `vte_terminal_feed` |
-=======
-| Spawn | New-run button / Ctrl+N → `bridge_spawn` at the live VTE grid size |
 | Converse | key controller encodes → `bridge_write`; pump → `am_feed_delta` (the core reconciler in `src/shell_shared.rs`) → `vte_terminal_feed` |
->>>>>>> 204d41b (Windows/macOS UX parity over shared core helpers)
 | Select / copy / paste | native VTE selection + Ctrl+Shift+C/V + right-click menu |
 | Scroll | VTE scrollback capped at 10 000 lines, in a `GtkScrolledWindow` |
 | Search / filter | sidebar `GtkSearchEntry` filters rows; Ctrl+F find bar via `VteRegex` search |
