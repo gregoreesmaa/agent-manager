@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass `
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
-| Spawn | split-button 2D launch: New Session button / Ctrl+N repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); `Choose folder, CLI, options…` / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
+| Spawn | split-button 2D launch: New Session face / Ctrl+N repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); the chevron / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
 | Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
 | Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |

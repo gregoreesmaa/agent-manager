@@ -53,28 +53,44 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0"
                                Text="Runs"
                                Style="{StaticResource SubtitleTextBlockStyle}"/>
-                    <Button x:Name="NewButton"
-                             Grid.Row="1"
-                             Content="New Session"
-                             Style="{StaticResource AccentButtonStyle}"
-                             HorizontalAlignment="Stretch"
-                             ToolTipService.ToolTip="Repeat the last session (Ctrl+N)"
-                             Click="NewButton_Click"/>
-                    <Button x:Name="PickButton"
-                             Grid.Row="2"
-                             Content="Choose folder, CLI, options…"
-                             HorizontalAlignment="Stretch"
-                             ToolTipService.ToolTip="Pick folder x CLI + yolo (Ctrl+Shift+N)"
-                             Click="PickButton_Click"/>
+                    <!-- Dual-function New Session (split-button parity with
+                         the macOS Menu): the main face repeats the last
+                         launch instantly (Ctrl+N), the chevron opens the
+                         folder x CLI + yolo picker (Ctrl+Shift+N). -->
+                    <SplitButton x:Name="NewSplitButton"
+                                 Grid.Row="1"
+                                 Content="New Session"
+                                 Style="{StaticResource AccentButtonStyle}"
+                                 HorizontalAlignment="Stretch"
+                                 ToolTipService.ToolTip="Repeat the last session (Ctrl+N)"
+                                 Click="NewSplitButton_Click">
+                        <SplitButton.Flyout>
+                            <MenuFlyout Placement="Bottom">
+                                <MenuFlyoutItem Text="Repeat last session"
+                                                ToolTipService.ToolTip="Repeat the last session (Ctrl+N)"
+                                                Click="NewButton_Click">
+                                    <MenuFlyoutItem.KeyboardAccelerators>
+                                        <KeyboardAccelerator Modifiers="Control" Key="N"/>
+                                    </MenuFlyoutItem.KeyboardAccelerators>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Choose folder, CLI, options…"
+                                                ToolTipService.ToolTip="Pick folder x CLI + yolo (Ctrl+Shift+N)"
+                                                Click="PickButton_Click">
+                                    <MenuFlyoutItem.KeyboardAccelerators>
+                                        <KeyboardAccelerator Modifiers="Control,Shift" Key="N"/>
+                                    </MenuFlyoutItem.KeyboardAccelerators>
+                                </MenuFlyoutItem>
+                            </MenuFlyout>
+                        </SplitButton.Flyout>
+                    </SplitButton>
                     <TextBox x:Name="FilterBox"
-                             Grid.Row="3"
+                             Grid.Row="2"
                              PlaceholderText="Search sessions"
                              TextChanged="FilterBox_TextChanged"/>
                     <!-- Group lists size to content (inner scrolling off)
@@ -82,7 +98,7 @@
                          until the user expands it. All four headers always
                          show, so the group order is stable even when a
                          group is empty. -->
-                    <ScrollViewer Grid.Row="4"
+                    <ScrollViewer Grid.Row="3"
                                   VerticalScrollMode="Auto"
                                   VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="2">
@@ -132,7 +148,7 @@
                          lives at the sidebar bottom now that the terminal
                          fills the right pane. -->
                     <TextBlock x:Name="StatusText"
-                               Grid.Row="5"
+                               Grid.Row="4"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
