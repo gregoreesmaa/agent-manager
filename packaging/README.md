@@ -1,26 +1,57 @@
-# Packaging stubs (issue #65)
+# Packaging + releases
 
-Each per-OS CI job ships a runnable artifact; the store-grade formats
-below are explicitly stubbed, not started. Non-goals (unchanged):
+Each per-OS CI job ships a runnable artifact; `v*` tags publish the
+same per-shell build paths as signed-off GitHub release assets (see
+`.github/workflows/release.yml`). The store-grade formats below are
+explicitly stubbed, not started. Non-goals (unchanged):
 no notarization/signing setup, no store submission, no shell features.
 
 | OS | CI job | Ships now | Stubbed (tracking note = this file) |
 |---|---|---|---|
-| macOS | `macos` | `AgentManagerMac-macos` artifact (`AgentManagerMac-macos.zip`, ditto'd Swift binary) | `.dmg`: no installer layout yet; the zip is the distribution format until a `dmg` step is proposed |
-| Linux | `linux` | `agent-manager-linux` artifact (`agent-manager-linux.tar.gz` with `agent-manager-gtk`) | `.deb` / Flatpak: no manifest yet; the tarball is the distribution format until a maintainer proposes one |
-| Windows | `windows` | `AgentManagerWindows` artifact (`AgentManagerWindows.zip`: portable C suite exes from `native/windows/build/Release/`) | MSIX: the WinUI app builds unpackaged on purpose (dev machine only); no manifest/identity until a maintainer proposes one |
+| macOS | `macos` | `AgentManagerMac-macos` artifact (`AgentManagerMac-macos.zip`, ditto'd Swift binary) + `v*` release asset per arch | `.dmg`: no installer layout yet; the zip is the distribution format until a `dmg` step is proposed |
+| Linux | `linux` | `agent-manager-linux` artifact (`agent-manager-linux.tar.gz` with `agent-manager-gtk`) + `v*` release asset per arch | `.deb` / Flatpak: no manifest yet; the tarball is the distribution format until a maintainer proposes one |
+| Windows | `windows` | `AgentManagerWindows` artifact (`AgentManagerWindows.zip`: portable C suite exes from `native/windows/build/Release/`) + `v*` release asset per arch (unpackaged WinUI app folder) | MSIX: the WinUI app ships unpackaged on purpose; no manifest/identity until a maintainer proposes one |
 
 Proposing a stubbed format means adding its manifest + a CI step that
 builds it on its own runner only (per-shell gating, issue #65), and
 updating this table.
 
-## WinUI MSBuild packaging (dev machine only)
+## Releases (`v*` tags -> GitHub release)
 
-The WinUI 3 shell (`native/windows/AgentManagerWinUI.vcxproj`) does not
-build on hosted `windows-latest` runners: the NuGet UAP handshake
-(`ResolveNuGetPackageAssets` / `does not reference "UAP,Version=v10.0"`)
-fails identically with and without the UWP workload installed, so the
-CI `windows` job no longer attempts it. Build it on a dev machine instead.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: the three
+per-shell build paths CI proves (Swift macOS app, GTK tarball, WinUI
+app folder) re-link against the `--release` core staticlib on both
+CPU arches per OS and publish to the tag's release. Assets:
+
+| OS | Asset (per `<tag>`, `<arch>`) | Runners |
+|---|---|---|
+| macOS | `AgentManagerMac-<tag>-macos-<arch>.zip` (ditto'd Swift binary, `<arch>` = `arm64` / `x64`) | `macos-latest`, `macos-26-intel` |
+| Linux | `agent-manager-<tag>-linux-<arch>.tar.gz` (`agent-manager-gtk`, `<arch>` = `x64` / `arm64`) | `ubuntu-24.04`, `ubuntu-24.04-arm` |
+| Windows | `AgentManagerWinUI-<tag>-windows-<arch>.zip` (unpackaged app folder, `<arch>` = `x64` / `arm64`) | `windows-latest`, `windows-11-vs2026-arm` (`-vs2026-` carries the VS 2026 v145 toolset the vcxproj tracks) |
+
+All six ships ride the tag's release - a red arch fails the publish,
+never a partial upload. `workflow_dispatch` dry-runs the matrix
+without publishing (tag gate in the `publish` job), leaving the
+archives as run artifacts. Release notes are generated from the tag
+with an unsigned-build disclaimer prepended. Local-only trust holds:
+no accounts/telemetry/sync in the pipeline, plain-file state only.
+
+## WinUI MSBuild packaging (hosted runners + dev machine)
+
+The WinUI 3 shell (`native/windows/AgentManagerWinUI.vcxproj`) builds
+on hosted runners - CI's `windows` job and the release workflow both
+build the unpackaged exe there (restore-then-build msbuild with the
+pinned `Microsoft.WindowsAppSDK` 2.5.1 + `Microsoft.Windows.CppWinRT`
+3.0.260818.1). x64 builds on `windows-latest` (VS 2026, v145
+toolset); arm64 builds on `windows-11-vs2026-arm` (the VS 2026 arm64
+image).
+
+Historical note: this section once claimed hosted runners could not
+build the shell (a NuGet UAP-handshake failure with the same symptom
+with and without the UWP workload, 13 attempts under #64). A later
+run of the same restore-then-build shape went green on
+`windows-latest`, so the claim was stale - kept here so nobody
+re-litigates it from memory.
 
 Prerequisites:
 
@@ -44,6 +75,7 @@ with the repo root.)
 
 To re-enable the CI step, restore the removed `WinUI build (unpackaged
 exe, no MSIX)` step (plus its `install UWP build-tools workload`
-prerequisite) in `.github/workflows/ci.yml`.
+prerequisite) in `.github/workflows/ci.yml`. (Resolved instead by the
+later green restore-then-build runs; kept for archaeology.)
 
 See #64 for the 13-attempt hosted-runner history.
