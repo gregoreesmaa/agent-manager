@@ -7,6 +7,9 @@ namespace AgentManagerWinUI
 
         void NewButton_Click(
             Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
+        void NewSplitButton_Click(
+            Object sender,
+            Microsoft.UI.Xaml.Controls.SplitButtonClickEventArgs args);
         void FilterBox_TextChanged(
             Object sender,
             Microsoft.UI.Xaml.Controls.TextChangedEventArgs args);

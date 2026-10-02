@@ -475,6 +475,18 @@ namespace winrt::AgentManagerWinUI::implementation
      * put (no orphan duplicates): it has no roster row to return to. */
     void MainWindow::NewButton_Click(IInspectable const &,
                                      RoutedEventArgs const &) {
+        RepeatLastSession();
+    }
+
+    void MainWindow::NewSplitButton_Click(
+        IInspectable const &,
+        Controls::SplitButtonClickEventArgs const &) {
+        RepeatLastSession();
+    }
+
+    /* Instant repeat-last shared by the SplitButton face, its menu item,
+     * and Ctrl+N: one path, no divergence. */
+    void MainWindow::RepeatLastSession() {
         if (!m_core) {
             return;
         }

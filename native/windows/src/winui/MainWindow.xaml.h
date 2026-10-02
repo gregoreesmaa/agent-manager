@@ -24,6 +24,15 @@ namespace winrt::AgentManagerWinUI::implementation
         void NewButton_Click(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::RoutedEventArgs const &args);
+        /* SplitButton primary-face entry: same instant repeat-last as
+         * NewButton_Click (which stays for the menu item + Ctrl+N). */
+        void NewSplitButton_Click(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::Controls::SplitButtonClickEventArgs const
+                &args);
+        /* Instant repeat-last shared by the face, the menu item, and
+         * Ctrl+N: one path, no divergence. */
+        void RepeatLastSession();
         /* 2D new-session picker (folder x CLI + tri-state yolo): the
          * caret/menu counterpart to NewButton_Click's instant repeat. */
         void PickButton_Click(
