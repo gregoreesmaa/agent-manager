@@ -1062,7 +1062,10 @@ mod tests {
             let pathext = std::env::join_paths([".CMD", ".EXE"]).unwrap();
             std::env::set_var("PATHEXT", &pathext);
         }
-        std::fs::write(dir.join("shim-tool.cmd"), b"fake").unwrap();
+        // Uppercase suffix: the PATHEXT probe spells `.CMD`, and Unix
+        // filesystems are case-sensitive (Windows is not, so this hits
+        // on both).
+        std::fs::write(dir.join("shim-tool.CMD"), b"fake").unwrap();
         let shim = script_shim_command("shim-tool", &["--version".to_string()]);
         assert!(shim.is_some(), "a .cmd hit must route via COMSPEC");
         let (shell, argv) = shim.unwrap();
