@@ -3,7 +3,7 @@
 # Configure (from the repo root, after installing the MSVC environment,
 # e.g. ilammy/msvc-dev-cmd on CI):
 #   cargo build --lib                    # produces target/debug/agent_manager.lib
-#   cmake -S native/windows -B native/windows/build "-Dcore_lib_dir=$PWD/target/debug"
+#   cmake -S native/windows -B native/windows/build "-DCORE_LIB_DIR=$PWD/target/debug"
 #   cmake --build native/windows/build --config Release
 #   ctest --test-dir native/windows/build -C Release --output-on-failure
 #

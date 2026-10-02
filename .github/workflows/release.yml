@@ -192,7 +192,7 @@ jobs:
         shell: pwsh
         run: |
           cmake -S native/windows -B native/windows/build `
-            "-Dcore_lib_dir=$env:GITHUB_WORKSPACE/target/release"
+            "-DCORE_LIB_DIR=$env:GITHUB_WORKSPACE/target/release"
           cmake --build native/windows/build --config Release
           ctest --test-dir native/windows/build -C Release --output-on-failure
       - name: live converse (fake muse.exe)
