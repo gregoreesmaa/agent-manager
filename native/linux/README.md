@@ -52,7 +52,7 @@ xvfb-run -a ./native/linux/build/agent-manager-gtk
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
-| Spawn | New-run button / Ctrl+N → `bridge_spawn` at the live VTE grid size |
+| Spawn | New-run button / Ctrl+N → `bridge_spawn` at the live VTE grid size; 2D-launch entry points (`am_spawn_launch` with folder × CLI + yolo, `am_clis_json` catalog, `am_recent_json` recents, `am_note_launch` memory) available for the picker follow-up |
 | Converse | key controller encodes → `bridge_write`; pump → `am_feed_delta` → `vte_terminal_feed` |
 | Select / copy / paste | native VTE selection + Ctrl+Shift+C/V + right-click menu |
 | Scroll | VTE scrollback capped at 10 000 lines, in a `GtkScrolledWindow` |

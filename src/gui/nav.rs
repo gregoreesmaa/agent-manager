@@ -23,6 +23,8 @@ pub(crate) enum KeyTarget {
     FilterCapture,
     /// Folder-picker capture owns every key (the `cwd_capture` buffer).
     FolderCapture,
+    /// 2D-launch picker owns every key (the `launch_picker` state).
+    PickerCapture,
     /// Terminal focus: every typing key reaches the PTY, including
     /// `/`, `w`, and the comfort keys.
     Terminal,
@@ -63,7 +65,8 @@ pub(crate) enum NavAction {
 /// bindings, so the full keymap no longer lives only in the README.
 pub(crate) fn help_entries() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("n", "new muse session"),
+        ("n", "new session (repeat last folder × CLI)"),
+        ("N", "new session picker (choose folder × CLI + yolo)"),
         ("j / k", "move selection between sessions"),
         ("↑ / ↓", "move selection between sessions"),
         ("PgUp / PgDn", "page the session list"),
@@ -289,6 +292,9 @@ impl ShellView {
         if self.cwd_capture.is_some() {
             return KeyTarget::FolderCapture;
         }
+        if self.launch_picker.is_some() {
+            return KeyTarget::PickerCapture;
+        }
         if self.app.is_terminal_focused() {
             return KeyTarget::Terminal;
         }
@@ -309,6 +315,7 @@ impl ShellView {
             self.accept_filter();
         }
         self.cwd_capture = None;
+        self.launch_picker = None;
         self.quit_armed = false;
         if terminal {
             self.app.focus_terminal();
@@ -357,11 +364,17 @@ impl ShellView {
             ("n", false) => {
                 // Capped by the live-run policy (issue #31): a refused
                 // 11th run stays in the list so the flash is readable.
+                // 2D launch: instant repeat-last (expert fast path).
                 if self.request_new_run() {
                     NavAction::FocusTerm
                 } else {
                     NavAction::None
                 }
+            }
+            ("N", false) => {
+                // Full 2D picker (folder × CLI + yolo) on Shift-N.
+                self.open_launch_picker();
+                NavAction::None
             }
             ("o", false) => {
                 self.cycle_link_focus();
@@ -529,10 +542,16 @@ mod tests {
     #[test]
     fn nav_keys_never_reach_the_pty_only_terminal_focus_forwards() {
         let mut view = test_shell();
-        // Nav: n creates a run and yields FocusTerm; q yields Quit.
+        // Nav: n repeats the last launch and yields FocusTerm; N opens the
+        // 2D picker instead; q yields Quit.
         assert_eq!(view.nav_action("n", false), NavAction::FocusTerm);
         assert_eq!(view.app.sessions.len(), 1);
         assert!(view.app.is_terminal_focused());
+        view.app.focus_nav();
+        assert_eq!(view.nav_action("N", false), NavAction::None);
+        assert!(view.picker_open());
+        assert_eq!(view.app.sessions.len(), 1);
+        view.cancel_launch_picker();
         assert_eq!(view.nav_action("q", false), NavAction::Quit);
         // y copies, p pastes; unknown keys are inert.
         assert_eq!(view.nav_action("y", false), NavAction::Copy);
@@ -576,6 +595,14 @@ mod tests {
             view.key_target("a", Some("a"), false),
             KeyTarget::FolderCapture
         );
+        view.cancel_cwd();
+        // The 2D picker outranks nav dispatch like the other captures.
+        view.open_launch_picker();
+        assert_eq!(
+            view.key_target("a", Some("a"), false),
+            KeyTarget::PickerCapture
+        );
+        view.cancel_launch_picker();
     }
 
     #[test]
@@ -625,6 +652,13 @@ mod tests {
         view.switch_pane(true);
         assert!(view.cwd_capture.is_none());
         assert!(view.app.is_terminal_focused());
+        // The picker capture drops the same way (zero side effects).
+        view.app.focus_nav();
+        view.open_launch_picker();
+        assert!(view.picker_open());
+        view.switch_pane(true);
+        assert!(!view.picker_open());
+        assert!(view.app.is_terminal_focused());
     }
 
     #[test]
@@ -672,6 +706,7 @@ mod tests {
         let keys: Vec<&str> = entries.iter().map(|(k, _)| *k).collect();
         for needed in [
             "n",
+            "N",
             "j / k",
             "PgUp / PgDn",
             "o",

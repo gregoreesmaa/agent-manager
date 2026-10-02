@@ -68,15 +68,49 @@ can link them.
   `retry_spawn(SpawnKind)`, `has_pending_spawn()`,
   `respawn_kind(&str) -> SpawnKind`, `session_cwd(&str)`,
   `note_submitted_prompt(&str, &str)`, `spawn_command_for(&SpawnKind) ->
-  (String, Vec<String>)`, `spawn_command_string()`.
+  (String, Vec<String>)`, `spawn_command_string()`,
+  `spawn_command_string_for(&SpawnKind)`.
+- 2D launch (folder × CLI + yolo): `App::start_launch(&LaunchSelection)`
+  (the single funnel every new-run path shares), `repeat_cli()`,
+  `repeat_spawn_kind()`, `note_launch(&str, Option<&str>)`, plus the
+  FFI config views (`config_last_cli/default_cli/recents/default_cwd/
+  extra_args/yolo_default`).
+
+### 2D launch picker (`launch` + `config`)
+
+- Catalog: `SUPPORTED_CLIS` (`muse`, `claude`, `opencode`, `codex`),
+  `yolo_flag_for(cli)` (`muse --yolo`,
+  `claude --dangerously-skip-permissions`; codex/opencode map to `None`
+  until their flags are verified against a live binary),
+  `MAX_RECENT_FOLDERS` (10).
+- Autodetect: `detect_available_clis()` / `detect_with_path(OsStr)` —
+  `PATH` (+ GUI-sparse extra dirs) scan, no subprocess; rows always list
+  every CLI with `available` + `path` (`None` = missing, listed but
+  disabled).
+- Resolution: `resolve_effective_cli(explicit, last, default, catalog)`,
+  `first_available(&[AvailableCli])`; per-run `YoloChoice::{UseDefault,
+  ForceOn, ForceOff}` (`cycle`/`label`/`resolve`); `LaunchSelection::new/
+  preview`; `yolo_args_for(&LaunchSelection)`; `push_recent_folder`.
+- Picker model: `LaunchPicker::new/selected_cli/step_cli/step_recent/key/
+  confirm/preview` (blank folder = inherit, `~` expands via
+  `app::expand_cwd_input`; `key` owns Tab/arrows/`c`/`y`/typing dispatch).
+- Config: `AgentConfig.yolo` (per-agent yolo default, opt-in),
+  `Config.{default_cli, default_cwd, last_cli, recent_folders}`,
+  `yolo_default_for(agent)`, `note_launch(cli, cwd)`; old files load via
+  serde defaults; the picker override never writes back implicitly.
+- FFI: `am_spawn_launch(core, out, cli, cwd, yolo, cols, rows)`,
+  `am_clis_json()`, `am_recent_json(core)`, `am_note_launch(core, cli,
+  cwd)` (regenerate the header with cbindgen after any FFI change).
 
 ### Spawn with cwd/flags (`embedded` + `config`)
 
 - `EmbeddedPty::spawn(program, args, cols, rows)` and
   `EmbeddedPty::spawn_with_cwd(program, args, cols, rows,
   Option<&Path>)` — the single spawn seam; `None` cwd inherits the app
-  directory. `SpawnKind::{New, Resume { session_id }}` with
-  `SpawnKind::command()`.
+  directory. `SpawnKind::{New, NewOn { cli, yolo }, Resume { session_id }}`
+  with `SpawnKind::command()` (`NewOn` = plain program, yolo rides via
+  `App::spawn_command_for`) and `SpawnKind::cli_id()`;
+  `cli_session_command(cli)` builds the plain per-CLI command.
 - Per-agent flags: `Config::extra_args_for(agent) -> Vec<String>`; the
   shell concatenates these onto the spawn command (same as
   `App::spawn_command_for`).
@@ -319,6 +353,7 @@ presence flags — `Option` stays on the Rust side).
 | `am_core_new` / `am_core_free` | discovery + persistence merge inside; null-safe free |
 | `am_core_save` | persist config; `Config` code on failure |
 | `am_spawn(core, out, cwd, cols, rows)` | fresh `muse` session; null cwd inherits; int code |
+| `am_spawn_launch(core, out, cli, cwd, yolo, cols, rows)` | 2D-launch spawn (folder × CLI + one-shot yolo); null/empty cli repeats last/default resolution; int code |
 | `am_pump` | dirty gate; null → false |
 | `am_write(pty, bytes, len)` | raw input bytes; int code |
 | `am_resize` | null no-op |
@@ -327,12 +362,15 @@ presence flags — `Option` stays on the Rust side).
 | `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
 | `am_session_count` | roster row count; 0 on null (#62) |
 | `am_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `am_screen_text_free` (#62) |
+| `am_clis_json()` | owned JSON of the autodetected CLI catalog (`AvailableCli` rows in `SUPPORTED_CLIS` order); freed with `am_screen_text_free` |
+| `am_recent_json(core)` | owned JSON string array of folder recents (MRU-first); null core yields `[]`; freed with `am_screen_text_free` |
+| `am_note_launch(core, cli, cwd)` | record a confirmed FFI-side launch (last-used CLI + folder MRU); int code |
 | `am_last_error` | thread-local message; never null |
 | `am_pty_free` | reaps the child; null no-op |
 
 ### C header (`include/agent_manager.h`, hardened #61)
 
-The header is checked in and mirrors `src/ffi.rs` exactly (15 exports;
+The header is checked in and mirrors `src/ffi.rs` exactly (19 exports;
 verified: every `am_*` in the header is a `T` symbol in
 `target/debug/libagent_manager.a` and vice versa). Regenerate after any
 FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)

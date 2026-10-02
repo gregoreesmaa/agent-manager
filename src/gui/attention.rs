@@ -92,6 +92,28 @@ impl ShellView {
     /// (only the default key-hint lines compact — the bar also truncates
     /// with an ellipsis, so long messages never push the layout).
     fn base_status_text_for_width(&self, viewport_w: f32) -> String {
+        // 2D-launch picker capture outranks everything while it owns the
+        // keyboard: the folder input, the CLI axis, yolo, and the exits.
+        if self.picker_open() {
+            let picker = self.launch_picker.as_ref().expect("picker open");
+            let cli = picker.selected_cli();
+            let cli_state = if cli.available {
+                "ready"
+            } else {
+                "not installed"
+            };
+            let folder = if picker.folder_input.is_empty() {
+                "(blank = current)".to_string()
+            } else {
+                picker.folder_input.clone()
+            };
+            return format!(
+                "new run: {folder} · {} ({cli_state}) · yolo: {} · Tab: axis · Enter: start · Esc: cancel · {}",
+                cli.id,
+                self.picker_yolo_label(),
+                self.picker_preview(),
+            );
+        }
         // Folder-picker capture (issue #48) outranks everything while
         // it owns the keyboard: the typed path plus its two exits.
         if let Some(buf) = self.cwd_capture.as_deref() {
@@ -147,11 +169,11 @@ impl ShellView {
                 format!("{tag} · typing in muse · Tab/Esc: sessions · drag: select · Cmd+C: copy · Cmd/Ctrl+V: paste · ?: help")
             }
         } else if self.app.sessions.is_empty() {
-            format!("{tag} · n: new muse · ?: help · q: quit")
+            format!("{tag} · n: new · N: picker · ?: help · q: quit")
         } else if narrow {
-            format!("{tag} · n: new · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit")
+            format!("{tag} · n: new · N: picker · j/k: move · o/Enter: link · Tab: type · x: close · y/p: copy/paste · t: theme · ?: help · q: quit")
         } else {
-            format!("{tag} · n: new · w: folder · j/k: move · PgUp/PgDn: page · o/Enter: open link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit")
+            format!("{tag} · n: new · N: picker · w: folder · j/k: move · PgUp/PgDn: page · o/Enter: open link · Tab/i: type · x: close · drag: select · y: copy · p: paste · t: theme · ?: help · q: quit")
         }
     }
 }

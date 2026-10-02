@@ -43,7 +43,8 @@ reading source. `Tab` toggles which pane owns the keyboard.
 
 | Key | List focus | Terminal focus |
 | --- | --- | --- |
-| `n` | new `muse` run (takes the keyboard) | types into `muse` |
+| `n` | new session (repeats last folder × CLI, takes the keyboard) | types into the agent |
+| `N` | new-session picker (choose folder × CLI + yolo) | types into the agent |
 | `j`/`k`, `↓`/`↑` | move selection | types into `muse` |
 | `PgDn`/`PgUp` | page the list | types into `muse` |
 | `Shift+PgDn`/`Shift+PgUp` | scroll the run's retained output (pager) | scroll the run's retained output (pager) |
@@ -66,7 +67,12 @@ reading source. `Tab` toggles which pane owns the keyboard.
 | drag | highlight terminal text (copy-on-select) | highlight terminal text |
 
 - The sessions list starts empty. Press `n` or the **+ New** button for a
-  new `muse` run. Runs start with animal placeholder titles (`otter`,
+  new session — it repeats your last folder × CLI instantly (first-ever
+  spawn is plain `muse`). Press `N` for the full picker: choose the
+  working folder and the CLI (`muse`, `claude`, `opencode`, `codex` —
+  autodetected from `PATH`, missing ones listed disabled with install
+  guidance), optionally toggle yolo for this run only. Runs start with
+  animal placeholder titles (`otter`,
   `fox`, …); your first submitted prompt renames the run so the list stays
   distinguishable.
 - The sessions panel is library chrome (`gpui-component` sidebar: header,
@@ -109,6 +115,25 @@ the effective spawn command, so you can see your flags before launch.
 launches as `muse --yolo`, `claude` could carry
 `--dangerously-skip-permissions`. Keys are program names, so any
 supported agent gets its own flags.
+
+### New-session picker defaults (folder × CLI + yolo)
+
+```json
+{
+  "agents": { "muse": { "yolo": true } },
+  "default_cli": "muse",
+  "default_cwd": "/Users/you/projects/agent-manager"
+}
+```
+
+`agents.<cli>.yolo` opts a CLI into yolo by default (off unless set —
+destructive flags are opt-in, never silent); the picker's yolo toggle
+overrides it for one run only and never writes back. `default_cli` /
+`default_cwd` preselect the picker axes; every confirmed spawn refreshes
+`last_cli` + `recent_folders` (top 10, MRU-first) so `n` repeats your
+last combination. The supported CLIs (`muse`, `claude`, `opencode`,
+`codex`) are autodetected from `PATH` on every picker open — missing
+ones stay listed (disabled) with install guidance instead of vanishing.
 
 ### Theme: dark / light / follow system
 

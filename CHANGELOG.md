@@ -4,6 +4,15 @@ All notable changes, newest first. Issue numbers track `gh issue`.
 
 ## Unreleased (on main)
 
+- UX: two-dimensional new session (folder × CLI + yolo) — `n` / `+ New`
+  repeats the last launch instantly, `N` opens the full picker (folder
+  axis + CLI axis + one-shot yolo tri-state, autodetected from `PATH`
+  on every open, missing CLIs listed disabled with install guidance).
+  Per-agent yolo defaults + `default_cli`/`default_cwd` persist in the
+  local config; `last_cli` + folder MRU refresh on every spawn. Core
+  seam (`src/launch.rs`, `SpawnKind::NewOn`, `App::start_launch`, FFI
+  `am_spawn_launch`/`am_clis_json`/`am_recent_json`/`am_note_launch`;
+  see `docs/new-session-picker.md` for the 10-persona synthesis).
 - UX: restore window resizing — hidden titlebar is `Some`-transparent
   again (`None` dropped `NSResizableWindowMask` on macOS), edges/corners
   resize, minimum + narrow/wide breakpoints unchanged (#58).

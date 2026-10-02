@@ -146,8 +146,10 @@ impl ShellView {
 
     /// Pinned panel header: the static `Sessions` label (a plain div, so
     /// hovering it never hints at an interaction — issue #50) beside the
-    /// real `+ New` button, with the visible search field underneath
-    /// (issue #45).
+    /// split `+ New` control, with the visible search field underneath
+    /// (issue #45). Split-button (2D launch): the main `+ New` repeats the
+    /// last launch instantly (`n`), the `▾` caret opens the folder × CLI
+    /// picker (`N`).
     fn panel_header(&self, cx: &mut Context<Self>) -> gpui::Div {
         // Issues #44/#51: with the OS title bar hidden the header is
         // the window drag region, and its top strip clears the native
@@ -181,6 +183,14 @@ impl ShellView {
                                 if this.request_new_run() {
                                     this.focus_term(window);
                                 }
+                            })),
+                    )
+                    .child(
+                        Button::new(ElementId::Name("new-run-picker-btn".into()))
+                            .label("▾")
+                            .small()
+                            .on_click(cx.listener(|this, _ev, _window, _cx| {
+                                this.open_launch_picker();
                             })),
                     ),
             );

@@ -1,0 +1,100 @@
+# New-session picker (2D launch): folder × CLI + yolo
+
+Status: implemented in the core (`src/launch.rs`) + gpui shell
+(`src/gui/picker.rs`); native shells bind the same core model over FFI.
+
+This records the synthesis of the 10-persona review (competitive scans of
+VS Code / Windows Terminal / JetBrains / agent harnesses; cognitive-load
+and heuristics theory; keyboard-power, newcomer, multi-shell, settings-IA,
+autodetect, and visual-vibe passes). Unanimous points kept; conflicts
+resolved below.
+
+## Decision
+
+- **Split button.** `+ New` main (`n`) repeats the last launch instantly
+  (1 keystroke, unchanged expert path). The `▾` caret (`N`) opens the full
+  picker. No modal grid, no 3-axis picker.
+- **Two axes only in the picker:** working folder × agent CLI. Yolo is a
+  per-run tri-state row (default / on once / off once), never a third
+  picker dimension and never a global master switch (destructive flags
+  differ per CLI and must stay opt-in).
+- **Core owns everything portable:** catalog + autodetect (`launch`),
+  last-used/default resolution, folder MRU, yolo defaults, spawn-command
+  synthesis (`App::spawn_command_for`), validation. Shells render natively
+  and forward keys — they never build `argv` or probe `PATH` themselves.
+- **Fail visible:** missing CLIs stay listed as `not installed` (never
+  hidden); missing folders refuse with an inline `no such folder` flash
+  and stay open for a fix; zero detected CLIs keeps the historic `muse`
+  spawn so the sticky error + Retry names the recovery.
+
+## Interaction (gpui reference)
+
+- `n` / `+ New`: repeat-last (folder + CLI + yolo default), focus
+  terminal. `N` / `▾` / `Choose folder × CLI (N)`: open picker.
+- Picker keys: type to refine folder, Up/Down steps recents, Left/Right
+  or `c` steps CLI, Tab jumps folder ↔ CLI axis, `y` cycles yolo
+  (default → on once → off once), Enter confirms, Esc cancels with zero
+  side effects. Pane jumps (Cmd+1/2) drop the picker likewise.
+- Status line while open: `new run: {folder} · {cli} ({ready|not
+  installed}) · yolo: {label} · Tab: axis · Enter: start · Esc: cancel ·
+  runs: {preview}`. Confirm flashes `runs: {preview}[ · yolo]`.
+- The `w` folder capture stays as the inline single-axis shortcut; the
+  picker preselects the first recent folder when no default is set.
+
+## Settings home
+
+- No settings window. Two homes only: at point of use (the picker:
+  per-run CLI/folder/yolo override, never auto-written back) and the
+  flat local config file (`~/.config/agent-manager/config.json`).
+- New keys (all serde-defaulted, old files load unchanged):
+  `default_cli`, `default_cwd`, `last_cli` (repeat memory, refreshed on
+  every confirmed spawn), `recent_folders` (MRU, capped at 10),
+  `agents.<name>.yolo` (per-agent default, off unless set).
+- Yolo split: global = none (unsafe); default = per-agent persisted;
+  per-run = picker tri-state, ephemeral. Canonical flags: `muse
+  --yolo`, `claude --dangerously-skip-permissions`; codex/opencode carry
+  no picker flag until verified against a live binary.
+
+## Autodetect
+
+- Cheap `which`-style probe on picker open (exact name, then `PATHEXT`
+  on Windows) over `muse, claude, opencode, codex` in order, plus
+  GUI-sparse extra dirs (macOS `/opt/homebrew`, Linux `/snap/bin` and
+  flatpak exports, user `~/.local/bin`). No `--version` subprocess, no
+  background threads, no cache file — re-run on open so the list never
+  goes stale. Zero cost at idle.
+- Rows show all four CLIs in fixed order with `ready` / `not installed`;
+  spawn of a missing CLI stays possible (explicit pick) and fails
+  visibly at spawn with Retry, like today.
+
+## Visual / triage
+
+- Rows keep the harness badge (glyph + short tag) + folder tail; picker
+  preview is the text `runs: {cli} [--flag] in {dir}` — verifiable
+  before launch, grayscale-safe, keyboard-reachable.
+- A yolo run flashes `· yolo` in the confirm status; list-level yolo
+  badging stays a follow-up (row suffix `[yolo]` + `△` marker proposal).
+
+## Conflicts resolved
+
+- Picker vs instant `n` (power vs newcomer): split button keeps both —
+  `n` never opens UI (persona 5 veto), `N`/caret always does.
+- Yolo in picker vs settings-only (personas 1 vs 5): tri-state row in
+  the picker defaulting from per-agent config — one-key `y` at spawn
+  time, safe default, no global switch.
+- Modal vs popover vs inline (persona 7): core state machine is
+  widget-agnostic; gpui renders it as the status-line capture (same as
+  the `w`/`/` captures), native shells map it to Menu/Popover/MenuFlyout.
+- Grid (persona 2) vs menu (personas 1, 10): menu/list wins — fits the
+  264px sidebar, narrow mode, and grayscale parity; the preview line
+  replaces the grid cell.
+- Version probing (persona 9's 2s probe): deferred — cheap PATH scan
+  only for now; `--version` verification is a background follow-up.
+
+## Follow-ups (not in this change)
+
+- Native per-shell picker widgets (SwiftUI Menu, GtkPopover, MenuFlyout)
+  over `am_clis_json` / `am_recent_json` / `am_spawn_launch`.
+- List-level `[yolo]` row suffix for triage parity.
+- `R` rescan affordance + `--version` background verification.
+- cbindgen header regen for the new FFI entry points.

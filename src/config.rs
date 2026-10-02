@@ -26,6 +26,12 @@ pub struct AgentConfig {
     /// Extra CLI flags appended to every spawn of this agent.
     #[serde(default)]
     pub extra_args: Vec<String>,
+    /// Yolo default for this agent (2D launch): when true, the canonical
+    /// yolo flag for the CLI (see `launch::yolo_flag_for`) rides every
+    /// spawn unless a per-run picker choice forces it off. Off unless
+    /// explicitly set: destructive flags are opt-in, never silent.
+    #[serde(default)]
+    pub yolo: bool,
 }
 
 /// Whole-file user configuration.
@@ -49,6 +55,25 @@ pub struct Config {
     /// restored on launch. Absent in older files means collapsed.
     #[serde(default)]
     pub history_expanded: bool,
+    /// Default CLI for the 2D new-session picker (2D launch): preselected
+    /// when set and supported, otherwise the last-used CLI, otherwise the
+    /// first autodetected binary. Absent means pure autodetect + memory.
+    #[serde(default)]
+    pub default_cli: Option<String>,
+    /// Default folder for the 2D picker (`None`/blank inherits the app
+    /// directory, the historic behavior). Prefills the folder axis.
+    #[serde(default)]
+    pub default_cwd: Option<String>,
+    /// Last-used CLI id (2D launch): updated on every confirmed spawn so
+    /// `n` repeats the last combination. Survives restarts like the other
+    /// comfort settings.
+    #[serde(default)]
+    pub last_cli: Option<String>,
+    /// Most-recently-used folders for the picker (2D launch): MRU-first,
+    /// capped at `launch::MAX_RECENT_FOLDERS`, missing dirs dropped on
+    /// display (never blocking launch on a stale entry).
+    #[serde(default)]
+    pub recent_folders: Vec<String>,
 }
 
 /// Default terminal-pane font: OFL-licensed, full box-drawing + block
@@ -216,6 +241,10 @@ impl Default for Config {
             terminal: TerminalConfig::default(),
             sidebar_width: default_sidebar_width(),
             history_expanded: false,
+            default_cli: None,
+            default_cwd: None,
+            last_cli: None,
+            recent_folders: Vec::new(),
         }
     }
 }
@@ -268,6 +297,23 @@ impl Config {
             .map(|a| a.extra_args.clone())
             .unwrap_or_default()
     }
+
+    /// Yolo default for `agent` (2D launch): opt-in per agent, off unless
+    /// explicitly set. Unknown agents default to safe.
+    pub fn yolo_default_for(&self, agent: &str) -> bool {
+        self.agents.get(agent).is_some_and(|a| a.yolo)
+    }
+
+    /// Record a confirmed launch (2D launch): last-used CLI + folder MRU.
+    /// Called by the spawn path so `n` repeats the last combination.
+    pub fn note_launch(&mut self, cli: &str, cwd: Option<&str>) {
+        if crate::launch::SUPPORTED_CLIS.contains(&cli) {
+            self.last_cli = Some(cli.to_string());
+        }
+        if let Some(dir) = cwd {
+            crate::launch::push_recent_folder(&mut self.recent_folders, dir);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +334,45 @@ mod tests {
         assert!(cfg.extra_args_for("muse").is_empty());
         assert!(cfg.extra_args_for("claude").is_empty());
         assert_eq!(cfg.theme, ThemePreference::System);
+        // 2D launch additions default safe/empty: no yolo, no default
+        // CLI/folder, no last CLI, no recents.
+        assert!(!cfg.yolo_default_for("muse"));
+        assert!(!cfg.yolo_default_for("claude"));
+        assert_eq!(cfg.default_cli, None);
+        assert_eq!(cfg.default_cwd, None);
+        assert_eq!(cfg.last_cli, None);
+        assert!(cfg.recent_folders.is_empty());
+    }
+
+    #[test]
+    fn launch_memory_tracks_cli_and_folder_mru() {
+        // 2D launch: every confirmed spawn refreshes repeat-last memory
+        // (CLI + folder MRU), capped and deduped like the pure helper.
+        let mut cfg = Config::default();
+        cfg.note_launch("claude", Some("/tmp/api"));
+        assert_eq!(cfg.last_cli.as_deref(), Some("claude"));
+        assert_eq!(cfg.recent_folders, vec!["/tmp/api"]);
+        cfg.note_launch("claude", Some("/tmp/api"));
+        assert_eq!(cfg.recent_folders, vec!["/tmp/api"]);
+        // Unknown CLI ids never poison the memory.
+        cfg.note_launch("future-harness", None);
+        assert_eq!(cfg.last_cli.as_deref(), Some("claude"));
+        // Yolo default round-trips per agent.
+        cfg.agents.insert(
+            "muse".to_string(),
+            AgentConfig {
+                extra_args: vec![],
+                yolo: true,
+            },
+        );
+        assert!(cfg.yolo_default_for("muse"));
+        assert!(!cfg.yolo_default_for("claude"));
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back, cfg);
+        // Old files without the new keys still load (serde defaults).
+        let old: Config = serde_json::from_str(r#"{"theme": "dark"}"#).unwrap();
+        assert_eq!(old.default_cli, None);
+        assert!(old.recent_folders.is_empty());
     }
 
     #[test]
@@ -397,6 +482,7 @@ mod tests {
             "muse".to_string(),
             AgentConfig {
                 extra_args: vec!["--yolo".to_string()],
+                yolo: false,
             },
         );
         let text = serde_json::to_string(&cfg).unwrap();
@@ -432,6 +518,7 @@ mod tests {
             "claude".to_string(),
             AgentConfig {
                 extra_args: vec!["--dangerously-skip-permissions".to_string()],
+                yolo: false,
             },
         );
         cfg.save().unwrap();

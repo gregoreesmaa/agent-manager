@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass `
 | Feature | Path |
 |---|---|
 | Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
-| Spawn | New-run button / Ctrl+N → `bridge_spawn` at 80x25 |
+| Spawn | New-run button / Ctrl+N → `bridge_spawn` at 80x25; 2D-launch entry points (`am_spawn_launch` with folder × CLI + yolo, `am_clis_json` catalog, `am_recent_json` recents, `am_note_launch` memory) available for the picker follow-up |
 | Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
 | Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `am_feed_delta` → append to the output box. Return and plain Ctrl+C ride `TermBox_PreviewKeyDown` (tunneling: the read-only box would otherwise swallow them before they bubble); everything else bubbles via `RootGrid_KeyDown`. New Session focuses the terminal, so typing + Enter submits immediately |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |

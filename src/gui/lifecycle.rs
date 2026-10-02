@@ -70,6 +70,36 @@ impl ShellView {
         self.request_new_run_in(None)
     }
 
+    /// Open a confirmed 2D launch (folder × CLI + yolo) under the same
+    /// live-run cap: the single funnel every new-run path shares (`n`,
+    /// `+ New`, picker confirm). On success the picker-side caller flashes
+    /// the `runs: <preview>` confirmation.
+    pub(crate) fn request_new_launch(&mut self, selection: crate::launch::LaunchSelection) -> bool {
+        if self.runs.len() < super::runs::MAX_LIVE_RUNS {
+            self.app.start_launch(&selection);
+            self.clear_selection();
+            self.link_cursor = None;
+            return true;
+        }
+        match self.evict_oldest_exited() {
+            Some(title) => {
+                self.app.start_launch(&selection);
+                self.clear_selection();
+                self.link_cursor = None;
+                self.app
+                    .set_status(format!("reaped exited run '{title}' for room"));
+                true
+            }
+            None => {
+                self.app.set_status(format!(
+                    "at {} live runs · x closes the selected run",
+                    super::runs::MAX_LIVE_RUNS
+                ));
+                false
+            }
+        }
+    }
+
     /// Same as [`Self::request_new_run`] but spawning in `cwd`
     /// (issue #48): the folder-picker (`w`) path. `None` is the plain
     /// `n` path exactly.
