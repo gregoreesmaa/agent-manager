@@ -1049,12 +1049,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("nexe.exe"), b"fake").unwrap();
         let old_path = std::env::var_os("PATH");
+        let old_pathext = std::env::var_os("PATHEXT");
         let mut new_path = dir.as_os_str().to_owned();
         if let Some(old) = &old_path {
             new_path.push(if cfg!(windows) { ";" } else { ":" });
             new_path.push(old);
         }
         std::env::set_var("PATH", &new_path);
+        // Unix has no PATHEXT, so spell one out (platform-joined) for the
+        // `.cmd` probe; Windows already carries the real thing.
+        if cfg!(not(windows)) {
+            let pathext = std::env::join_paths([".CMD", ".EXE"]).unwrap();
+            std::env::set_var("PATHEXT", &pathext);
+        }
         std::fs::write(dir.join("shim-tool.cmd"), b"fake").unwrap();
         let shim = script_shim_command("shim-tool", &["--version".to_string()]);
         assert!(shim.is_some(), "a .cmd hit must route via COMSPEC");
@@ -1072,6 +1079,10 @@ mod tests {
         match old_path {
             Some(v) => std::env::set_var("PATH", v),
             None => std::env::remove_var("PATH"),
+        }
+        match old_pathext {
+            Some(v) => std::env::set_var("PATHEXT", v),
+            None => std::env::remove_var("PATHEXT"),
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
