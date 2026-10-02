@@ -152,9 +152,11 @@ jobs:
     # meson-built GTK4/libadwaita/VTE shell against the real C ABI.
     # The gpui binary is macOS-only (macOS-scoped deps in Cargo.toml),
     # so this job gates the lib and the meson suite, never --all-targets.
-    # Runs on ubuntu-latest only and touches nothing outside
-    # native/linux + the core staticlib. Ships a tarball; .deb/flatpak
-    # are stubbed with a tracking note (see packaging/README.md).
+    # A mock-session window screenshot (issue #77) proves the roster
+    # renders, mirroring the macOS/Windows jobs. Runs on ubuntu-latest
+    # only and touches nothing outside native/linux + the core staticlib.
+    # Ships a tarball; .deb/flatpak are stubbed with a tracking note
+    # (see packaging/README.md).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -167,7 +169,7 @@ jobs:
           sudo apt-get update &&
           sudo apt-get install -y --no-install-recommends
           libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev
-          meson ninja-build pkg-config gcc xvfb
+          meson ninja-build pkg-config gcc xvfb scrot
       - name: core staticlib
         run: cargo build --lib
       - name: core tests
@@ -187,6 +189,94 @@ jobs:
           timeout -s TERM 15 xvfb-run -a ./native/linux/build/agent-manager-gtk > /tmp/app.log 2>&1 || true
           grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' /tmp/app.log | head -n 20
           ! grep -E 'Adwaita-ERROR|Gtk-CRITICAL|SMOKE-FAIL' /tmp/app.log
+      - name: seed mock sessions (hermetic)
+        run: |
+          # Same deterministic fake muse-store as the macOS job (three
+          # sessions across Attention / Working / Idle through the REAL
+          # discovery path, so the roster renders exactly as with live
+          # data — offline, with no agent and no network). Statuses come
+          # from the classifier itself: an approval marker wins regardless
+          # of mtime (Attention), a fresh mtime without markers is
+          # Working, an old mtime without markers is Idle.
+          SEED="$RUNNER_TEMP/am-shot"
+          STORE="$SEED/xdg/muse/sessions/2026/09/30"
+          mkdir -p "$STORE/shot-attention" "$STORE/shot-working" "$STORE/shot-idle"
+          cat > "$STORE/shot-attention/session.jsonl" <<'EOF'
+          {"payload_type":"metadata","payload":{"record":{"workspace_root":"/tmp/shot-demo/shop"}}}
+          {"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"text":"Add checkout retries with backoff"}]}}
+          {"payload_type":"evt","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Needs your approval to edit Cargo.toml (y/n)"}}}
+          EOF
+          cat > "$STORE/shot-working/session.jsonl" <<'EOF'
+          {"payload_type":"metadata","payload":{"record":{"workspace_root":"/tmp/shot-demo/blog"}}}
+          {"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"text":"Draft the release notes"}]}}
+          {"payload_type":"evt","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Writing section two of three."}}}
+          EOF
+          cat > "$STORE/shot-idle/session.jsonl" <<'EOF'
+          {"payload_type":"metadata","payload":{"record":{"workspace_root":"/tmp/shot-demo/dotfiles"}}}
+          {"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"text":"Clean up old shell aliases"}]}}
+          {"payload_type":"evt","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Done. Removed twelve aliases."}}}
+          EOF
+          # Relative ages stay glanceable forever ("5m ago", "2d ago"); the
+          # working row keeps a fresh mtime so it classifies as Working.
+          touch -d '5 minutes ago' "$STORE/shot-attention/session.jsonl"
+          touch -d '2 days ago' "$STORE/shot-idle/session.jsonl"
+          # Fake muse on PATH: deterministic transcript if the shell spawns,
+          # then a long sleep so the child outlives the capture.
+          mkdir -p "$SEED/bin" "$SEED/home" "$SEED/shot"
+          cat > "$SEED/bin/muse" <<'EOF'
+          #!/bin/sh
+          printf 'fake-muse-ready-shot\n$ '
+          sleep 120
+          EOF
+          chmod +x "$SEED/bin/muse"
+          printf '{"agents": {}}\n' > "$SEED/config.json"
+          find "$STORE" -name session.jsonl | sort
+      - name: screenshot (mock sessions)
+        run: |
+          # Launch the real GTK shell under the seeded profile (scratch
+          # XDG/HOME/config: the runner's live files are never touched)
+          # on a virtual display, capture the window, and fail visibly
+          # when the PNG is missing or empty.
+          SEED="$RUNNER_TEMP/am-shot"
+          # Re-fresh the working row: Working needs an mtime under 60 s old
+          # at launch, and the seed step may be older than that by now.
+          touch "$SEED/xdg/muse/sessions/2026/09/30/shot-working/session.jsonl"
+          # Own the X server directly (first free display, known PIDs)
+          # instead of xvfb-run's wrapper, so the app PID and DISPLAY are
+          # unambiguous.
+          D=99
+          while [ -e "/tmp/.X$D-lock" ]; do D=$((D + 1)); done
+          Xvfb ":$D" -screen 0 1280x800x24 &
+          XVFB_PID=$!
+          sleep 2
+          PATH="$SEED/bin:$PATH" HOME="$SEED/home" XDG_DATA_HOME="$SEED/xdg" \
+            AGENT_MANAGER_CONFIG="$SEED/config.json" DISPLAY=":$D" \
+            ./native/linux/build/agent-manager-gtk >"$SEED/shot/app.log" 2>&1 &
+          APP_PID=$!
+          sleep 6
+          if ! kill -0 $APP_PID 2>/dev/null; then
+            tail -n 40 "$SEED/shot/app.log" || true
+            echo "agent-manager-gtk exited before the screenshot" >&2
+            kill $XVFB_PID 2>/dev/null || true
+            exit 1
+          fi
+          DISPLAY=":$D" scrot -z "$SEED/shot/linux-mock.png"
+          kill $APP_PID 2>/dev/null || true
+          wait $APP_PID 2>/dev/null || true
+          kill $XVFB_PID 2>/dev/null || true
+          wait $XVFB_PID 2>/dev/null || true
+          test -s "$SEED/shot/linux-mock.png"
+          mkdir -p dist
+          cp "$SEED/shot/linux-mock.png" dist/linux-mock.png
+          cp "$SEED/shot/app.log" dist/shot-app.log
+          grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' "$SEED/shot/app.log" | tail -n 20 || true
+      - name: upload screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-manager-linux-screenshot
+          path: |
+            dist/linux-mock.png
+            dist/shot-app.log
       - name: package (tarball; .deb/flatpak stubbed — see packaging/README.md)
         run: |
           mkdir -p dist
