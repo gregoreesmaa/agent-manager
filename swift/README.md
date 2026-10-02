@@ -30,7 +30,7 @@ Run the app with `swift run` or `.build/debug/AgentManagerMac`.
 | Search / filter | sidebar search field; terminal find via Cmd-F (SwiftTerm find bar) |
 | History | roster rows carry project, harness, last-active age; restored every launch |
 | Theme | follows the system appearance (no manual override) + native terminal colors |
-| Persistence | Save button and quit hook call `am_core_save` |
+| Persistence | Cmd-S menu item and quit hook call `am_core_save` (no sidebar button — Windows parity) |
 
 ## Notes
 

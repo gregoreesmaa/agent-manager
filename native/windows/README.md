@@ -78,8 +78,8 @@ powershell -ExecutionPolicy Bypass `
 
 | Feature | Path |
 |---|---|
-| Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick; live groups ordered needs-input / working / idle like the macOS sidebar; rows show age + link badges (`am_last_active` / `am_relative_age` / `am_link_count`); search filters every group via `am_roster_matches` |
-| Spawn | New-run button / Ctrl+N → `bridge_spawn` at 80x24 |
+| Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick; live groups ordered needs-input / working / idle like the macOS sidebar; rows show age + link badges (`am_last_active` / `am_relative_age` / `am_link_count`); search filters every group via `am_roster_matches`; no heading, and the status line stays empty until a real failure needs it |
+| Spawn | New-run button / Ctrl+N / empty-overlay button → `bridge_spawn` at 80x24; a selected-but-unstarted row shows its title + Spawn button, an empty roster the New Session CTA (macOS parity) |
 | Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
 | Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `bridge_feed_delta` (the core reconciler in `src/shell_shared.rs`) → append to the output box |
 | Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |

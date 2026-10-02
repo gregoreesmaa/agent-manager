@@ -52,6 +52,11 @@ namespace winrt::AgentManagerWinUI::implementation
             Microsoft::UI::Xaml::WindowEventArgs const &args);
         void RefreshRoster();
         void ShowSelected();
+        /* Empty-overlay helpers (macOS parity): roster lookup plus the
+         * title/detail/button overlay behind the terminal surface. */
+        long long RowIndexById(std::wstring const &id);
+        void ShowEmpty(std::wstring const &title, std::wstring const &detail,
+                       std::wstring const &button);
         /* Group-list helpers (issue #73): the four lists share one
          * selection, kept in m_selected; m_syncing guards the
          * SelectionChanged fan-out while the selection is moved. */

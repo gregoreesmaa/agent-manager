@@ -19,7 +19,6 @@ final class AppState: ObservableObject {
     @Published var selection: String?
     @Published var filter = ""
     @Published var pendingError: String?
-    @Published var savedFlash = false
 
     /// Feeds waiting for the terminal view: row id -> (text, sequence).
     /// The sequence lets the view skip what it already fed.
@@ -52,10 +51,6 @@ final class AppState: ObservableObject {
     deinit { timer?.invalidate() }
 
     // MARK: - Roster
-
-    var attentionCount: Int {
-        statuses.values.filter { $0 == RunStatus.attention.rawValue }.count
-    }
 
     var filteredRows: [SessionRow] {
         let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
@@ -186,10 +181,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Persistence
 
+    /// Persist the core config (Cmd-S menu item + quit hook; no
+    /// sidebar button — Windows parity).
     func save() {
         do {
             try core.save()
-            savedFlash = true
         } catch {
             pendingError = error.localizedDescription
         }

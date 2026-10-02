@@ -40,9 +40,9 @@
             <!-- Roster card (issue #73): New Session button, session search,
                  then live runs grouped needs-input / working / idle (macOS
                  parity) with non-live history collapsed at the end; the
-                 status line sits below the groups. One shared
-                 SelectionChanged handler keeps a single selection across
-                 the four lists. -->
+                 status line below the groups stays empty until a real
+                 failure needs it. One shared SelectionChanged handler
+                 keeps a single selection across the four lists. -->
             <Border Grid.Column="0"
                     Margin="12,0,0,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -53,21 +53,17 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0"
-                               Text="Runs"
-                               Style="{StaticResource SubtitleTextBlockStyle}"/>
                     <Button x:Name="NewButton"
-                            Grid.Row="1"
+                            Grid.Row="0"
                             Content="New Session"
                             Style="{StaticResource AccentButtonStyle}"
                             HorizontalAlignment="Stretch"
                             Click="NewButton_Click"/>
                     <TextBox x:Name="FilterBox"
-                             Grid.Row="2"
+                             Grid.Row="1"
                              PlaceholderText="Search sessions"
                              TextChanged="FilterBox_TextChanged"/>
                     <!-- Group lists size to content (inner scrolling off)
@@ -76,7 +72,7 @@
                          show, so the group order is stable even when a
                          group is empty. Order is Needs input, Working,
                          Idle (macOS parity). -->
-                    <ScrollViewer Grid.Row="3"
+                    <ScrollViewer Grid.Row="2"
                                   VerticalScrollMode="Auto"
                                   VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="2">
@@ -126,7 +122,7 @@
                          lives at the sidebar bottom now that the terminal
                          fills the right pane. -->
                     <TextBlock x:Name="StatusText"
-                               Grid.Row="4"
+                               Grid.Row="3"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>
@@ -205,27 +201,50 @@
             </primitives:Thumb>
 
             <!-- Terminal card (issue #73): the output surface fills the
-                 full height of the right pane; no status label beneath. -->
+                 full height of the right pane; no status label beneath.
+                 With no live PTY selected the surface hides behind an
+                 empty-state overlay (macOS parity): title + detail +
+                 one prominent spawn button instead of dead-end text. -->
             <Border Grid.Column="2"
                     Margin="12,0,12,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
                     CornerRadius="8">
-                <ScrollViewer x:Name="TermScroll"
-                              Padding="12"
-                              HorizontalScrollMode="Auto"
-                              VerticalScrollMode="Auto">
-                    <TextBox x:Name="TermBox"
-                             IsReadOnly="True"
-                             AcceptsReturn="True"
-                             TextWrapping="NoWrap"
-                             Background="Transparent"
-                             BorderThickness="0"
-                             FontFamily="Cascadia Mono, Consolas, monospace"
-                             FontSize="13"
-                             KeyDown="RootGrid_KeyDown"/>
-                </ScrollViewer>
+                <Grid>
+                    <ScrollViewer x:Name="TermScroll"
+                                  Padding="12"
+                                  HorizontalScrollMode="Auto"
+                                  VerticalScrollMode="Auto">
+                        <TextBox x:Name="TermBox"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 TextWrapping="NoWrap"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 FontFamily="Cascadia Mono, Consolas, monospace"
+                                 FontSize="13"
+                                 KeyDown="RootGrid_KeyDown"/>
+                    </ScrollViewer>
+                    <StackPanel x:Name="EmptyPanel"
+                                Visibility="Collapsed"
+                                Spacing="12"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                        <TextBlock x:Name="EmptyTitle"
+                                   Style="{StaticResource SubtitleTextBlockStyle}"
+                                   TextAlignment="Center"/>
+                        <TextBlock x:Name="EmptyDetail"
+                                   Style="{StaticResource BodyTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                        <Button x:Name="EmptyButton"
+                                Style="{StaticResource AccentButtonStyle}"
+                                HorizontalAlignment="Center"
+                                Click="NewButton_Click"/>
+                    </StackPanel>
+                </Grid>
             </Border>
         </Grid>
     </Grid>

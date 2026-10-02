@@ -14,7 +14,8 @@ import SwiftUI
 ///   the rows themselves come from discovery + the persisted store, so
 ///   they survive relaunches.
 /// - Theme: follows the system appearance (no manual override).
-/// - Persistence: Save writes the core config; it also runs on quit.
+/// - Persistence: Cmd-S writes the core config; it also runs on quit
+///   (no sidebar button — Windows parity).
 struct ContentView: View {
     @ObservedObject var state: AppState
     @Environment(\.colorScheme) private var colorScheme
@@ -28,9 +29,7 @@ struct ContentView: View {
                     .padding(8)
                 Divider()
                 List(selection: $state.selection) {
-                    Text(title)
-                        .font(.headline)
-                    TextField("Filter sessions", text: $state.filter)
+                    TextField("Search sessions", text: $state.filter)
                         .textFieldStyle(.roundedBorder)
                     if state.filteredRows.isEmpty {
                         Text("No sessions match.").foregroundStyle(.secondary)
@@ -55,8 +54,6 @@ struct ContentView: View {
                     }
                 }
                 .listStyle(.sidebar)
-                Divider()
-                sidebarFooter
             }
         } detail: {
             // SwiftUI counts the toolbar height as detail safe area,
@@ -78,22 +75,6 @@ struct ContentView: View {
     }
 
     // MARK: - Sidebar
-
-    /// Save lives in the sidebar footer (Cmd-S, additionally
-    /// wired app-wide in `AgentManagerMacApp.commands`); New Session
-    /// sits at the sidebar top (Cmd-N, likewise app-wide). The shell
-    /// follows the system appearance: no manual theme override.
-    private var sidebarFooter: some View {
-        Button("Save", action: state.save)
-            .keyboardShortcut("s", modifiers: .command)
-            .help("Persist the core config (am_core_save)")
-            .padding(8)
-    }
-
-    private var title: String {
-        let n = state.attentionCount
-        return n == 0 ? "Sessions" : "Sessions (\(n) need input)"
-    }
 
     private struct StatusSection {
         var status: Int
