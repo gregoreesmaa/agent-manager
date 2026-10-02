@@ -46,6 +46,14 @@ target_compile_features(am-win-picker-test PRIVATE cxx_std_17)
 add_test(NAME picker COMMAND am-win-picker-test)
 set_tests_properties(picker PROPERTIES PASS_REGULAR_EXPRESSION "PICKER-OK")
 
+# Converse-key contract tests (header-only, no WinUI): pins the Return /
+# Ctrl+C encodings the terminal preview-tunnel relies on, plus the
+# Ctrl+Shift+C/V reserve that stays with the native control.
+add_executable(am-win-keys-test src/keys_test.cpp)
+set_target_properties(am-win-keys-test PROPERTIES CXX_STANDARD 17)
+add_test(NAME keys COMMAND am-win-keys-test)
+set_tests_properties(keys PROPERTIES PASS_REGULAR_EXPRESSION "KEYS-OK")
+
 # Headless C ABI runtime check: no session needed, CI-greppable output.
 add_executable(am-win-smoke src/smoke.c src/core_bridge.c)
 target_link_libraries(am-win-smoke PRIVATE ${SYS_LIBS})

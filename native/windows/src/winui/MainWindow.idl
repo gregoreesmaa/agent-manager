@@ -10,6 +10,8 @@ namespace AgentManagerWinUI
         void NewSplitButton_Click(
             Object sender,
             Microsoft.UI.Xaml.Controls.SplitButtonClickEventArgs args);
+        void PickButton_Click(
+            Object sender, Microsoft.UI.Xaml.RoutedEventArgs args);
         void FilterBox_TextChanged(
             Object sender,
             Microsoft.UI.Xaml.Controls.TextChangedEventArgs args);
@@ -23,6 +25,9 @@ namespace AgentManagerWinUI
             Object sender,
             Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);
         void RootGrid_KeyDown(
+            Object sender,
+            Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);
+        void TermBox_PreviewKeyDown(
             Object sender,
             Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args);
     }
