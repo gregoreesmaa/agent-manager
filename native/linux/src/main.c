@@ -356,7 +356,7 @@ static gboolean row_matches(GtkListBoxRow *row, gpointer data) {
     }
     /* Core-owned filter rule (title/project/id, case-insensitive). The
      * row index rides on the widget; the core answers match/no-match. */
-    int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "am-idx"));
+    int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "staap-idx"));
     if (idx < 0) {
         return TRUE;
     }
@@ -367,8 +367,8 @@ static gboolean row_matches(GtkListBoxRow *row, gpointer data) {
  * recent first within. Statuses + ids come from the core registry. */
 static int row_order(GtkListBoxRow *a, GtkListBoxRow *b, gpointer data) {
     Shell *sh = data;
-    int ia = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(a), "am-idx"));
-    int ib = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "am-idx"));
+    int ia = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(a), "staap-idx"));
+    int ib = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "staap-idx"));
     if (ia < 0 || ib < 0) {
         return 0;
     }
@@ -1187,7 +1187,7 @@ static void on_row_selected(GtkListBox *box, GtkListBoxRow *row,
     Shell *sh = data;
     /* Core-owned selection: the row index rides on the widget. */
     int idx = row
-        ? GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "am-idx"))
+        ? GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "staap-idx"))
         : -1;
     if (idx >= 0) {
         bridge_select(sh->core, (size_t)idx);
@@ -1625,9 +1625,9 @@ static void refresh_roster(Shell *sh) {
             st = 1;
         }
         GtkWidget *row = gtk_list_box_row_new();
-        g_object_set_data_full(G_OBJECT(row), "am-row-id", strdup(id),
+        g_object_set_data_full(G_OBJECT(row), "staap-row-id", strdup(id),
                                free);
-        g_object_set_data(G_OBJECT(row), "am-idx",
+        g_object_set_data(G_OBJECT(row), "staap-idx",
                           GINT_TO_POINTER((int)i));
         GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         gtk_widget_set_margin_start(hbox, 8);
