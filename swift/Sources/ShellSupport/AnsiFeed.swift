@@ -2,17 +2,16 @@ import Foundation
 
 /// Color-preserving renderer for the core's styled-span snapshots.
 ///
-/// The core emulator owns SGR state and hands out `am_spans_json` rows of
-/// same-style spans (`{text,fg,bg,bold,italic,underline}` with `fg`/`bg`
-/// as `[r,g,b]` or null). This type re-emits those spans as an ANSI/SGR
-/// stream the SwiftTerm view feeds on directly, so program colors (diffs,
-/// syntax highlighting, `printf '\e[31mred\e[0m'`) survive the pump.
+/// Thin wrapper over the shared core renderer (`am_ansi_render`, via
+/// `Core.ansiRender`): one rule for every shell. The pure-Swift
+/// implementation below stays for unit tests without linking the core
+/// staticlib; production calls the core.
 ///
-/// Every span carries a complete SGR sequence (reset plus attributes),
-/// so any fragment of a render is self-contained: the existing
-/// `TerminalFeed.delta` reconciler works on rendered strings unchanged
-/// (append hot path, scroll overlap, clear-and-replay), and a fed
-/// suffix/tail always leaves the view in the right style state.
+/// The core emulator owns SGR state and hands out spans rows of
+/// same-style spans; the render re-emits those spans as an ANSI/SGR
+/// stream the SwiftTerm view feeds on directly, so program colors
+/// survive the pump. Every span carries a complete SGR sequence (reset
+/// plus attributes), so any fragment of a render is self-contained.
 public enum AnsiFeed {
     /// One styled run inside a snapshot row, matching the core's
     /// `am_spans_json` shape. Style keys default when missing so a

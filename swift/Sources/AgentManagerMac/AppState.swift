@@ -1,13 +1,14 @@
 import Foundation
 import ShellSupport
 
-/// Pump state for every live session, on the main thread.
+/// Dumb-renderer state over the core run registry, on the main thread.
 ///
-/// The roster itself is a snapshot taken at launch (discovery +
-/// persisted rows merged inside `am_core_new`); statuses refresh on
-/// every pump tick via `am_status`. PTYs live in `ptys` keyed by row
-/// id; `fedText` remembers the snapshot already shown in the
-/// terminal view so the pump can feed only the delta.
+/// The roster, selection, filter, live PTYs, statuses, and links all
+/// live in the core (`am_pump_all` refreshes them on every tick, like
+/// the gpui pump): this type only mirrors rows for SwiftUI rendering,
+/// routes widget events into the core, and carries the view-feed cache.
+/// No shell-local PTY map, no shell-local ids — spawns attach real rows
+/// in the core, so every run rows in the roster on every shell.
 @MainActor
 final class AppState: ObservableObject {
     /// Default grid until the terminal view reports its real size.
@@ -17,7 +18,15 @@ final class AppState: ObservableObject {
     @Published private(set) var rows: [SessionRow] = []
     @Published private(set) var statuses: [String: Int] = [:]
     @Published var selection: String?
-    @Published var filter = ""
+    @Published var filter = "" {
+        didSet {
+            if filter != oldValue {
+                core.setFilter(filter.isEmpty ? nil : filter)
+                reloadRoster()
+            }
+        }
+    }
+
     @Published var pendingError: String?
     /// 2D-launch picker sheet visibility (set by the menu, the caret,
     /// or Cmd-Shift-N; the sheet resets it on dismiss).
@@ -28,11 +37,11 @@ final class AppState: ObservableObject {
     @Published private(set) var feeds: [String: (text: String, seq: UInt64)] = [:]
 
     private let core: Core
-    private var ptys: [String: Pty] = [:]
     private var fedText: [String: String] = [:]
     private var feedSeq: UInt64 = 0
     private var grid = (cols: defaultCols, rows: defaultRows)
     private var timer: Timer?
+    private var saveTick = 0
 
     init(core: Core) {
         self.core = core
@@ -48,24 +57,65 @@ final class AppState: ObservableObject {
 
     deinit { timer?.invalidate() }
 
-    // MARK: - Roster
+    // MARK: - Roster (mirrored from the core registry)
+
+    var attentionCount: Int {
+        statuses.values.filter { $0 == RunStatus.attention.rawValue }.count
+    }
 
     var filteredRows: [SessionRow] {
-        let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return rows }
-        return rows.filter {
-            $0.title.lowercased().contains(q)
-                || $0.project.lowercased().contains(q)
-                || $0.id.lowercased().contains(q)
+        rows.filter { row in
+            filter.isEmpty || core.rowMatches(index(of: row.id), query: filter)
         }
     }
 
     func rows(with status: RunStatus) -> [SessionRow] {
-        filteredRows.filter { statuses[$0.id] == status.rawValue }
+        rows.filter {
+            statuses[$0.id] == status.rawValue
+                && (filter.isEmpty || core.rowMatches(index(of: $0.id), query: filter))
+        }
     }
+
+    private func index(of id: String) -> Int {
+        rows.firstIndex(where: { $0.id == id }) ?? -1
+    }
+
+    /// History rows: ids with no live PTY in the core registry.
+    func isHistory(_ id: String) -> Bool { !core.isLive(id) }
 
     func status(of row: SessionRow) -> RunStatus {
         RunStatus(rawValue: statuses[row.id] ?? RunStatus.idle.rawValue) ?? .idle
+    }
+
+    /// Accessible status name for a row (VoiceOver label suffix).
+    func statusName(of row: SessionRow) -> String {
+        switch status(of: row) {
+        case .attention: "needs input"
+        case .working: "working"
+        case .idle: "idle"
+        }
+    }
+
+    /// History rows: ids with no live PTY (collapsed group at the end,
+    /// matching the other shells).
+    var historyRows: [SessionRow] {
+        rows.filter {
+            !core.isLive($0.id)
+                && (filter.isEmpty || core.rowMatches(index(of: $0.id), query: filter))
+        }
+    }
+
+    var hasHistory: Bool { !historyRows.isEmpty }
+
+    /// Non-color status marker for a row (shared core glyphs).
+    func glyph(of row: SessionRow) -> String {
+        Core.statusGlyph(Int32(statuses[row.id] ?? RunStatus.idle.rawValue))
+    }
+
+    /// Human age for a row (shared core buckets).
+    func age(of row: SessionRow) -> String {
+        let now = Int64(Date.now.timeIntervalSince1970)
+        return Core.ageString(now: now, then: row.lastActive)
     }
 
     private func reloadRoster() {
@@ -77,22 +127,25 @@ final class AppState: ObservableObject {
             }
         }
         rows = loaded
+        // Mirror the core selection (filter snaps it on the core side).
+        let sel = core.selected
+        if sel < rows.count {
+            selection = rows[sel].id
+        } else if !rows.isEmpty, selection == nil {
+            selection = rows.first?.id
+        }
     }
 
-    // MARK: - Spawn / converse / resize
+    // MARK: - Spawn / restart / close / converse / resize
 
+    /// Spawn (or re-attach) the selected row: historic entries resume,
+    /// ended runs restart on the same id (keeps title and links).
     func spawnSelected() {
-        guard let id = selection, ptys[id] == nil else { return }
-        spawn(id: id)
-    }
-
-    /// Spawn one live terminal through the core under `id`, selected on
-    /// success. Shared by roster rows and shell-local terminals alike.
-    private func spawn(id: String) {
+        guard let id = selection else { return }
         do {
-            ptys[id] = try core.spawn(cols: grid.cols, rows: grid.rows)
+            try core.runRestart(id: id, cols: grid.cols, rows: grid.rows)
             fedText[id] = ""
-            selection = id
+            reloadRoster()
         } catch {
             pendingError = error.localizedDescription
         }
@@ -101,63 +154,57 @@ final class AppState: ObservableObject {
     // MARK: - 2D launch (folder × CLI + yolo)
 
     /// Split-button main action: repeat the last launch instantly (the
-    /// null-CLI/null-folder/zero-yolo form of `am_spawn_launch`, which
-    /// resolves the core's effective default: last-used, configured,
-    /// autodetected). A failed repeat surfaces in `pendingError`, never
-    /// silently.
+    /// null-CLI/null-folder/zero-yolo form resolves the core's effective
+    /// default: last-used, configured, autodetected). Attaches a real
+    /// roster row in the core under the shared cap. A failed repeat
+    /// surfaces in `pendingError`, never silently.
     func repeatLastSession() {
         do {
-            let pty = try core.spawnLaunch(cli: nil, cwd: nil, yolo: 0,
-                                           cols: grid.cols, rows: grid.rows)
-            attachFreshPty(pty, cli: core.effectiveCli(), folder: nil)
+            let id = try core.runSpawn(cli: nil, cwd: nil, yolo: 0,
+                                       cols: grid.cols, rows: grid.rows)
+            fedText[id] = ""
+            reloadRoster()
+            selection = id
         } catch {
             pendingError = error.localizedDescription
         }
-    }
-
-    /// New Session entry point: repeat the last launch instantly, so
-    /// one click always opens something — including on an empty roster
-    /// (Windows parity: the empty roster is a starting point, not a
-    /// dead end). The fresh PTY mints its own roster row via
-    /// `attachFreshPty`, which also selects it.
-    func newSession() { repeatLastSession() }
-
-    /// Attach a freshly spawned PTY under a new local id (native shells
-    /// mint their own rows: the roster snapshot is launch-time, while
-    /// live PTYs key by id like the shared run map). The row joins
-    /// the roster immediately so triage (counts, groups, filter) sees it;
-    /// folder/CLI choice is recorded on the row for the detail header.
-    private func attachFreshPty(_ pty: Pty, cli: String, folder: String?) {
-        let id = "local-\(UInt64.random(in: 0 ... UInt64.max))"
-        ptys[id] = pty
-        fedText[id] = ""
-        let project: String
-        if let folder, !folder.isEmpty {
-            project = URL(fileURLWithPath: folder).lastPathComponent
-        } else {
-            project = "local"
-        }
-        rows.append(SessionRow(
-            id: id, title: project, project: project, statusName: "Working",
-            harness: cli, lastActive: Int64(Date.now.timeIntervalSince1970),
-            cwd: folder, prLinks: nil, relatedLinks: nil
-        ))
-        statuses[id] = RunStatus.working.rawValue
-        selection = id
     }
 
     /// Confirmed picker launch: explicit folder × CLI + tri-state yolo
     /// (1 = on once, -1 = off once, 0 = config default). Records the
-    /// combination via `am_note_launch` so the next repeat replays it.
+    /// combination in the core so the next repeat replays it.
     func confirmPicker(cli: String, folder: String?, yolo: Int32) {
         do {
-            let pty = try core.spawnLaunch(cli: cli, cwd: folder, yolo: yolo,
-                                           cols: grid.cols, rows: grid.rows)
-            attachFreshPty(pty, cli: cli, folder: folder)
-            core.noteLaunch(cli: cli, cwd: folder)
+            let id = try core.runSpawn(cli: cli, cwd: folder, yolo: yolo,
+                                       cols: grid.cols, rows: grid.rows)
+            fedText[id] = ""
+            reloadRoster()
+            selection = id
         } catch {
             pendingError = error.localizedDescription
         }
+    }
+
+    /// Restart/resume the selected run on the same id.
+    func restartSelected() {
+        guard let id = selection else { return }
+        do {
+            try core.runRestart(id: id, cols: grid.cols, rows: grid.rows)
+            fedText[id] = ""
+            reloadRoster()
+        } catch {
+            pendingError = error.localizedDescription
+        }
+    }
+
+    /// Close (kill) the selected run + entry, then persist.
+    func closeSelected() {
+        guard let id = selection else { return }
+        core.runClose(id: id)
+        fedText.removeValue(forKey: id)
+        feeds.removeValue(forKey: id)
+        save()
+        reloadRoster()
     }
 
     /// Fresh CLI catalog for the picker sheet (re-read on every open so
@@ -167,21 +214,19 @@ final class AppState: ObservableObject {
     /// Folder recents for the picker sheet (MRU-first).
     func pickerRecents() -> [String] { core.recentFolders() }
 
-    func hasLivePty(_ id: String) -> Bool { ptys[id] != nil }
+    func hasLivePty(_ id: String) -> Bool { core.isLive(id) }
 
     func sendToPty(rowId: String, bytes: [UInt8]) {
         do {
-            try ptys[rowId]?.write(bytes)
+            try core.runWrite(id: rowId, bytes: bytes)
         } catch {
             pendingError = error.localizedDescription
         }
     }
 
-    func terminalResized(rowId _: String, cols: Int, rows: Int) {
+    func terminalResized(rowId: String, cols: Int, rows: Int) {
         grid = (cols, rows)
-        for pty in ptys.values {
-            pty.resize(cols: cols, rows: rows)
-        }
+        core.runResize(id: rowId, cols: cols, rows: rows)
     }
 
     /// Feed text the terminal view has not shown yet, if any.
@@ -192,10 +237,24 @@ final class AppState: ObservableObject {
 
     func feedSeq(for rowId: String) -> UInt64 { feeds[rowId]?.seq ?? 0 }
 
-    // MARK: - Persistence
+    // MARK: - Selection (core-owned)
 
-    /// Persist the core config (Cmd-S menu item + quit hook; no
-    /// sidebar button — Windows parity).
+    func select(row: SessionRow) {
+        if let i = rows.firstIndex(where: { $0.id == row.id }) {
+            core.select(i)
+            selection = row.id
+        }
+    }
+
+    func selectStep(forward: Bool) {
+        core.selectStep(forward: forward)
+        reloadRoster()
+    }
+
+    // MARK: - Persistence (automatic; no manual Save)
+
+    /// Autosave: throttled pump persist + quit/close hooks. Kept explicit
+    /// (not private) so the app delegate and close path call one funnel.
     func save() {
         do {
             try core.save()
@@ -204,28 +263,37 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Dirty-quit gate: confirm when any run is Working/Attention or any
+    /// PTY is live (core-owned rule, same as every shell).
+    var needsQuitConfirm: Bool { core.needsQuitConfirm }
+
     // MARK: - Pump
 
     private func pump() {
-        for (id, pty) in ptys {
-            guard pty.pump() else { continue }
+        // The core registry feeds every live run (statuses, links, and
+        // re-sort inside) — the roster now actually moves, unlike the
+        // old launch-snapshot rows.
+        let dirty = core.pumpAll()
+        // Mirror new/changed rows (spawn attaches rows in the core now).
+        reloadRoster()
+        for row in rows {
+            let id = row.id
+            guard core.isLive(id) else { continue }
             // Color-preserving render of the same screen: the styled spans
-            // re-emitted as SGR when they decode, else the plain snapshot.
-            // The reconciler below works on either form, so both stay
-            // duplication-free and resize-safe; `fedText` stores whichever
-            // form was shown last.
+            // re-emitted as SGR when they decode, else the plain snapshot
+            // (both through the shared core helpers now).
             let current: String
-            if let spans = pty.spansJson(),
-               let styled = AnsiFeed.render(json: spans)
+            if let spans = core.runSpansJson(id: id),
+               let styled = Core.ansiRender(json: spans)
             {
                 current = styled
-            } else if let snapshot = pty.screenText() {
+            } else if let snapshot = core.runScreenText(id: id) {
                 current = snapshot
             } else {
                 continue
             }
             let shown = fedText[id, default: ""]
-            if let feed = TerminalFeed.delta(old: shown, new: current),
+            if let feed = Core.feedDelta(old: shown, new: current),
                !feed.isEmpty
             {
                 feedSeq += 1
@@ -233,8 +301,13 @@ final class AppState: ObservableObject {
             }
             fedText[id] = current
         }
-        for i in 0 ..< rows.count {
-            statuses[rows[i].id] = Int(core.status(i))
+        // Autosave throttle (replaces the manual Save button): persist at
+        // most every ~5s while dirty, like the gpui pump persist.
+        if dirty {
+            saveTick += 1
+            if saveTick % 100 == 0 {
+                save()
+            }
         }
     }
 }

@@ -9,11 +9,13 @@
 
 namespace winrt::AgentManagerWinUI::implementation
 {
-    struct LivePty
+    /* Display cache for one roster row: the last full screen text (feed
+     * delta base) plus everything fed to the view (capped). The core
+     * registry owns the PTYs — this only caches view state per row id. */
+    struct DisplayRow
     {
-        ::AmPty *pty{nullptr};
-        std::string last_snapshot; /* Last full screen text (delta base). */
-        std::string shown;         /* Everything fed to the view (capped). */
+        std::string last_snapshot;
+        std::string shown;
     };
 
     struct MainWindow : MainWindowT<MainWindow>
@@ -30,16 +32,25 @@ namespace winrt::AgentManagerWinUI::implementation
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::SplitButtonClickEventArgs const
                 &args);
+        void RestartButton_Click(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::RoutedEventArgs const &args);
+        void CloseButton_Click(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::RoutedEventArgs const &args);
         /* Instant repeat-last shared by the face, the menu item, and
          * Ctrl+N: one path, no divergence. */
         void RepeatLastSession();
+        /* Restart/resume + close for the selected run (Ctrl+R / Ctrl+W,
+         * parity with the `r`/`x` keys and the other shells). */
+        void RestartSelected();
+        void CloseSelected();
         /* 2D new-session picker (folder x CLI + tri-state yolo): the
          * caret/menu counterpart to NewButton_Click's instant repeat. */
         void PickButton_Click(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::RoutedEventArgs const &args);
         fire_and_forget PickNewSessionAsync();
-        void PersistCore();
         void FilterBox_TextChanged(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::TextChangedEventArgs const &args);
@@ -70,28 +81,29 @@ namespace winrt::AgentManagerWinUI::implementation
             Microsoft::UI::Xaml::WindowEventArgs const &args);
         void RefreshRoster();
         void ShowSelected();
-        /* Empty-overlay helpers (macOS parity): roster lookup plus the
-         * title/detail/button overlay behind the terminal surface. */
-        long long RowIndexById(std::wstring const &id);
         void ShowEmpty(std::wstring const &title, std::wstring const &detail,
                        std::wstring const &button);
+        long long RowIndexById(std::wstring const &id);
+        void EmptyButton_Click(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::RoutedEventArgs const &args);
         /* Group-list helpers (issue #73): the four lists share one
-         * selection, kept in m_selected; m_syncing guards the
-         * SelectionChanged fan-out while the selection is moved. */
+         * selection, kept in the core (`am_selected`); m_syncing guards
+         * the SelectionChanged fan-out while the selection is moved. */
         void RebuildGroupList(
             Microsoft::UI::Xaml::Controls::ListView const &list,
             std::vector<std::pair<std::wstring, std::wstring>> const &rows);
         void SelectRowById(std::wstring const &id);
         bool FirstRowId(std::wstring &id);
-        /* Mint a shell-local terminal id ("local-N") for a New Session
-         * with no unstarted roster row (empty roster included). Local
-         * ids never collide with core roster ids and are always live. */
-        std::wstring MintLocalId();
-        bool IsLocalId(std::wstring const &id);
         void SetStatus(winrt::hstring const &text);
         void ForwardBytes(char const *data, std::size_t len);
+        /* Shared core-table encode + forward (true = handled). */
+        bool EncodeForward(int vk, char32_t text, bool ctrl, bool shift,
+                           bool alt);
+        /* Selected roster row id (wide copy of the core selection). */
         std::wstring SelectedId();
-        LivePty *SelectedLive();
+        /* True when the selected row owns a live PTY in the core. */
+        bool SelectedIsLive();
         /* Resizable sidebar: read/apply helpers for the SidebarColumn
          * width behind the Thumb grip. */
         double SidebarWidthPx();
@@ -100,13 +112,15 @@ namespace winrt::AgentManagerWinUI::implementation
             Windows::ApplicationModel::DataTransfer::DataPackageView data);
 
         ::AmCore *m_core{nullptr};
-        /* Roster row id -> live PTY, plus shell-local "local-N" terminals
-         * (New Session on an empty or fully-live roster). Local entries
-         * render in the terminal pane but never in the roster lists. */
-        std::map<std::wstring, LivePty> m_live;
-        std::wstring m_selected; /* selected roster row id or local id */
-        unsigned m_localNext{1}; /* next local terminal number */
+        /* Roster row id -> display cache (feed base + shown text). The
+         * core registry owns the PTYs; the selection/filter live in the
+         * core too (`am_selected`/`am_set_filter`) — this shell only
+         * renders what the core reports. */
+        std::map<std::wstring, DisplayRow> m_rows;
         bool m_syncing{false}; /* true while moving shared selection */
+        /* Empty-overlay button mode: 0 = New Session, 1 = restart/resume,
+         * 2 = no button. Set by ShowSelected, read by EmptyButton_Click. */
+        int m_emptyMode{2};
         std::string m_filter;                   /* sidebar filter (UTF-8) */
         std::string m_fingerprint; /* roster rebuild gate */
         Microsoft::UI::Dispatching::DispatcherQueueTimer m_timer{nullptr};

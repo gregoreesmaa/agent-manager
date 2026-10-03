@@ -37,10 +37,10 @@ meson test -C native/linux/build
 
 | Test | What it proves |
 |---|---|
-| `feed` | `am-feed-test`: the core snapshot→stream reconciler plus roster-match and age-label helpers over the real staticlib, mirroring Swift's `TerminalFeedTests` 1:1 |
-| `picker` | `am-picker-test`: 2D-launch picker logic (catalog/recents parse, folder/yolo mapping, preview copy), no GTK, no core link |
-| `smoke` | `am-gtk-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog surface |
-| `smoke-live` | `smoke_live.sh`: spawn/pump/write/resize against a fake `muse` on `PATH` in a scratch `HOME` (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
+| `feed` | `am-feed-test`: the bridge's reconciler wrapper (`bridge_feed_delta` over the shared `am_feed_delta`) against the real staticlib, no GTK |
+| `picker` | `am-picker-test`: the bridge's shared-helper wrappers (feed/key/preview/yolo/age/glyph/registry surface) against the real staticlib, no GTK |
+| `smoke` | `am-gtk-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog and shared-helper surface |
+| `smoke-live` | `smoke_live.sh`: registry spawn/pump/write/resize/close against a fake `muse` on `PATH` in a scratch `HOME` (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
 
 Headless UI run (window opens, pump ticks, quits on timeout):
 
@@ -48,36 +48,43 @@ Headless UI run (window opens, pump ticks, quits on timeout):
 xvfb-run -a ./native/linux/build/agent-manager-gtk
 ```
 
-## Wiring (all through the C ABI)
+## Wiring (dumb renderer over the core run registry)
+
+The core owns the roster, selection, filter, PTYs, statuses, links,
+key table, feed reconciler, preview copy, and persistence; this shell
+owns GTK widgets, event wiring, and byte transport only. Same contract
+as the macOS/Windows shells (native look, identical behavior).
 
 | Feature | Path |
 |---|---|
-| Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick |
-| Spawn | split-button 2D launch: New-run button / Ctrl+N repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); the ▾ caret / Ctrl+Shift+N opens the picker dialog (folder entry + recents, CLI radios over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
-| Converse | key controller encodes → `bridge_write`; pump → `am_feed_delta` (the core reconciler in `src/shell_shared.rs`) → `vte_terminal_feed` |
+| Roster | core registry rows (`am_session_count` + `am_session_json` live, `am_pump_all` refreshes statuses/links), grouped Needs input → Working → Idle → History; single selection in the core (`am_selected`/`am_select`) |
+| Spawn | split-button 2D launch: New-run button / Ctrl+N repeats the last folder × CLI + yolo via `bridge_run_spawn` (null CLI/folder, attaches a real roster row under the shared cap); the ▾ caret / Ctrl+Shift+N opens the picker dialog (folder entry + recents, CLI radios over the autodetected catalog, tri-state yolo, core preview `bridge_spawn_preview`) → `bridge_run_spawn` |
+| Restart / close | header buttons / Ctrl+R / Ctrl+W → `bridge_run_restart` (same id, keeps title/links) / `bridge_run_close` + autosave; ended rows offer restart inline in the terminal pane |
+| Converse | key event → `bridge_key_encode` (shared table) → `bridge_run_write`; pump → `bridge_feed_delta` → `vte_terminal_feed` |
 | Select / copy / paste | native VTE selection + Ctrl+Shift+C/V + right-click menu |
 | Scroll | VTE scrollback capped at 10 000 lines, in a `GtkScrolledWindow` |
-| Search / filter | sidebar `GtkSearchEntry` filters rows; Ctrl+F find bar via `VteRegex` search |
-| History | rows show project/harness/age, restored every launch; per-run VTE scrollback |
-| Theme | System/Dark/Light (`AdwStyleManager` + VTE palette), plain-file pref, no GSettings schema |
-| Persistence | Save button / Ctrl+S / close hook → `bridge_core_save` |
+| Search / filter | sidebar `GtkSearchEntry` writes the core filter (`bridge_set_filter`), rows match via `bridge_row_matches`; Ctrl+F find bar via `VteRegex` search |
+| History | rows show glyph + project/harness/age (core strings), restored every launch; ended rows offer restart inline |
+| Theme | follows the system appearance (`AdwStyleManager` default + VTE palette, no manual override, no GSettings schema) |
+| Persistence | automatic: throttled pump autosave + close hook → `bridge_core_save` (no Save button) |
 
 ## Notes
 
 - The core owns its emulator; the VTE widget owns a second one fed with
-  snapshot deltas (the core reconciler in `src/shell_shared.rs`, bound
-  as `am_feed_delta`; the roster filter and age label come from the
-  same module via `am_roster_matches` / `am_relative_age`).
-  No PTY is ever spawned inside VTE: typed keys are shell-encoded and
+  snapshot deltas (`bridge_feed_delta`, the shared reconciler — the old
+  per-shell `src/feed.c` port is deleted).
+  No PTY is ever spawned inside VTE: typed keys are core-encoded and
   forwarded, echoed output arrives via the pump. Exactly one line
   discipline (the core's) exists, so nothing double-echoes.
-- The shell's own key encoding sends Return as CR, BackSpace as DEL,
-  arrows/Home/End/navigation as xterm sequences, Ctrl+letter as control
-  codes (Ctrl+C interrupts the child); Ctrl+Shift+C/V stay with VTE for
-  copy/paste. Window resizes report the grid back via `bridge_resize`.
+- Key encoding is the shared core table (`bridge_key_encode`): Return is
+  CR, BackSpace is DEL, arrows/Home/End/navigation are xterm sequences,
+  Ctrl+letter are control codes (Ctrl+C interrupts the child);
+  Ctrl+Shift+C/V stay with VTE for copy/paste. Window resizes report the
+  grid back via `bridge_run_resize` (every attached run).
 - Spawning runs the effective CLI (last-used, configured default, or
-  first autodetected); without any CLI on PATH the shell toasts the
-  core's error message.
+  first autodetected, with the stored per-agent flags — the core loads
+  the user config, so native spawns honor it); without any CLI on PATH
+  the shell toasts the core's error message.
 - This directory must stay free of the macOS GUI framework in code and
   prose alike (CI enforces it with a literal grep gate): the Linux shell
   binds the C ABI only.

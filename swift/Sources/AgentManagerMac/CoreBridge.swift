@@ -4,6 +4,10 @@ import Foundation
 // contract is `include/agent_manager.h` at the repo root; these
 // signatures must match it exactly (name, arity, and C type mapping:
 // `size_t` -> Int, `_Bool` -> Bool, `char *` -> CChar pointer).
+//
+// Dumb-shell contract: the roster, selection, filter, live PTYs,
+// statuses, key table, feed reconciler, and persistence all live in the
+// core run registry — this shell only renders what the core reports.
 @_silgen_name("am_core_new") private func am_core_new() -> OpaquePointer?
 @_silgen_name("am_core_free") private func am_core_free(_ core: OpaquePointer?)
 @_silgen_name("am_core_save") private func am_core_save(_ core: OpaquePointer?) -> Int32
@@ -11,25 +15,6 @@ import Foundation
 @_silgen_name("am_session_json") private func am_session_json(
     _ core: OpaquePointer?, _ row: Int
 ) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("am_spawn") private func am_spawn(
-    _ core: OpaquePointer?,
-    _ out: UnsafeMutablePointer<OpaquePointer?>,
-    _ cwd: UnsafePointer<CChar>?,
-    _ cols: UInt16,
-    _ rows: UInt16
-) -> Int32
-// 2D-launch entry points (folder × CLI + yolo). `cli`/`cwd` are NULL
-// (inherit / effective default) or NUL-terminated UTF-8; `yolo` is
-// tri-state (1 = force on once, -1 = force off once, 0 = config default).
-@_silgen_name("am_spawn_launch") private func am_spawn_launch(
-    _ core: OpaquePointer?,
-    _ out: UnsafeMutablePointer<OpaquePointer?>,
-    _ cli: UnsafePointer<CChar>?,
-    _ cwd: UnsafePointer<CChar>?,
-    _ yolo: Int32,
-    _ cols: UInt16,
-    _ rows: UInt16
-) -> Int32
 // Owned JSON of the autodetected CLI catalog ([{id,program,path,
 // available}]) and of the folder recents ([String], MRU-first).
 @_silgen_name("am_clis_json") private func am_clis_json() -> UnsafeMutablePointer<CChar>?
@@ -42,31 +27,122 @@ import Foundation
     _ core: OpaquePointer?,
     _ cli: UnsafePointer<CChar>?
 ) -> UnsafeMutablePointer<CChar>?
-// Record a confirmed FFI-side launch (last-used CLI + folder MRU).
-@_silgen_name("am_note_launch") private func am_note_launch(
-    _ core: OpaquePointer?,
-    _ cli: UnsafePointer<CChar>?,
-    _ cwd: UnsafePointer<CChar>?
-) -> Int32
-@_silgen_name("am_pump") private func am_pump(_ pty: OpaquePointer?) -> Bool
-@_silgen_name("am_write") private func am_write(
-    _ pty: OpaquePointer?, _ data: UnsafePointer<UInt8>?, _ len: Int
-) -> Int32
-@_silgen_name("am_resize") private func am_resize(
-    _ pty: OpaquePointer?, _ cols: UInt16, _ rows: UInt16
-)
-@_silgen_name("am_screen_text") private func am_screen_text(
-    _ pty: OpaquePointer?
-) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("am_screen_text_free") private func am_screen_text_free(
     _ s: UnsafeMutablePointer<CChar>?
 )
-@_silgen_name("am_spans_json") private func am_spans_json(
-    _ pty: OpaquePointer?
-) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("am_status") private func am_status(
     _ core: OpaquePointer?, _ row: Int
 ) -> Int32
+// Run registry: spawn/restart/close/pump/write/resize/screen/exit by row
+// id, plus the shared live-count/cap/quit-confirm gates.
+@_silgen_name("am_max_runs") private func am_max_runs() -> Int
+@_silgen_name("am_live_count") private func am_live_count(
+    _ core: OpaquePointer?
+) -> Int
+@_silgen_name("am_is_live") private func am_is_live(
+    _ core: OpaquePointer?, _ id: UnsafePointer<CChar>?
+) -> Bool
+@_silgen_name("am_pump_all") private func am_pump_all(
+    _ core: OpaquePointer?
+) -> Bool
+@_silgen_name("am_run_spawn") private func am_run_spawn(
+    _ core: OpaquePointer?,
+    _ cli: UnsafePointer<CChar>?,
+    _ cwd: UnsafePointer<CChar>?,
+    _ yolo: Int32,
+    _ cols: UInt16,
+    _ rows: UInt16,
+    _ idOut: UnsafeMutablePointer<CChar>?,
+    _ idCap: Int
+) -> Int32
+@_silgen_name("am_run_restart") private func am_run_restart(
+    _ core: OpaquePointer?,
+    _ id: UnsafePointer<CChar>?,
+    _ cols: UInt16,
+    _ rows: UInt16
+) -> Int32
+@_silgen_name("am_run_close") private func am_run_close(
+    _ core: OpaquePointer?,
+    _ id: UnsafePointer<CChar>?
+) -> Int32
+@_silgen_name("am_needs_quit_confirm") private func am_needs_quit_confirm(
+    _ core: OpaquePointer?
+) -> Bool
+@_silgen_name("am_run_pump") private func am_run_pump(
+    _ core: OpaquePointer?, _ id: UnsafePointer<CChar>?
+) -> Bool
+@_silgen_name("am_run_write") private func am_run_write(
+    _ core: OpaquePointer?,
+    _ id: UnsafePointer<CChar>?,
+    _ data: UnsafePointer<UInt8>?,
+    _ len: Int
+) -> Int32
+@_silgen_name("am_run_resize") private func am_run_resize(
+    _ core: OpaquePointer?,
+    _ id: UnsafePointer<CChar>?,
+    _ cols: UInt16,
+    _ rows: UInt16
+)
+@_silgen_name("am_run_screen_text") private func am_run_screen_text(
+    _ core: OpaquePointer?, _ id: UnsafePointer<CChar>?
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_run_spans_json") private func am_run_spans_json(
+    _ core: OpaquePointer?, _ id: UnsafePointer<CChar>?
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_run_exited") private func am_run_exited(
+    _ core: OpaquePointer?, _ id: UnsafePointer<CChar>?
+) -> Bool
+// Shared shell helpers: key table, feed reconciler, SGR renderer,
+// preview, yolo, age, glyphs, headers, sidebar clamp, filter/selection.
+@_silgen_name("am_key_encode") private func am_key_encode(
+    _ key: UnsafePointer<CChar>?,
+    _ keyChar: UnsafePointer<CChar>?,
+    _ ctrl: Int32,
+    _ alt: Int32,
+    _ bytesOut: UnsafeMutablePointer<UInt8>?,
+    _ cap: Int
+) -> Int32
+@_silgen_name("am_feed_delta") private func am_feed_delta(
+    _ old: UnsafePointer<CChar>?, _ new: UnsafePointer<CChar>?
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_ansi_render") private func am_ansi_render(
+    _ json: UnsafePointer<CChar>?
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_spawn_preview") private func am_spawn_preview(
+    _ cli: UnsafePointer<CChar>?,
+    _ folder: UnsafePointer<CChar>?,
+    _ yolo: Int32
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_yolo_value") private func am_yolo_value(
+    _ selected: Int32
+) -> Int32
+@_silgen_name("am_age_string") private func am_age_string(
+    _ nowUnix: Int64, _ thenUnix: Int64
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_status_glyph") private func am_status_glyph(
+    _ code: Int32
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_section_title") private func am_section_title(
+    _ code: Int32
+) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("am_clamp_sidebar") private func am_clamp_sidebar(
+    _ px: Double
+) -> Double
+@_silgen_name("am_row_matches") private func am_row_matches(
+    _ core: OpaquePointer?, _ row: Int, _ query: UnsafePointer<CChar>?
+) -> Bool
+@_silgen_name("am_set_filter") private func am_set_filter(
+    _ core: OpaquePointer?, _ query: UnsafePointer<CChar>?
+)
+@_silgen_name("am_selected") private func am_selected(
+    _ core: OpaquePointer?
+) -> Int
+@_silgen_name("am_select") private func am_select(
+    _ core: OpaquePointer?, _ row: Int
+)
+@_silgen_name("am_select_step") private func am_select_step(
+    _ core: OpaquePointer?, _ forward: Int32
+)
 @_silgen_name("am_last_error") private func am_last_error() -> UnsafePointer<CChar>
 @_silgen_name("am_pty_free") private func am_pty_free(_ pty: OpaquePointer?)
 
@@ -165,44 +241,196 @@ final class Core {
 
     func status(_ row: Int) -> Int32 { am_status(handle, row) }
 
+    /// Persistence is automatic (throttled pump autosave + quit hook):
+    /// no manual Save button in any shell.
     func save() throws {
         if am_core_save(handle) != 0 {
             throw CoreError.save(message: Self.lastError())
         }
     }
 
-    func spawn(cols: Int, rows: Int) throws -> Pty {
-        var out: OpaquePointer?
-        let rc = am_spawn(
-            handle, &out, nil,
-            UInt16(clamping: cols), UInt16(clamping: rows)
-        )
-        guard rc == 0, let handle = out else {
-            throw CoreError.spawn(message: Self.lastError())
-        }
-        return Pty(handle: handle)
+    // MARK: - Run registry (dumb-shell contract)
+
+    /// Shared live-run ceiling (was hard-coded per shell).
+    static var maxRuns: Int { am_max_runs() }
+
+    /// Live (attached) run count.
+    var liveCount: Int { am_live_count(handle) }
+
+    /// True when the row id owns a live PTY in the core registry.
+    func isLive(_ id: String) -> Bool {
+        id.withCString { am_is_live(handle, $0) }
     }
 
-    /// 2D-launch spawn (folder × CLI + yolo). `cli` nil/empty repeats the
-    /// core's effective default (last-used, configured, autodetected);
-    /// `cwd` nil inherits; `yolo` is tri-state (1 = force on once,
-    /// -1 = force off once, 0 = per-agent config default). Callers
-    /// record confirmed picker launches with `noteLaunch` so repeat-last
-    /// memory stays fresh.
-    func spawnLaunch(cli: String?, cwd: String?, yolo: Int32, cols: Int, rows: Int) throws -> Pty {
-        var out: OpaquePointer?
+    /// Pump every live run (statuses/links refresh + re-sort inside).
+    /// Returns true when anything visible changed — the roster/status
+    /// repaint gate.
+    func pumpAll() -> Bool { am_pump_all(handle) }
+
+    /// Spawn a 2D-launch session attached to a new roster row, under the
+    /// shared cap. Returns the row id; throws with the core message
+    /// (cap refusal names per-run close).
+    func runSpawn(cli: String?, cwd: String?, yolo: Int32, cols: Int, rows: Int) throws -> String {
+        var idBuf = [CChar](repeating: 0, count: 256)
         let rc = withOptionalCString(cli) { cliPtr in
             withOptionalCString(cwd) { cwdPtr in
-                am_spawn_launch(
-                    handle, &out, cliPtr, cwdPtr, yolo,
-                    UInt16(clamping: cols), UInt16(clamping: rows)
+                am_run_spawn(
+                    handle, cliPtr, cwdPtr, yolo,
+                    UInt16(clamping: cols), UInt16(clamping: rows),
+                    &idBuf, idBuf.count
                 )
             }
         }
-        guard rc == 0, let handle = out else {
+        guard rc == 0 else {
             throw CoreError.spawn(message: Self.lastError())
         }
-        return Pty(handle: handle)
+        return String(cString: idBuf)
+    }
+
+    /// Restart an ended run / resume a historic entry on the same id.
+    func runRestart(id: String, cols: Int, rows: Int) throws {
+        let rc = id.withCString {
+            am_run_restart(
+                handle, $0,
+                UInt16(clamping: cols), UInt16(clamping: rows)
+            )
+        }
+        if rc != 0 {
+            throw CoreError.spawn(message: Self.lastError())
+        }
+    }
+
+    /// Close (kill) a run: drops its PTY, removes its entry.
+    func runClose(id: String) {
+        id.withCString { _ = am_run_close(handle, $0) }
+    }
+
+    /// True when quitting deserves a confirmation step.
+    var needsQuitConfirm: Bool { am_needs_quit_confirm(handle) }
+
+    /// Pump one attached run by id.
+    func runPump(id: String) -> Bool {
+        id.withCString { am_run_pump(handle, $0) }
+    }
+
+    /// Forward key-encoded bytes to an attached run's child.
+    func runWrite(id: String, bytes: [UInt8]) throws {
+        let rc = id.withCString { idPtr in
+            bytes.withUnsafeBufferPointer { buf in
+                am_run_write(handle, idPtr, buf.baseAddress, buf.count)
+            }
+        }
+        if rc != 0 {
+            throw CoreError.write(message: Self.lastError())
+        }
+    }
+
+    func runResize(id: String, cols: Int, rows: Int) {
+        id.withCString {
+            am_run_resize(
+                handle, $0,
+                UInt16(clamping: cols), UInt16(clamping: rows)
+            )
+        }
+    }
+
+    /// Owned plain-text snapshot of an attached run's screen.
+    func runScreenText(id: String) -> String? {
+        id.withCString { copyOwnedString(am_run_screen_text(handle, $0)) }
+    }
+
+    /// Owned styled-span snapshot of an attached run's screen.
+    func runSpansJson(id: String) -> String? {
+        id.withCString { copyOwnedString(am_run_spans_json(handle, $0)) }
+    }
+
+    func runExited(id: String) -> Bool {
+        id.withCString { am_run_exited(handle, $0) }
+    }
+
+    // MARK: - Shared shell helpers (one copy in the core)
+
+    /// Encode one logical keypress via the shared key table. Returns the
+    /// child bytes, or nil when the native control keeps the key.
+    static func keyEncode(key: String, keyChar: String?, ctrl: Bool, alt: Bool) -> [UInt8]? {
+        var buf = [UInt8](repeating: 0, count: 16)
+        let n = key.withCString { keyPtr in
+            withOptionalCString(keyChar) { charPtr in
+                am_key_encode(
+                    keyPtr, charPtr,
+                    ctrl ? 1 : 0, alt ? 1 : 0,
+                    &buf, buf.count
+                )
+            }
+        }
+        guard n > 0 else { return nil }
+        return Array(buf.prefix(Int(n)))
+    }
+
+    /// Feed text advancing a view showing `old` to also show `new`.
+    static func feedDelta(old: String, new: String) -> String? {
+        old.withCString { oldPtr in
+            new.withCString { newPtr in
+                copyOwnedString(am_feed_delta(oldPtr, newPtr))
+            }
+        }
+    }
+
+    /// Render a spans-JSON document to an SGR stream (nil = fall back to
+    /// the plain-text snapshot).
+    static func ansiRender(json: String) -> String? {
+        json.withCString { copyOwnedString(am_ansi_render($0)) }
+    }
+
+    /// One-line spawn preview (`runs: muse in ~/api + yolo`).
+    static func spawnPreview(cli: String?, folder: String?, yolo: Int32) -> String {
+        let text = withOptionalCString(cli) { cliPtr in
+            withOptionalCString(folder) { folderPtr in
+                copyOwnedString(am_spawn_preview(cliPtr, folderPtr, yolo))
+            }
+        }
+        return text ?? "runs: muse"
+    }
+
+    /// Tri-state yolo int from a segmented-control index.
+    static func yoloValue(_ selected: Int32) -> Int32 {
+        am_yolo_value(selected)
+    }
+
+    /// Human age for `lastActive` (`just now`, `5m ago`, ...).
+    static func ageString(now: Int64, then: Int64) -> String {
+        copyOwnedString(am_age_string(now, then)) ?? "just now"
+    }
+
+    /// Non-color status marker for a status code.
+    static func statusGlyph(_ code: Int32) -> String {
+        copyOwnedString(am_status_glyph(code)) ?? "○"
+    }
+
+    /// Section header for a status code.
+    static func sectionTitle(_ code: Int32) -> String {
+        copyOwnedString(am_section_title(code)) ?? ""
+    }
+
+    /// True when roster row `row` passes the sidebar filter.
+    func rowMatches(_ row: Int, query: String) -> Bool {
+        query.withCString { am_row_matches(handle, row, $0) }
+    }
+
+    /// Replace the title filter (snaps selection into the matches).
+    func setFilter(_ query: String?) {
+        withOptionalCString(query) { am_set_filter(handle, $0) }
+    }
+
+    /// Selected roster row index (the shell highlights this row).
+    var selected: Int { am_selected(handle) }
+
+    /// Move selection to a row (clamped into range).
+    func select(_ row: Int) { am_select(handle, row) }
+
+    /// Step selection next/prev within the filter matches.
+    func selectStep(forward: Bool) {
+        am_select_step(handle, forward ? 1 : 0)
     }
 
     /// Autodetected CLI catalog ([CliRow] in core order). Decodes to []
@@ -227,23 +455,15 @@ final class Core {
 
     /// Harness id of the effective CLI for `cli` (explicit id, or the
     /// core's resolution for nil): what a repeat-last spawn will run.
-    /// Falls back to "muse" when the core cannot answer.
+    /// Falls back to "muse" when the core cannot answer. Repeat-last and
+    /// picker spawns go through `runSpawn`, which records launch memory
+    /// in the core — no separate note step.
     func effectiveCli(_ cli: String? = nil) -> String {
         let text = withOptionalCString(cli) { cliPtr in
             copyOwnedString(am_effective_cli(handle, cliPtr))
         }
         guard let text, !text.isEmpty else { return "muse" }
         return text
-    }
-
-    /// Record a confirmed picker launch (last-used CLI + folder MRU).
-    /// Best effort: a failure only means repeat-last goes stale.
-    func noteLaunch(cli: String?, cwd: String?) {
-        withOptionalCString(cli) { cliPtr in
-            withOptionalCString(cwd) { cwdPtr in
-                _ = am_note_launch(handle, cliPtr, cwdPtr)
-            }
-        }
     }
 }
 
@@ -257,44 +477,4 @@ private func withOptionalCString<T>(
         return try body(nil)
     }
     return try value.withCString { try body($0) }
-}
-
-/// Owned wrapper around one live session PTY.
-final class Pty {
-    fileprivate let handle: OpaquePointer
-
-    init(handle: OpaquePointer) { self.handle = handle }
-
-    deinit { am_pty_free(handle) }
-
-    /// Feed queued output into the core emulator. Returns true when the
-    /// screen may have changed (the shell's only repaint gate).
-    func pump() -> Bool { am_pump(handle) }
-
-    /// Forward key-encoded bytes to the child.
-    func write(_ bytes: [UInt8]) throws {
-        let rc = bytes.withUnsafeBufferPointer { buf in
-            am_write(handle, buf.baseAddress, buf.count)
-        }
-        if rc != 0 {
-            throw CoreError.write(message: Core.lastError())
-        }
-    }
-
-    func resize(cols: Int, rows: Int) {
-        am_resize(handle, UInt16(clamping: cols), UInt16(clamping: rows))
-    }
-
-    /// Owned plain-text snapshot of the emulated screen.
-    func screenText() -> String? {
-        copyOwnedString(am_screen_text(handle))
-    }
-
-    /// Owned styled-span snapshot of the emulated screen (`am_spans_json`:
-    /// one array per grid row of `{text,fg,bg,bold,italic,underline}`;
-    /// `fg`/`bg` are `[r,g,b]` or null). Nil on null handle or an
-    /// unreachable NUL-byte failure.
-    func spansJson() -> String? {
-        copyOwnedString(am_spans_json(handle))
-    }
 }

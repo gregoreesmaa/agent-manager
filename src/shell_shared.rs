@@ -611,6 +611,501 @@ pub fn relative_age(now_secs: i64, then_secs: i64) -> String {
     }
 }
 
+use std::collections::HashMap;
+
+use crate::app::{attention_count, short_cwd, visible_links, ChatSession, Status};
+use crate::config::{EffectiveTheme, OsAppearance, ThemePreference};
+use crate::keys::{keystroke_to_pty, KeyPress};
+use crate::launch::{push_recent_folder, resolve_effective_cli, LaunchSelection, YoloChoice};
+use crate::{app, launch};
+
+/// Live-run ceiling shared by every shell (was `gui::runs::MAX_LIVE_RUNS`,
+/// hard-coded `10` in two native shells, unbounded on macOS).
+pub const MAX_LIVE_RUNS: usize = 10;
+
+/// Pump cadence shared by every shell (50 ms, matching the gpui loop and
+/// all three native tickers).
+pub const PUMP_INTERVAL_MS: u64 = 50;
+
+/// Bounds for the resizable sidebar (Windows grip + GTK split view share
+/// these; SwiftUI uses the system default sidebar width).
+pub const SIDEBAR_MIN_PX: f64 = 220.0;
+pub const SIDEBAR_MAX_PX: f64 = 480.0;
+/// Keyboard nudge step for the resize grip.
+pub const SIDEBAR_KEY_STEP_PX: f64 = 8.0;
+
+/// Clamp a sidebar width into range. Pure so every shell shares it.
+pub fn clamp_sidebar_width(px: f64) -> f64 {
+    px.clamp(SIDEBAR_MIN_PX, SIDEBAR_MAX_PX)
+}
+
+/// Roster status code crossing FFI as a plain int (mirrors `am_status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowStatus {
+    Attention,
+    Idle,
+    Working,
+}
+
+impl RowStatus {
+    /// Code used across the C ABI (`am_status`).
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Attention => 0,
+            Self::Idle => 1,
+            Self::Working => 2,
+        }
+    }
+
+    pub fn from_code(code: i32) -> Self {
+        match code {
+            0 => Self::Attention,
+            2 => Self::Working,
+            _ => Self::Idle,
+        }
+    }
+}
+
+impl From<Status> for RowStatus {
+    fn from(s: Status) -> Self {
+        match s {
+            Status::Attention => Self::Attention,
+            Status::Idle => Self::Idle,
+            Status::Working => Self::Working,
+        }
+    }
+}
+
+impl From<RowStatus> for Status {
+    fn from(s: RowStatus) -> Self {
+        match s {
+            RowStatus::Attention => Self::Attention,
+            RowStatus::Idle => Self::Idle,
+            RowStatus::Working => Self::Working,
+        }
+    }
+}
+
+/// Section header text for a status bucket (was three divergent copies:
+/// Linux `"Needs input"/"Active"/"Idle"`, macOS
+/// `"Needs input"/"Working"/"Idle"`, Windows group order Needs/Idle/Working).
+pub fn section_title(status: RowStatus) -> &'static str {
+    match status {
+        RowStatus::Attention => "Needs input",
+        RowStatus::Idle => "Idle",
+        RowStatus::Working => "Working",
+    }
+}
+
+/// Non-color status marker for a row. Every shell shows these glyphs (plus
+/// its native accent color when available); no shell may use color alone.
+pub fn status_glyph(status: RowStatus) -> &'static str {
+    match status {
+        RowStatus::Attention => "●",
+        RowStatus::Working => "◐",
+        RowStatus::Idle => "○",
+    }
+}
+
+/// One display-ready roster row: everything a shell needs to render a list
+/// entry, computed from a [`ChatSession`] plus its live-ness. No toolkit
+/// types: shells map these fields onto native labels/badges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterRow {
+    pub id: String,
+    pub title: String,
+    pub project: String,
+    pub harness: String,
+    pub status: RowStatus,
+    /// `true` once this shell attached a live PTY (the core run registry
+    /// knows; see [`crate::runs`]).
+    pub live: bool,
+    /// Short folder tail for the detail line (`repo/sub` or `ÃƒÂ¢?â€šÂ¬?Â¦` cut).
+    pub folder_short: String,
+    /// `project Ãƒâ€š?Â· harness Ãƒâ€š?Â· <age>`, the shared subtitle/detail format.
+    pub detail: String,
+    /// Total parsed-link count (PR + related), for the `N links` badge.
+    pub link_count: usize,
+    /// Links folded behind the `N more` disclosure.
+    pub hidden_links: usize,
+    /// `true` when the row still matches the sidebar filter.
+    pub visible: bool,
+}
+
+/// Build the display row for one session.
+pub fn roster_row(session: &ChatSession, live: bool, filter: &str, now: i64) -> RosterRow {
+    let status = RowStatus::from(session.status);
+    let (_, hidden_pr) = visible_links(&session.pr_links);
+    let (_, hidden_rel) = visible_links(&session.related_links);
+    let folder_short = session.cwd.as_deref().map(short_cwd).unwrap_or_default();
+    let detail = format!(
+        "{} Ãƒâ€š?Â· {} Ãƒâ€š?Â· {}",
+        session.project,
+        session.harness,
+        relative_age(now, session.last_active)
+    );
+    RosterRow {
+        id: session.id.clone(),
+        title: session.title.clone(),
+        project: session.project.clone(),
+        harness: session.harness.clone(),
+        status,
+        live,
+        folder_short,
+        detail,
+        link_count: session.pr_links.len() + session.related_links.len(),
+        hidden_links: hidden_pr + hidden_rel,
+        visible: row_matches_filter(session, filter),
+    }
+}
+
+/// Case-insensitive substring match over title/project/id on a session ÃƒÂ¢?â€šÂ¬?â‚¬Â
+/// the single sidebar-filter rule over [`ChatSession`]. (The
+/// title/project/id/query form lives in [`roster_matches`] above.)
+pub fn row_matches_filter(session: &ChatSession, query: &str) -> bool {
+    roster_matches(&session.title, &session.project, &session.id, query)
+}
+
+/// Group row indices into urgency sections: needs-input, working, idle ÃƒÂ¢?â€šÂ¬?â‚¬Â
+/// then history (rows with no live PTY) last. Returns `(header, indices)`
+/// pairs, skipping nothing: empty groups still render their header so the
+/// order is stable. This is the single rule replacing the Linux sort-fn,
+/// the macOS section builder, and the Windows group order.
+pub fn group_sections(
+    sessions: &[ChatSession],
+    live: &dyn Fn(&str) -> bool,
+) -> Vec<(String, Vec<usize>)> {
+    let mut needs = Vec::new();
+    let mut working = Vec::new();
+    let mut idle = Vec::new();
+    let mut history = Vec::new();
+    // Recent-first within a group (mirrors the Linux comparator).
+    let mut order: Vec<usize> = (0..sessions.len()).collect();
+    order.sort_by(|&a, &b| {
+        sessions[b]
+            .last_active
+            .cmp(&sessions[a].last_active)
+            .then_with(|| sessions[a].title.cmp(&sessions[b].title))
+    });
+    for i in order {
+        if !live(&sessions[i].id) {
+            history.push(i);
+            continue;
+        }
+        match sessions[i].status {
+            Status::Attention => needs.push(i),
+            Status::Working => working.push(i),
+            Status::Idle => idle.push(i),
+        }
+    }
+    vec![
+        (
+            format!("{} ({})", section_title(RowStatus::Attention), needs.len()),
+            needs,
+        ),
+        (
+            format!("{} ({})", section_title(RowStatus::Working), working.len()),
+            working,
+        ),
+        (
+            format!("{} ({})", section_title(RowStatus::Idle), idle.len()),
+            idle,
+        ),
+        (format!("History ({})", history.len()), history),
+    ]
+}
+
+/// Number of rows needing input ÃƒÂ¢?â€šÂ¬?â‚¬Â the header badge count.
+pub fn needs_input_count(sessions: &[ChatSession]) -> usize {
+    attention_count(sessions)
+}
+
+// --- Key encoding -----------------------------------------------------------
+
+/// What a shell key event means after core encoding: forward these bytes
+/// to the child via `am_write`, or keep the key for the native control.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyDecision {
+    /// Forward these bytes to the child.
+    Forward(Vec<u8>),
+    /// Leave to the native control (copy/paste, modifiers, media keys).
+    Keep,
+}
+
+/// Encode one logical keypress into child bytes, using the same table as
+/// the gpui shell (`crate::keys::keystroke_to_pty`). Shells translate their
+/// native key event into `(key, key_char, ctrl, alt)` and call this ÃƒÂ¢?â€šÂ¬?â‚¬Â
+/// no per-shell key tables anymore.
+pub fn encode_key(key: &str, key_char: Option<&str>, ctrl: bool, alt: bool) -> KeyDecision {
+    // Reserve rule (was duplicated in Linux `on_key_pressed` and Windows
+    // `keep_for_control`): Ctrl+Shift+C / Ctrl+Shift+V stay with the
+    // native control for copy/paste. Shells pass `key` through with the
+    // shift state folded in: "C"/"V" with ctrl already consumed these.
+    let press = KeyPress {
+        key,
+        key_char,
+        ctrl,
+        alt,
+    };
+    match keystroke_to_pty(&press) {
+        Some(bytes) => KeyDecision::Forward(bytes),
+        None => KeyDecision::Keep,
+    }
+}
+
+/// Ctrl+Shift+C / Ctrl+Shift+V stay with the native text control for
+/// copy/paste and must never reach the encoder. Shells that cannot
+/// express the reserve inside `encode_key` (Linux VTE, WinUI TextBox)
+/// gate on this first.
+pub fn keep_for_control(key: &str, ctrl: bool, shift: bool) -> bool {
+    ctrl && shift && (key.eq_ignore_ascii_case("c") || key.eq_ignore_ascii_case("v"))
+}
+
+// --- Styled-span ÃƒÂ¢?â‚¬Â ?â‚¬â„¢ SGR renderer ----------------------------------------------
+
+/// One styled run inside a snapshot row, matching the core's
+/// `am_spans_json` shape (`{text,fg,bg,bold,italic,underline}` with
+/// `fg`/`bg` as `[r,g,b]` or null). Ports Swift `AnsiFeed`: every span
+/// carries a complete SGR sequence (reset + attributes), so any fragment
+/// of a render is self-contained and `feed_delta` works on rendered
+/// strings unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnsiSpan {
+    pub text: String,
+    pub fg: Option<(u8, u8, u8)>,
+    pub bg: Option<(u8, u8, u8)>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
+fn sgr_for(span: &AnsiSpan) -> String {
+    let mut params = vec!["0".to_string()];
+    if span.bold {
+        params.push("1".to_string());
+    }
+    if span.italic {
+        params.push("3".to_string());
+    }
+    if span.underline {
+        params.push("4".to_string());
+    }
+    if let Some((r, g, b)) = span.fg {
+        params.push(format!("38;2;{r};{g};{b}"));
+    }
+    if let Some((r, g, b)) = span.bg {
+        params.push(format!("48;2;{r};{g};{b}"));
+    }
+    format!("\x1b[{}m", params.join(";"))
+}
+
+/// Render decoded snapshot rows (one span vec per grid row) to an SGR
+/// stream with `\n` row separators (the delta reconciler still normalizes
+/// those to CRLF before feeding the view).
+pub fn render_ansi(rows: &[Vec<AnsiSpan>]) -> String {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|s| format!("{}{}", sgr_for(s), s.text))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn rgb_value(v: &serde_json::Value) -> Option<(u8, u8, u8)> {
+    let a = v.as_array()?;
+    if a.len() != 3 {
+        return None;
+    }
+    Some((
+        a[0].as_u64()? as u8,
+        a[1].as_u64()? as u8,
+        a[2].as_u64()? as u8,
+    ))
+}
+
+/// Render an `am_spans_json` document, or `None` when it does not decode
+/// (the pump then falls back to the plain-text snapshot).
+pub fn render_ansi_json(json: &str) -> Option<String> {
+    let rows: Vec<Vec<serde_json::Value>> = serde_json::from_str(json).ok()?;
+    let mut out: Vec<Vec<AnsiSpan>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut spans = Vec::with_capacity(row.len());
+        for s in row {
+            let text = s.get("text")?.as_str()?.to_string();
+            spans.push(AnsiSpan {
+                text,
+                fg: s.get("fg").and_then(rgb_value),
+                bg: s.get("bg").and_then(rgb_value),
+                bold: s.get("bold").and_then(|v| v.as_bool()).unwrap_or(false),
+                italic: s.get("italic").and_then(|v| v.as_bool()).unwrap_or(false),
+                underline: s
+                    .get("underline")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            });
+        }
+        out.push(spans);
+    }
+    Some(render_ansi(&out))
+}
+
+// --- Picker helpers ----------------------------------------------------------
+
+/// The 2D new-session preview line (`runs: muse in ~/api + yolo`).
+/// Shells render their folder/CLI/yolo widgets natively and call this for
+/// the footer + the repeat-last toast ÃƒÂ¢?â€šÂ¬?â‚¬Â one copy instead of four.
+pub fn spawn_preview(cli: &str, folder: &str, yolo_value: i32) -> String {
+    let cli = if cli.is_empty() { "muse" } else { cli };
+    let folder = folder.trim();
+    let tag = if yolo_value > 0 {
+        " + yolo"
+    } else if yolo_value < 0 {
+        " (yolo off)"
+    } else {
+        ""
+    };
+    if folder.is_empty() {
+        format!("runs: {cli}{tag}")
+    } else {
+        format!("runs: {cli} in {folder}{tag}")
+    }
+}
+
+/// Blank/whitespace folder means inherit (`None`); otherwise the trimmed
+/// folder.
+pub fn effective_folder(folder: &str) -> Option<String> {
+    let t = folder.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+/// Segmented-control index ÃƒÂ¢?â‚¬Â ?â‚¬â„¢ tri-state yolo int for `am_spawn_launch`
+/// (1 = force on, 2 = force off, else config default).
+pub fn yolo_value(selected: i32) -> i32 {
+    if selected == 1 {
+        1
+    } else if selected == 2 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Resolve the effective CLI label for a repeat-last spawn (explicit id,
+/// else the core's last-used / configured / autodetected resolution).
+pub fn effective_cli_label(
+    explicit: Option<&str>,
+    last_used: Option<&str>,
+    default_cli: Option<&str>,
+    catalog: &[launch::AvailableCli],
+) -> String {
+    resolve_effective_cli(
+        explicit.filter(|s| !s.is_empty()),
+        last_used,
+        default_cli,
+        catalog,
+    )
+}
+
+/// Confirm a picker into a resolved [`LaunchSelection`]: blank folder
+/// inherits (`None`, `~` expands), yolo resolves against the per-agent
+/// config default.
+pub fn confirm_pick(
+    cli: &str,
+    folder: &str,
+    yolo: YoloChoice,
+    yolo_default: bool,
+) -> LaunchSelection {
+    let cwd = effective_folder(folder).and_then(|f| app::expand_cwd_input(&f));
+    LaunchSelection::new(cli.to_string(), cwd, yolo.resolve(yolo_default))
+}
+
+/// Record a confirmed launch into MRU memory (last-used CLI + folder
+/// recents): pure, shared by shells that keep their own config copy.
+pub fn note_launch_memory(
+    recents: &mut Vec<String>,
+    last_cli: &mut Option<String>,
+    cli: &str,
+    cwd: Option<&str>,
+) {
+    if !cli.is_empty() && launch::SUPPORTED_CLIS.contains(&cli) {
+        *last_cli = Some(cli.to_string());
+    }
+    if let Some(dir) = cwd {
+        push_recent_folder(recents, dir);
+    }
+}
+
+// --- Theme / appearance ------------------------------------------------------
+
+/// Resolve the configured theme choice + the live OS appearance to a
+/// concrete dark/light answer. The core equivalent of the removed per-shell
+/// theme pickers: shells follow the OS by default (no manual override
+/// chrome); where a shell still needs the resolved value it asks here.
+pub fn resolve_theme(pref: ThemePreference, appearance: OsAppearance) -> EffectiveTheme {
+    pref.resolve(appearance)
+}
+
+/// Map a shell's dark-mode bit onto the core appearance type.
+pub fn appearance_for(dark: bool) -> OsAppearance {
+    if dark {
+        OsAppearance::Dark
+    } else {
+        OsAppearance::Light
+    }
+}
+
+// --- Run-registry views ------------------------------------------------------
+
+/// Display snapshot of the core run registry for dumb shells: the rows in
+/// core order plus per-row live-ness. Shells render this and nothing else.
+pub struct RosterView {
+    pub rows: Vec<RosterRow>,
+    pub needs_input: usize,
+}
+
+pub fn roster_view(
+    sessions: &[ChatSession],
+    is_live: &dyn Fn(&str) -> bool,
+    filter: &str,
+) -> RosterView {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let rows = sessions
+        .iter()
+        .map(|s| roster_row(s, is_live(&s.id), filter, now))
+        .collect::<Vec<_>>();
+    RosterView {
+        needs_input: needs_input_count(sessions),
+        rows,
+    }
+}
+
+/// Live-map bookkeeping shared by shells that keep `HashMap<id, LivePty>`
+/// locally: cap check + eviction pick. The core registry (see
+/// [`crate::runs`]) owns this for FFI shells; local-map shells call these
+/// so the policy is still one copy.
+pub fn at_live_cap(live_count: usize) -> bool {
+    live_count >= MAX_LIVE_RUNS
+}
+
+/// Pick an eviction victim among exited runs: the stalest `last_output`
+/// first. `runs` maps id ÃƒÂ¢?â‚¬Â ?â‚¬â„¢ (exited, last_output_unix). `None` when every
+/// live run is still running (refuse, don't reap a live child).
+pub fn eviction_victim(runs: &HashMap<String, (bool, i64)>) -> Option<String> {
+    runs.iter()
+        .filter(|(_, (exited, _))| *exited)
+        .min_by_key(|(_, (_, last))| *last)
+        .map(|(id, _)| id.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

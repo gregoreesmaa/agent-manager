@@ -42,7 +42,8 @@
                  parity) with non-live history collapsed at the end; the
                  status line below the groups stays empty until a real
                  failure needs it. One shared SelectionChanged handler
-                 keeps a single selection across the four lists. -->
+                 keeps a single selection across the four lists (the
+                 selection itself lives in the core run registry). -->
             <Border Grid.Column="0"
                     Margin="12,0,0,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -85,6 +86,21 @@
                                                 Click="PickButton_Click">
                                     <MenuFlyoutItem.KeyboardAccelerators>
                                         <KeyboardAccelerator Modifiers="Control,Shift" Key="N"/>
+                                    </MenuFlyoutItem.KeyboardAccelerators>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutSeparator/>
+                                <MenuFlyoutItem Text="Restart selected run"
+                                                ToolTipService.ToolTip="Restart/resume the selected run (Ctrl+R)"
+                                                Click="RestartButton_Click">
+                                    <MenuFlyoutItem.KeyboardAccelerators>
+                                        <KeyboardAccelerator Modifiers="Control" Key="R"/>
+                                    </MenuFlyoutItem.KeyboardAccelerators>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Close selected run"
+                                                ToolTipService.ToolTip="Close the selected run (Ctrl+W)"
+                                                Click="CloseButton_Click">
+                                    <MenuFlyoutItem.KeyboardAccelerators>
+                                        <KeyboardAccelerator Modifiers="Control" Key="W"/>
                                     </MenuFlyoutItem.KeyboardAccelerators>
                                 </MenuFlyoutItem>
                             </MenuFlyout>
@@ -145,10 +161,11 @@
                             </Expander>
                         </StackPanel>
                     </ScrollViewer>
-                    <!-- Status line: failures (spawn, save, clipboard)
-                         must stay visible (fail-visible principle), so it
-                         lives at the sidebar bottom now that the terminal
-                         fills the right pane. -->
+                    <!-- Status line: stays empty until a real failure
+                         needs it (no idle banner). Failures (spawn,
+                         clipboard) must stay visible (fail-visible
+                         principle), so it lives at the sidebar bottom
+                         now that the terminal fills the right pane. -->
                     <TextBlock x:Name="StatusText"
                                Grid.Row="3"
                                Style="{StaticResource CaptionTextBlockStyle}"
@@ -232,7 +249,7 @@
                  full height of the right pane; no status label beneath.
                  With no live PTY selected the surface hides behind an
                  empty-state overlay (macOS parity): title + detail +
-                 one prominent spawn button instead of dead-end text. -->
+                 one prominent button instead of dead-end text. -->
             <Border Grid.Column="2"
                     Margin="12,0,12,12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -271,7 +288,7 @@
                         <Button x:Name="EmptyButton"
                                 Style="{StaticResource AccentButtonStyle}"
                                 HorizontalAlignment="Center"
-                                Click="NewButton_Click"/>
+                                Click="EmptyButton_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>

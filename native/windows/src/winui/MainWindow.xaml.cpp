@@ -1,37 +1,34 @@
 // Agent Manager — WinUI 3 shell over the core C ABI (issue #64).
 //
-// Third native shell after swift/ (#62) and native/linux/ (#63). Every
-// run feature goes through `core_bridge.h` (which wraps
-// `include/agent_manager.h`): the core owns the roster, the PTYs, and
-// the emulator; this shell owns WinUI controls.
+// Dumb renderer over the core run registry: the core owns the roster,
+// selection, filter, PTYs, statuses, key table, feed reconciler, and
+// persistence — this shell owns WinUI controls, event wiring, clipboard
+// access, and byte transport only.
 //
-// Epic DoD wiring (mirrors swift/README.md's table):
-//   roster      am_session_count + am_session_json at launch, am_status ticks;
-//               live runs grouped needs-input/working/idle (macOS parity),
-//               one shared selection across the group lists (#73); rows show
-//               age + link badges from the core (am_last_active /
-//               am_relative_age / am_link_count), filtered by
-//               am_roster_matches; no heading, no idle status line
-//   spawn       New Session button / Ctrl+N / empty-overlay button ->
-//               bridge_spawn_launch (repeat-last: null CLI/folder, zero
-//               yolo); picker button / Ctrl+Shift+N -> ContentDialog
-//               (folder x CLI + yolo) below
-//   converse    key encoding -> bridge_write; pump -> bridge_feed_delta
-//               (core reconciler) -> append
+// Parity wiring (same contract as the macOS/Linux shells):
+//   roster      core registry rows, grouped Needs input → Working →
+//               Idle → History, one shared selection across lists (#73)
+//   spawn       New Session button / Ctrl+N -> bridge_run_spawn
+//               (repeat-last: null CLI/folder, zero yolo); picker button /
+//               Ctrl+Shift+N -> ContentDialog (folder x CLI + yolo) below
+//   restart     Ctrl+R -> bridge_run_restart (same id, keeps title/links)
+//   close       Ctrl+W -> bridge_run_close + autosave (no confirm)
+//   converse    key event -> bridge_key_encode -> bridge_run_write;
+//               pump -> bridge_feed_delta -> append
 //   copy/paste  native TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via
-//               Clipboard -> bridge_write; Ctrl+C forwards ETX (interrupts)
+//               Clipboard -> bridge_run_write; Ctrl+C forwards ETX
 //   scroll      output TextBox in a ScrollViewer, per-run text retained
-//   search      sidebar search box filters every group
+//   search      sidebar search box (core-owned filter) filters every group
 //   history     collapsed group of rows with no live PTY, restored every
-//               launch; per-run output retained while the window lives
-//   persist     Ctrl+S / close hook -> bridge_core_save (no sidebar control)
+//               launch; ended rows offer restart inline
+//   persist     automatic (throttled pump autosave + close hook)
 //
 // ConPTY note: no console is ever created on the WinUI side. The core's
 // EmbeddedPty on Windows is ConPTY-backed (portable-pty uses the native
-// Console Pseudo-terminal API), so bridge_spawn IS the ConPTY spawn; the
-// WinUI surface renders core snapshots through feed deltas. Exactly one
-// line discipline (the core's) exists, so nothing double-echoes — the
-// same single-emulator rule as the Linux shell's "no PTY inside VTE".
+// Console Pseudo-terminal API), so bridge_run_spawn IS the ConPTY spawn;
+// the WinUI surface renders core snapshots through feed deltas. Exactly
+// one line discipline (the core's) exists, so nothing double-echoes —
+// the same single-emulator rule as the Linux shell's "no PTY inside VTE".
 
 #include "pch.h"
 #include "MainWindow.xaml.h"
@@ -40,11 +37,9 @@
 #endif
 
 #include "core_bridge.h"
-#include "terminal_keys.h"
 #include "json_mini.h"
 #include "picker.h"
 
-#include <ctime>
 #include <utility>
 
 using namespace winrt;
@@ -55,26 +50,30 @@ using namespace Windows::Foundation;
 
 namespace winrt::AgentManagerWinUI::implementation
 {
-    /* Roster/status refresh rides on the same 50ms pump tick as the
+    /* Dumb renderer over the core run registry: rows, selection, filter,
+     * live PTYs, statuses, links, key bytes, feed bytes, and persistence
+     * all come from the core — this shell owns WinUI controls, event
+     * wiring, clipboard access, and byte transport only.
+     *
+     * Roster/status refresh rides on the same 50ms pump tick as the
      * Swift and GTK shells. Fixed spawn grid: there is no backing
      * widget grid to measure (the surface is snapshot-fed), so spawns
-     * use the shared 80x24 default the macOS shell starts from. */
+     * and resizes use the classic 80x25. */
     constexpr int kPumpMs = 50;
     constexpr unsigned kCols = 80;
-    constexpr unsigned kRows = 24;
+    constexpr unsigned kRows = 25;
     /* Bounded per-run output (local-only trust + bounded growth: an
      * accumulate-forever buffer would leak memory over long runs). */
     constexpr std::size_t kShownCap = 100000;
-    /* Redraw marker prefixing core clear-and-replay feeds: must match
-     * the core's FEED_CLEAR (`shell_shared`), checked after every
-     * `bridge_feed_delta` below. */
-    constexpr const char *kFeedClear = "\x1b[2J\x1b[H";
     /* Resizable sidebar: the Thumb between the roster card and the
      * terminal card drives SidebarColumn (the XAML default is 320px;
      * clamped to the GTK shell's 220px floor and a 480px ceiling so
      * long titles stay glanceable). The width persists in
      * LocalSettings (local-only trust: plain local store, no
      * account, no sync). */
+    /* Shared sidebar bounds/step live in the core (`am_clamp_sidebar`
+     * + `bridge constants`); the XAML pins the same range declaratively.
+     * Local copies only feed the restore fallback below. */
     constexpr double kSidebarMin = 220.0;
     constexpr double kSidebarMax = 480.0;
     constexpr double kSidebarKeyStep = 8.0;
@@ -105,16 +104,13 @@ namespace winrt::AgentManagerWinUI::implementation
         return out;
     }
 
+    /* Non-color status marker via the core (single copy of the glyph
+     * rule: ●/◐/○, never color-only). */
     static hstring status_glyph(int st) {
-        switch (st) {
-        case AM_STATUS_ATTENTION:
-            return L"\u25cf "; /* ● needs input */
-        case AM_STATUS_WORKING:
-            return L"\u25d0 "; /* ◐ working */
-        case AM_STATUS_IDLE:
-        default:
-            return L"\u25cb "; /* ○ idle */
-        }
+        char *g = bridge_status_glyph(st);
+        std::string narrow = g ? g : "";
+        bridge_string_free(g);
+        return to_hstring(to_wide(narrow) + L" ");
     }
 
     /* Resolve a printable UTF-32 code point for a virtual key under the
@@ -189,19 +185,16 @@ namespace winrt::AgentManagerWinUI::implementation
         m_closedToken = Closed({this, &MainWindow::OnClosed});
         RefreshRoster();
         ShowSelected();
-        /* No "Ready." banner: the status line stays empty until a real
-         * failure needs it (fail-visible; macOS shows no status either). */
+        /* No idle banner: the status line stays empty until a real
+         * failure needs it (macOS parity). */
     }
 
     MainWindow::~MainWindow() {
         if (m_timer) {
             m_timer.Stop();
         }
-        for (auto &[id, lp] : m_live) {
-            (void)id;
-            bridge_pty_free(lp.pty);
-        }
-        m_live.clear();
+        /* Core registry owns the PTYs (freed with the core handle). */
+        m_rows.clear();
         bridge_core_free(m_core);
         m_core = nullptr;
     }
@@ -210,26 +203,39 @@ namespace winrt::AgentManagerWinUI::implementation
         StatusText().Text(text);
     }
 
+    /* Selected roster row id, from the core selection. */
     std::wstring MainWindow::SelectedId() {
-        return m_selected;
+        if (!m_core) {
+            return {};
+        }
+        size_t sel = bridge_selected(m_core);
+        char *json = bridge_session_json(m_core, sel);
+        std::string id = json ? amjson::get_string(json ? json : "", "id") : "";
+        bridge_string_free(json);
+        return to_wide(id);
     }
 
-    LivePty *MainWindow::SelectedLive() {
-        if (m_selected.empty()) {
-            return nullptr;
+    bool MainWindow::SelectedIsLive() {
+        std::wstring id = SelectedId();
+        if (id.empty()) {
+            return false;
         }
-        auto it = m_live.find(m_selected);
-        return it == m_live.end() ? nullptr : &it->second;
+        return bridge_is_live(m_core, to_utf8(hstring{id}).c_str()) != 0;
     }
 
     void MainWindow::ForwardBytes(char const *data, std::size_t len) {
-        LivePty *lp = SelectedLive();
-        if (!lp) {
+        std::wstring wid = SelectedId();
+        if (wid.empty()) {
+            return;
+        }
+        std::string id = to_utf8(hstring{wid});
+        if (!bridge_is_live(m_core, id.c_str())) {
             return;
         }
         char *err = nullptr;
-        if (bridge_write(lp->pty, reinterpret_cast<unsigned char const *>(data),
-                         len, &err) != 0) {
+        if (bridge_run_write(m_core, id.c_str(),
+                             reinterpret_cast<unsigned char const *>(data),
+                             len, &err) != 0) {
             std::string msg = "Could not send input: ";
             msg += err ? err : "unknown error";
             SetStatus(to_hstring(msg));
@@ -238,15 +244,14 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     /* Rebuild the grouped roster only when the fingerprint (row count
-     * + filter + per-row status + per-row live-ness) changes; ticks
-     * otherwise leave the selection alone. Live runs group by urgency,
-     * needs-input first; rows with no live PTY in this shell are
-     * history, collapsed at the end. The search box filters every
-     * group through the core match (case-insensitive title/project/id,
-     * like the macOS sidebar). Group order is fixed: Needs input,
-     * Working, Idle, History (macOS parity) — every row still shows
-     * its status glyph, title, project/harness, relative age, and link
-     * badge, restored every launch by am_core_new. */
+     * + filter + core selection + per-row status + per-row live-ness)
+     * changes; ticks otherwise leave the selection alone. Rows,
+     * selection, filter, and live-ness all come from the core registry —
+     * spawning attaches a real row, so every run renders in the roster
+     * (no shell-local terminals). Group order is fixed (issue #73):
+     * Needs input, Working, Idle, History — every row still shows its
+     * core status glyph, title, project/harness, restored every launch
+     * by am_core_new. */
     void MainWindow::RefreshRoster() {
         if (!m_core) {
             return;
@@ -262,6 +267,8 @@ namespace winrt::AgentManagerWinUI::implementation
         fingerprint += '|';
         fingerprint += m_filter;
         fingerprint += '|';
+        fingerprint += std::to_string(bridge_selected(m_core));
+        fingerprint += '|';
         for (size_t i = 0; i < n; ++i) {
             char *json = bridge_session_json(m_core, i);
             std::string js = json ? json : "";
@@ -272,40 +279,26 @@ namespace winrt::AgentManagerWinUI::implementation
                 continue;
             }
             std::wstring wid = to_wide(id);
-            /* Spawning moves a row from history to a live group without
-             * touching its core status, so live-ness joins the gate. */
-            bool live = m_live.count(wid) != 0;
+            /* Live-ness comes from the core registry (spawning moves a
+             * row from history to a live group inside the core). */
+            bool live = bridge_is_live(m_core, id.c_str()) != 0;
             fingerprint += std::to_string(st);
             fingerprint += live ? 'L' : 'h';
             fingerprint += ';';
+            /* Core-owned filter rule (title/project/id, not the raw
+             * JSON blob the old shell matched). */
+            if (!bridge_row_matches(m_core, i, m_filter.c_str())) {
+                continue;
+            }
             std::string title = amjson::get_string(js, "title");
             std::string project = amjson::get_string(js, "project");
             std::string harness = amjson::get_string(js, "harness");
-            if (!bridge_roster_matches(title.c_str(), project.c_str(),
-                                       id.c_str(), m_filter.c_str())) {
-                continue;
-            }
             std::string line = (title.empty() ? id : title);
             if (!project.empty()) {
                 line += " — " + project;
             }
             if (!harness.empty()) {
                 line += " · " + harness;
-            }
-            long long last = bridge_last_active(m_core, i);
-            if (last >= 0) {
-                char *age =
-                    bridge_relative_age((long long)std::time(nullptr), last);
-                if (age) {
-                    line += " · ";
-                    line += age;
-                    bridge_string_free(age);
-                }
-            }
-            int links = bridge_link_count(m_core, i);
-            if (links > 0) {
-                line += " · " + std::to_string(links) +
-                        (links == 1 ? " link" : " links");
             }
             std::pair<std::wstring, std::wstring> row{
                 wid, std::wstring(status_glyph(st)) + to_wide(line)};
@@ -323,12 +316,21 @@ namespace winrt::AgentManagerWinUI::implementation
             return;
         }
         m_fingerprint = fingerprint;
+        char *needs_hdr = bridge_section_title(AM_STATUS_ATTENTION);
+        char *work_hdr = bridge_section_title(AM_STATUS_WORKING);
+        char *idle_hdr = bridge_section_title(AM_STATUS_IDLE);
         NeedsHeader().Text(winrt::hstring(
-            L"Needs input (" + std::to_wstring(needs.size()) + L")"));
+            to_wide(needs_hdr ? needs_hdr : "Needs input") + L" (" +
+            std::to_wstring(needs.size()) + L")"));
         WorkingHeader().Text(winrt::hstring(
-            L"Working (" + std::to_wstring(working.size()) + L")"));
+            to_wide(work_hdr ? work_hdr : "Working") + L" (" +
+            std::to_wstring(working.size()) + L")"));
         IdleHeader().Text(winrt::hstring(
-            L"Idle (" + std::to_wstring(idle.size()) + L")"));
+            to_wide(idle_hdr ? idle_hdr : "Idle") + L" (" +
+            std::to_wstring(idle.size()) + L")"));
+        bridge_string_free(needs_hdr);
+        bridge_string_free(work_hdr);
+        bridge_string_free(idle_hdr);
         HistoryExpander().Header(box_value(winrt::hstring(
             L"History (" + std::to_wstring(history.size()) + L")")));
         m_syncing = true;
@@ -337,8 +339,10 @@ namespace winrt::AgentManagerWinUI::implementation
         RebuildGroupList(IdleList(), idle);
         RebuildGroupList(HistoryList(), history);
         m_syncing = false;
-        if (!m_selected.empty()) {
-            SelectRowById(m_selected);
+        /* Restore the core selection into the lists. */
+        std::wstring sel = SelectedId();
+        if (!sel.empty()) {
+            SelectRowById(sel);
         } else {
             std::wstring first;
             if (FirstRowId(first)) {
@@ -363,9 +367,11 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     /* Move the shared selection to the row with this id, clearing the
-     * other three lists. No-op when no list holds the id. */
+     * other three lists. Writes through to the core selection so the
+     * pump, the detail pane, and the lists never disagree. No-op when no
+     * list holds the id. */
     void MainWindow::SelectRowById(std::wstring const &id) {
-        ListView lists[] = {NeedsInputList(), WorkingList(), IdleList(),
+        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
                             HistoryList()};
         bool found = false;
         m_syncing = true;
@@ -385,7 +391,18 @@ namespace winrt::AgentManagerWinUI::implementation
         }
         m_syncing = false;
         if (found) {
-            m_selected = id;
+            /* Mirror into the core selection (find the row index by id). */
+            size_t n = bridge_session_count(m_core);
+            for (size_t i = 0; i < n; ++i) {
+                char *json = bridge_session_json(m_core, i);
+                std::string rid =
+                    amjson::get_string(json ? json : "", "id");
+                bridge_string_free(json);
+                if (to_wide(rid) == id) {
+                    bridge_select(m_core, i);
+                    break;
+                }
+            }
             ShowSelected();
         }
     }
@@ -393,7 +410,7 @@ namespace winrt::AgentManagerWinUI::implementation
     /* First row id across the groups in display order; false when every
      * list is empty (no runs yet, or the search matches nothing). */
     bool MainWindow::FirstRowId(std::wstring &id) {
-        ListView lists[] = {NeedsInputList(), WorkingList(), IdleList(),
+        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
                             HistoryList()};
         for (auto const &list : lists) {
             auto items = list.Items();
@@ -409,23 +426,8 @@ namespace winrt::AgentManagerWinUI::implementation
         return false;
     }
 
-
-    bool MainWindow::IsLocalId(std::wstring const &id) {
-        constexpr wchar_t kPrefix[] = L"local-";
-        return id.compare(0, 6, kPrefix) == 0;
-    }
-
-    std::wstring MainWindow::MintLocalId() {
-        for (;;) {
-            std::wstring id = L"local-" + std::to_wstring(m_localNext++);
-            if (!m_live.count(id)) {
-                return id;
-            }
-        }
-    }
-
-    /* Index of the roster row with this id, or -1 (local terminal ids
-     * and stale selections have no roster row). */
+    /* Index of the roster row with this id, or -1 (stale selections
+     * have no roster row). */
     long long MainWindow::RowIndexById(std::wstring const &id) {
         if (!m_core || id.empty()) {
             return -1;
@@ -463,25 +465,37 @@ namespace winrt::AgentManagerWinUI::implementation
 
     /* Show the selected run: the live terminal surface when its PTY is
      * live, else the empty overlay — the selected row's title with a
-     * Spawn button, "Select a session" when nothing is picked, or the
-     * "No sessions yet" CTA on an empty roster (all macOS parity). */
+     * Restart/Spawn button, "Select a session" when nothing is picked,
+     * or the "No sessions yet" CTA on an empty roster (all macOS
+     * parity). Row/detail strings come from the core registry. */
     void MainWindow::ShowSelected() {
-        LivePty *lp = SelectedLive();
-        if (lp) {
+        std::wstring wid = SelectedId();
+        std::string id = wid.empty() ? "" : to_utf8(hstring{wid});
+        if (!id.empty() && bridge_is_live(m_core, id.c_str())) {
             EmptyPanel().Visibility(Visibility::Collapsed);
             TermScroll().Visibility(Visibility::Visible);
+            DisplayRow &row = m_rows[wid];
             const std::string &text =
-                lp->shown.empty() ? lp->last_snapshot : lp->shown;
-            TermBox().Text(to_hstring(text));
+                row.shown.empty() ? row.last_snapshot : row.shown;
+            /* Catch a fresh attach with no cached text. */
+            if (text.empty()) {
+                char *snap = bridge_run_screen_text(m_core, id.c_str());
+                std::string cur = snap ? snap : "";
+                bridge_string_free(snap);
+                row.last_snapshot = cur;
+                row.shown = cur;
+                TermBox().Text(to_hstring(cur));
+            } else {
+                TermBox().Text(to_hstring(text));
+            }
             auto scroll = TermScroll();
             scroll.UpdateLayout();
             scroll.ChangeView(nullptr, scroll.ScrollableHeight(), nullptr);
             return;
         }
-        long long at = RowIndexById(m_selected);
+        long long at = RowIndexById(wid);
         if (at >= 0) {
-            char *json = bridge_session_json(
-                m_core, static_cast<size_t>(at));
+            char *json = bridge_session_json(m_core, static_cast<size_t>(at));
             std::string js = json ? json : "";
             bridge_string_free(json);
             std::string title = amjson::get_string(js, "title");
@@ -497,53 +511,86 @@ namespace winrt::AgentManagerWinUI::implementation
                 }
                 detail += harness;
             }
-            ShowEmpty(to_wide(title), to_wide(detail), L"Spawn session");
+            /* Ended or historic row: restart/resume on the same id. */
+            m_emptyMode = bridge_run_exited(m_core, id.c_str()) ? 1 : 2;
+            ShowEmpty(to_wide(title), to_wide(detail), L"Restart / resume");
             return;
         }
         if (bridge_session_count(m_core) == 0) {
+            m_emptyMode = 0;
             ShowEmpty(L"No sessions yet",
                       L"Spawned sessions appear here; history is restored on "
                       L"launch.",
                       L"New Session");
             return;
         }
+        m_emptyMode = 2;
         ShowEmpty(L"Select a session", L"", L"");
     }
 
-    /* The shell's only repaint gate: pump the selected PTY, reconcile
-     * the new snapshot against the last one with the core feed
-     * reconciler, and append (or replay after a clear). */
+    /* Empty-overlay button: New Session on an empty roster, restart /
+     * resume on an ended or historic row, nothing otherwise. */
+    void MainWindow::EmptyButton_Click(IInspectable const &,
+                                       RoutedEventArgs const &) {
+        if (m_emptyMode == 0) {
+            RepeatLastSession();
+        } else if (m_emptyMode == 1) {
+            RestartSelected();
+        }
+    }
+
+    /* Pump: the core registry feeds every live run (statuses, links,
+     * re-sort inside via `bridge_pump_all` — the roster now actually
+     * moves), then the selected run's delta reaches the output box, the
+     * roster rebuilds on change, and persistence autosaves on a
+     * throttle. */
     void MainWindow::OnTick(IInspectable const &, IInspectable const &) {
-        LivePty *lp = SelectedLive();
-        if (lp && bridge_pump(lp->pty)) {
-            char *snap = bridge_screen_text(lp->pty);
-            std::string cur = snap ? snap : "";
-            bridge_string_free(snap);
-            char *feed =
-                bridge_feed_delta(lp->last_snapshot.c_str(), cur.c_str());
-            if (feed) {
-                std::string chunk = feed;
-                bridge_string_free(feed);
-                if (chunk.compare(0, strlen(kFeedClear), kFeedClear) == 0) {
-                    /* Redraw/reflow: clear first, then replay. */
-                    lp->shown = chunk.substr(strlen(kFeedClear));
-                    TermBox().Text(to_hstring(lp->shown));
-                } else {
-                    lp->shown += chunk;
-                    if (lp->shown.size() > kShownCap) {
-                        lp->shown.erase(
-                            0, lp->shown.size() - kShownCap);
+        static int save_tick = 0;
+        bool dirty = bridge_pump_all(m_core) != 0;
+        std::wstring wid = SelectedId();
+        if (!wid.empty()) {
+            std::string id = to_utf8(hstring{wid});
+            if (bridge_is_live(m_core, id.c_str())) {
+                DisplayRow &row = m_rows[wid];
+                char *snap = bridge_run_screen_text(m_core, id.c_str());
+                std::string cur = snap ? snap : "";
+                bridge_string_free(snap);
+                char *feed =
+                    bridge_feed_delta(row.last_snapshot.c_str(), cur.c_str());
+                if (feed) {
+                    std::string chunk = feed;
+                    free(feed);
+                    /* Clear-screen prefix from the shared reconciler. */
+                    constexpr const char *kClear = "\x1b[2J\x1b[H";
+                    if (chunk.compare(0, strlen(kClear), kClear) == 0) {
+                        row.shown = chunk.substr(strlen(kClear));
+                        TermBox().Text(to_hstring(row.shown));
+                    } else {
+                        row.shown += chunk;
+                        if (row.shown.size() > kShownCap) {
+                            row.shown.erase(
+                                0, row.shown.size() - kShownCap);
+                        }
+                        TermBox().Text(TermBox().Text() + to_hstring(chunk));
                     }
-                    TermBox().Text(TermBox().Text() + to_hstring(chunk));
+                    auto scroll = TermScroll();
+                    scroll.UpdateLayout();
+                    scroll.ChangeView(nullptr, scroll.ScrollableHeight(),
+                                      nullptr);
                 }
-                auto scroll = TermScroll();
-                scroll.UpdateLayout();
-                scroll.ChangeView(nullptr, scroll.ScrollableHeight(),
-                                  nullptr);
+                row.last_snapshot = cur;
+                dirty = true;
             }
-            lp->last_snapshot = cur;
         }
         RefreshRoster();
+        /* Autosave throttle (replaces any manual Save): persist at most
+         * every ~5s while dirty, like the gpui pump persist. */
+        if (dirty && (++save_tick % 100) == 0) {
+            char *err = nullptr;
+            if (bridge_core_save(m_core, &err) != 0) {
+                free(err);
+            }
+        }
     }
 
     void MainWindow::OnClosed(IInspectable const &,
@@ -578,46 +625,36 @@ namespace winrt::AgentManagerWinUI::implementation
         RepeatLastSession();
     }
 
+    void MainWindow::RestartButton_Click(IInspectable const &,
+                                         RoutedEventArgs const &) {
+        RestartSelected();
+    }
+
+    void MainWindow::CloseButton_Click(IInspectable const &,
+                                       RoutedEventArgs const &) {
+        CloseSelected();
+    }
+
     /* Instant repeat-last shared by the SplitButton face, its menu item,
-     * and Ctrl+N: one path, no divergence. */
+     * and Ctrl+N: one path, no divergence. The core registry attaches
+     * the spawn to a new roster row under the shared cap — no
+     * shell-local terminals, so every run rows in the roster and
+     * statuses actually move. */
     void MainWindow::RepeatLastSession() {
         if (!m_core) {
             return;
         }
-        /* Live-set cap (same 10-run ceiling as the macOS shell): locals
-         * never join the roster, so nothing else would bound them. */
-        if (m_live.size() >= 10) {
-            SetStatus(L"At 10 live sessions — close one first.");
-            return;
-        }
-        /* A live local terminal is already the newest thing open:
-         * keep it selected rather than orphaning it behind a newer
-         * one (locals have no roster row to navigate back to). */
-        if (!m_selected.empty() && IsLocalId(m_selected) &&
-            m_live.count(m_selected) != 0) {
-            SetStatus(L"Terminal already open.");
-            return;
-        }
+        char id[256] = {0};
         char *err = nullptr;
-        AmPty *pty = bridge_spawn_launch(m_core, nullptr, nullptr, 0,
-                                         kCols, kRows, &err);
-        if (!pty) {
+        if (bridge_run_spawn(m_core, nullptr, nullptr, 0, kCols, kRows,
+                             id, sizeof id, &err) != 0) {
             std::string msg = "Could not spawn: ";
             msg += err ? err : "unknown error";
             SetStatus(to_hstring(msg));
             free(err);
             return;
         }
-        std::wstring id = MintLocalId();
-        LivePty lp;
-        lp.pty = pty;
-        m_live[id] = std::move(lp);
-        m_selected = id;
-        bridge_note_launch(m_core, nullptr, nullptr, nullptr);
-        /* Force the roster rebuild (local PTYs never join its gate):
-         * RefreshRoster restores the list selection for a roster row,
-         * and clears the list visuals for a local id while keeping
-         * m_selected on the new terminal. */
+        /* Force the roster rebuild (new rows attach in the core now). */
         m_fingerprint.clear();
         RefreshRoster();
         ShowSelected();
@@ -630,6 +667,54 @@ namespace winrt::AgentManagerWinUI::implementation
         std::string eff = eff_raw ? eff_raw : "terminal";
         bridge_string_free(eff_raw);
         SetStatus(hstring{to_wide("New " + eff + " session started.")});
+    }
+
+    /* Restart/resume the selected run on the same id (parity with the
+     * `r` key and the other shells): keeps title and links. */
+    void MainWindow::RestartSelected() {
+        if (!m_core) {
+            return;
+        }
+        std::wstring wid = SelectedId();
+        if (wid.empty()) {
+            return;
+        }
+        std::string id = to_utf8(hstring{wid});
+        char *err = nullptr;
+        if (bridge_run_restart(m_core, id.c_str(), kCols, kRows, &err) != 0) {
+            std::string msg = "Could not restart: ";
+            msg += err ? err : "unknown error";
+            SetStatus(to_hstring(msg));
+            free(err);
+            return;
+        }
+        m_fingerprint.clear();
+        RefreshRoster();
+        ShowSelected();
+        SetStatus(L"Run restarted.");
+    }
+
+    /* Close (kill) the selected run + entry, then persist (parity with
+     * the `x` key and the other shells). */
+    void MainWindow::CloseSelected() {
+        if (!m_core) {
+            return;
+        }
+        std::wstring wid = SelectedId();
+        if (wid.empty()) {
+            return;
+        }
+        std::string id = to_utf8(hstring{wid});
+        m_rows.erase(wid);
+        bridge_run_close(m_core, id.c_str());
+        char *err = nullptr;
+        if (bridge_core_save(m_core, &err) != 0) {
+            free(err);
+        }
+        m_fingerprint.clear();
+        RefreshRoster();
+        ShowSelected();
+        SetStatus(L"Run closed.");
     }
 
     /* Picker button: open the 2D new-session ContentDialog (folder x
@@ -726,8 +811,12 @@ namespace winrt::AgentManagerWinUI::implementation
                     ? clis[static_cast<size_t>(ci)].id
                     : "muse";
             std::string folder = to_utf8(folderBox.Text());
-            int yolo = picker::yolo_value(yoloBox.SelectedIndex());
-            preview.Text(to_wide(picker::preview(cli, folder, yolo)));
+            /* Core-owned preview + yolo mapping (single copies). */
+            int yolo = bridge_yolo_value(yoloBox.SelectedIndex());
+            char *text =
+                bridge_spawn_preview(cli.c_str(), folder.c_str(), yolo);
+            preview.Text(to_wide(text ? text : ""));
+            free(text);
         };
         cliBox.SelectionChanged(
             [&refresh](IInspectable const &, SelectionChangedEventArgs const &) {
@@ -808,7 +897,16 @@ namespace winrt::AgentManagerWinUI::implementation
             (ci >= 0 && static_cast<size_t>(ci) < clis.size())
                 ? clis[static_cast<size_t>(ci)].id
                 : "muse";
-        std::string folder = picker::effective_folder(to_utf8(folderBox.Text()));
+        std::string raw_folder = to_utf8(folderBox.Text());
+        /* Blank/whitespace inherits (core trims the same way). */
+        std::string folder;
+        {
+            size_t b = raw_folder.find_first_not_of(" \t\n\r");
+            if (b != std::string::npos) {
+                size_t e = raw_folder.find_last_not_of(" \t\n\r");
+                folder = raw_folder.substr(b, e - b + 1);
+            }
+        }
         /* is-dir check inline (fail visible, dialog already closed by
          * ShowAsync: report in the status line with the fix named). */
         if (!folder.empty()) {
@@ -820,30 +918,27 @@ namespace winrt::AgentManagerWinUI::implementation
                 co_return;
             }
         }
-        int yolo = picker::yolo_value(yoloBox.SelectedIndex());
+        /* Core-owned yolo mapping; the registry spawn attaches a real
+         * roster row under the shared cap (a refusal names per-run
+         * close, like every other shell). */
+        int yolo = bridge_yolo_value(yoloBox.SelectedIndex());
+        char id[256] = {0};
         char *err = nullptr;
-        AmPty *pty = bridge_spawn_launch(
-            m_core, cli.c_str(), folder.empty() ? nullptr : folder.c_str(),
-            yolo, kCols, kRows, &err);
-        if (!pty) {
+        if (bridge_run_spawn(m_core, cli.c_str(),
+                             folder.empty() ? nullptr : folder.c_str(),
+                             yolo, kCols, kRows, id, sizeof id, &err) != 0) {
             std::string msg = "Could not spawn: ";
             msg += err ? err : "unknown error";
             SetStatus(to_hstring(msg));
             free(err);
             co_return;
         }
-        std::wstring id = MintLocalId();
-        LivePty lp;
-        lp.pty = pty;
-        m_live[id] = std::move(lp);
-        m_selected = id;
-        bridge_note_launch(m_core, cli.c_str(),
-                           folder.empty() ? nullptr : folder.c_str(),
-                           nullptr);
         m_fingerprint.clear();
         RefreshRoster();
         ShowSelected();
-        SetStatus(winrt::hstring(to_wide(picker::preview(cli, folder, yolo))));
+        char *done = bridge_spawn_preview(cli.c_str(), folder.c_str(), yolo);
+        SetStatus(winrt::hstring(to_wide(done ? done : "")));
+        free(done);
         /* Hand the keyboard to the new session (takes the keyboard on
          * spawn, like the macOS shell's `n` key): without this, focus stays on
          * the New Session button, where Return re-clicks instead of
@@ -851,24 +946,12 @@ namespace winrt::AgentManagerWinUI::implementation
         TermBox().Focus(Microsoft::UI::Xaml::FocusState::Programmatic);
     }
 
-    void MainWindow::PersistCore() {
-        if (!m_core) {
-            return;
-        }
-        char *err = nullptr;
-        if (bridge_core_save(m_core, &err) != 0) {
-            std::string msg = "Could not save: ";
-            msg += err ? err : "unknown error";
-            SetStatus(to_hstring(msg));
-            free(err);
-            return;
-        }
-        SetStatus(L"Saved.");
-    }
-
     void MainWindow::FilterBox_TextChanged(
         IInspectable const &, TextChangedEventArgs const &) {
         m_filter = to_utf8(FilterBox().Text());
+        /* Core-owned filter text (snaps selection); the lists read the
+         * same core state. */
+        bridge_set_filter(m_core, m_filter.c_str());
         m_fingerprint.clear(); /* Force a roster rebuild on next tick. */
         RefreshRoster();
     }
@@ -876,7 +959,7 @@ namespace winrt::AgentManagerWinUI::implementation
     /* One shared selection across the four group lists: a pick in
      * any list clears the other three and shows that run.
      * Null-selection events (list clears during a rebuild) are
-     * ignored so m_selected survives the repopulate; m_syncing
+     * ignored so the core selection survives the repopulate; m_syncing
      * covers programmatic moves. */
     void MainWindow::Roster_SelectionChanged(
         IInspectable const &sender, SelectionChangedEventArgs const &) {
@@ -891,9 +974,9 @@ namespace winrt::AgentManagerWinUI::implementation
         if (!item) {
             return;
         }
-        m_selected = std::wstring(unbox_value<hstring>(item.Tag()));
+        std::wstring id = std::wstring(unbox_value<hstring>(item.Tag()));
         m_syncing = true;
-        ListView lists[] = {NeedsInputList(), WorkingList(), IdleList(),
+        ListView lists[] = {NeedsInputList(), IdleList(), WorkingList(),
                             HistoryList()};
         for (auto const &list : lists) {
             if (list != picked) {
@@ -901,7 +984,8 @@ namespace winrt::AgentManagerWinUI::implementation
             }
         }
         m_syncing = false;
-        ShowSelected();
+        /* Write through to the core selection (SelectRowById mirrors). */
+        SelectRowById(id);
     }
 
     /* Current sidebar width in pixels; 0 when the column is star/auto
@@ -910,10 +994,11 @@ namespace winrt::AgentManagerWinUI::implementation
         return SidebarColumn().ActualWidth();
     }
 
-    /* Clamp + apply + persist one sidebar width. Persistence rides
-     * LocalSettings (local-only trust: plain local store). */
+    /* Clamp + apply + persist one sidebar width. The range is the
+     * shared core rule (`am_clamp_sidebar`: 220..480px); persistence
+     * rides LocalSettings (local-only trust: plain local store). */
     void MainWindow::SetSidebarWidth(double w) {
-        double clamped = std::clamp(w, kSidebarMin, kSidebarMax);
+        double clamped = bridge_clamp_sidebar(w);
         SidebarColumn().Width(GridLengthHelper::FromPixels(clamped));
         try {
             Windows::Storage::ApplicationData::Current()
@@ -967,10 +1052,100 @@ namespace winrt::AgentManagerWinUI::implementation
         }
     }
 
-    /* Converse path: every key the encoder accepts becomes child input.
-     * App shortcuts (Ctrl+S persist, Ctrl+N repeat-last spawn,
-     * Ctrl+Shift+N picker) ride here too, mirroring the GTK shell's
-     * app-level shortcuts. Paste arrives via the clipboard (async);
+    /* Map a WinUI virtual key to the core's logical key name (the
+     * shared `am_key_encode` table owns the bytes; this only
+     * translates). Returns "" when the key has no logical name. */
+    static std::string vk_name(int vk) {
+        switch (vk) {
+        case 0x0D: return "enter";
+        case 0x08: return "backspace";
+        case 0x09: return "tab";
+        case 0x1B: return "escape";
+        case 0x26: return "up";
+        case 0x28: return "down";
+        case 0x27: return "right";
+        case 0x25: return "left";
+        case 0x24: return "home";
+        case 0x23: return "end";
+        case 0x2D: return "insert";
+        case 0x2E: return "delete";
+        case 0x21: return "pageup";
+        case 0x22: return "pagedown";
+        case 0x70: return "f1";
+        case 0x71: return "f2";
+        case 0x72: return "f3";
+        case 0x73: return "f4";
+        case 0x74: return "f5";
+        case 0x75: return "f6";
+        case 0x76: return "f7";
+        case 0x77: return "f8";
+        case 0x78: return "f9";
+        case 0x79: return "f10";
+        case 0x7A: return "f11";
+        case 0x7B: return "f12";
+        default: return {};
+        }
+    }
+
+    /* Encode via the shared core key table and forward. Returns true
+     * when handled (the native control must not also process it). */
+    bool MainWindow::EncodeForward(int vk, char32_t text, bool ctrl,
+                                   bool shift, bool alt) {
+        /* Reserve rule (shared): Ctrl+Shift+C/V stay with the native
+         * control for copy/paste. */
+        if (ctrl && shift && (vk == 'C' || vk == 'V')) {
+            return false;
+        }
+        std::string name = vk_name(vk);
+        /* Printable char without a logical name: the key name is the
+         * char itself (the core table prefers the typed char). */
+        std::string text_utf8;
+        if (text != 0 && text <= 0x10FFFF) {
+            char tmp[5]{};
+            if (text < 0x80) {
+                tmp[0] = static_cast<char>(text);
+                text_utf8 = tmp;
+            } else if (text < 0x800) {
+                tmp[0] = static_cast<char>(0xC0 | (text >> 6));
+                tmp[1] = static_cast<char>(0x80 | (text & 0x3F));
+                text_utf8 = tmp;
+            } else if (text < 0x10000) {
+                tmp[0] = static_cast<char>(0xE0 | (text >> 12));
+                tmp[1] = static_cast<char>(0x80 | ((text >> 6) & 0x3F));
+                tmp[2] = static_cast<char>(0x80 | (text & 0x3F));
+                text_utf8 = tmp;
+            } else {
+                tmp[0] = static_cast<char>(0xF0 | (text >> 18));
+                tmp[1] = static_cast<char>(0x80 | ((text >> 12) & 0x3F));
+                tmp[2] = static_cast<char>(0x80 | ((text >> 6) & 0x3F));
+                tmp[3] = static_cast<char>(0x80 | (text & 0x3F));
+                text_utf8 = tmp;
+            }
+            if (name.empty() && text_utf8.size() == 1) {
+                name = text_utf8;
+            }
+        }
+        if (name.empty()) {
+            return false; /* Modifiers, media keys: leave to the control. */
+        }
+        unsigned char buf[16]{};
+        int n = bridge_key_encode(name.c_str(),
+                                  text_utf8.empty() ? nullptr : text_utf8.c_str(),
+                                  ctrl ? 1 : 0, alt ? 1 : 0, buf,
+                                  sizeof buf);
+        if (n <= 0) {
+            return n < 0 ? false : true;
+        }
+        ForwardBytes(reinterpret_cast<char const *>(buf),
+                     static_cast<std::size_t>(n));
+        return true;
+    }
+
+    /* Converse path: every key the shared core table accepts becomes
+     * child input. App shortcuts (Ctrl+N repeat-last spawn,
+     * Ctrl+Shift+N picker, Ctrl+R restart, Ctrl+W close) ride here too,
+     * mirroring the GTK shell's app-level shortcuts. Persistence is
+     * automatic (no Ctrl+S). Paste arrives via the clipboard (async);
      * the reserve rule keeps Ctrl+Shift+C/V with the native control
      * for copy.
      *
@@ -978,7 +1153,7 @@ namespace winrt::AgentManagerWinUI::implementation
      * the read-only output box swallows Return (newline insertion) and
      * plain Ctrl+C (copy) before they bubble. Those ride
      * `TermBox_PreviewKeyDown` (tunneling) instead, through the same
-     * encoder below — one key table, no fork. */
+     * core table below — one key table, no fork. */
     void MainWindow::RootGrid_KeyDown(
         IInspectable const &, KeyRoutedEventArgs const &args) {
         /* WinUI 3 KeyRoutedEventArgs carries no modifiers: query the
@@ -989,11 +1164,6 @@ namespace winrt::AgentManagerWinUI::implementation
         int vk = static_cast<int>(args.Key());
 
         if (ctrl && !alt) {
-            if (!shift && vk == 'S') {
-                PersistCore();
-                args.Handled(true);
-                return;
-            }
             if (!shift && vk == 'N') {
                 /* Ctrl+N repeats the last launch instantly. */
                 NewButton_Click(nullptr, nullptr);
@@ -1003,6 +1173,16 @@ namespace winrt::AgentManagerWinUI::implementation
             if (shift && vk == 'N') {
                 /* Ctrl+Shift+N opens the full picker. */
                 PickButton_Click(nullptr, nullptr);
+                args.Handled(true);
+                return;
+            }
+            if (!shift && vk == 'R') {
+                RestartSelected();
+                args.Handled(true);
+                return;
+            }
+            if (!shift && vk == 'W') {
+                CloseSelected();
                 args.Handled(true);
                 return;
             }
@@ -1021,23 +1201,12 @@ namespace winrt::AgentManagerWinUI::implementation
             }
         }
 
-        LivePty *lp = SelectedLive();
-        if (!lp) {
+        if (!SelectedIsLive()) {
             return;
         }
-        amkeys::WinKey key;
-        key.vk = vk;
-        key.text = key_char(vk, ctrl);
-        key.ctrl = ctrl;
-        key.shift = shift;
-        key.alt = alt;
-        char buf[8]{};
-        std::size_t n = amkeys::encode_key(key, buf);
-        if (n == 0) {
-            return; /* Native control keeps it (selection, copy, ...). */
+        if (EncodeForward(vk, key_char(vk, ctrl), ctrl, shift, alt)) {
+            args.Handled(true);
         }
-        ForwardBytes(buf, n);
-        args.Handled(true);
     }
 
     /* Tunneling converse keys for the terminal surface: the read-only
@@ -1047,13 +1216,13 @@ namespace winrt::AgentManagerWinUI::implementation
      * child can never be interrupted. Only these two documented keys
      * are intercepted here — everything else flows untouched, so text
      * selection, roster navigation, and the search box keep working.
-     * Encoding reuses `amkeys::encode_key` (the same table the bubble
-     * handler uses); the reserve rule stays intact because
-     * Ctrl+Shift+C/V encode to nothing and fall through to the box. */
+     * Encoding goes through the shared core table (the same table the
+     * bubble handler uses); the reserve rule stays intact because
+     * Ctrl+Shift+C/V return Keep and fall through to the box. */
     void MainWindow::TermBox_PreviewKeyDown(
         IInspectable const &, KeyRoutedEventArgs const &args) {
         int vk = static_cast<int>(args.Key());
-        bool isReturn = (vk == amkeys::kVkReturn);
+        bool isReturn = (vk == 0x0D);
         bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
         bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
         bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
@@ -1061,23 +1230,12 @@ namespace winrt::AgentManagerWinUI::implementation
         if (!isReturn && !isPlainCtrlC) {
             return;
         }
-        LivePty *lp = SelectedLive();
-        if (!lp) {
+        if (!SelectedIsLive()) {
             return;
         }
-        amkeys::WinKey key;
-        key.vk = vk;
-        key.text = key_char(vk, ctrl);
-        key.ctrl = ctrl;
-        key.shift = shift;
-        key.alt = alt;
-        char buf[8]{};
-        std::size_t n = amkeys::encode_key(key, buf);
-        if (n == 0) {
-            return; /* Reserved for the control (e.g. Ctrl+Shift+C). */
+        if (EncodeForward(vk, key_char(vk, ctrl), ctrl, shift, alt)) {
+            args.Handled(true);
         }
-        ForwardBytes(buf, n);
-        args.Handled(true);
     }
 
     /* Clipboard read is async; fire-and-forget keeps KeyDown sync. */

@@ -1,33 +1,37 @@
 /* Agent Manager — Linux GTK4/libadwaita shell over the core C ABI.
  *
- * Issue #63, second native shell after swift/ (#62). Every run feature goes
- * through `core_bridge.h` (which wraps `include/agent_manager.h`): the core
- * owns the roster, the PTYs, and the emulator; this shell owns widgets.
+ * Dumb renderer over the core run registry: the core owns the roster,
+ * selection, filter, PTYs, statuses, key table, feed reconciler, and
+ * persistence — this shell owns widgets, event wiring, and byte
+ * transport only. Every run feature goes through `core_bridge.h` (which
+ * wraps `include/agent_manager.h`).
  *
- * Epic DoD wiring (mirrors swift/README.md's table):
- *   roster      am_session_count + am_session_json at launch, am_status ticks
- *   spawn       toolbar New-run button -> bridge_spawn (current VTE grid)
- *   converse    key controller -> bridge_write; pump -> am_feed_delta (core) -> VTE
+ * Parity wiring (same contract as the macOS/Windows shells):
+ *   roster      core registry rows (am_session_count/json live),
+ *               grouped needs-input → working → idle → history
+ *   spawn       header New run (repeat-last) + ▾ picker → am_run_spawn
+ *   restart     header Restart / Ctrl+R → am_run_restart (same id)
+ *   close       header Close run / Ctrl+W → am_run_close + autosave
+ *   converse    key event → am_key_encode → am_run_write; pump →
+ *               am_feed_delta → VTE
  *   copy/paste  native VTE selection + Ctrl+Shift+C/V + right-click menu
  *   scroll      VTE scrollback (capped) in a GtkScrolledWindow
- *   search      sidebar filter entry; terminal find bar (Ctrl+F, VTE search)
- *   history     rows show project/harness/age, restored every launch;
- *               per-run scrollback retained in the VTE
- *   theme       System/Dark/Light (libadwaita + VTE palette), plain-file pref
- *   persist     Save button + close hook -> bridge_core_save
+ *   search      sidebar filter (core-owned text) + terminal find (Ctrl+F)
+ *   history     rows show project/harness/age glyphs, restored every
+ *               launch; ended rows offer restart inline
+ *   theme       follows the system appearance (no manual override)
+ *   persist     automatic (throttled pump autosave + close hook)
  *
  * The core owns its emulator; the VTE widget owns a second one fed with
- * snapshot deltas (the core reconciler in `src/shell_shared.rs`, bound as
- * `am_feed_delta`). No PTY is ever
- * spawned inside VTE: typed keys are encoded by the shell and forwarded
- * with bridge_write, and echoed output arrives via the pump. This keeps
+ * snapshot deltas (`bridge_feed_delta`, the shared reconciler). No PTY is
+ * ever spawned inside VTE: typed keys are core-encoded and forwarded with
+ * am_run_write, and echoed output arrives via the pump. This keeps
  * exactly one line discipline (the core's) so nothing double-echoes.
  */
 
 #define _POSIX_C_SOURCE 200809L /* strdup under strict C11 */
 
 #include <ctype.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -37,11 +41,6 @@
 #include <vte/vte.h>
 
 #include "core_bridge.h"
-#include "picker.h"
-/* am_feed_delta / am_roster_matches / am_relative_age come from the core
- * itself now (`include/agent_manager.h`, via core_bridge.h): the vendored
- * feed.c port is gone, so every C shell reconciles through
- * `src/shell_shared.rs`. */
 
 /* Bounded per-session VTE scrollback (local-only trust + bounded growth:
  * an accumulate-forever buffer would leak memory over long agent runs). */
@@ -52,7 +51,23 @@
 #define DEFAULT_ROWS 24
 
 /* ------------------------------------------------------------------ */
-/* Minimal JSON field extraction (roster rows are ChatSession objects). */
+/* Minimal JSON field extraction (roster rows are ChatSession objects).
+ * Used only to pull display fields for native widgets; matching,
+ * grouping, preview, and key rules all live in the core. strndup is
+ * POSIX (present under _POSIX_C_SOURCE above); MSVC builds use the
+ * local copy below. */
+#ifdef _MSC_VER
+static char *am_strndup(const char *s, size_t n) {
+    char *out = malloc(n + 1);
+    if (!out) {
+        return NULL;
+    }
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return out;
+}
+#define strndup am_strndup
+#endif
 /* ------------------------------------------------------------------ */
 
 /* Find the value of top-level string key `key` in a flat JSON object.
@@ -190,99 +205,58 @@ static long long json_int(const char *json, const char *key, long long dflt) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Model. */
+/* Shell state (dumb renderer: the core registry owns everything else). */
 /* ------------------------------------------------------------------ */
-
-typedef struct {
-    char *id;
-    char *title;
-    char *project;
-    char *harness;
-    int status; /* bridge_status code: 0 attention, 1 idle, 2 working */
-    long long last_active;
-} SessionRow;
-
-static void row_free(SessionRow *r) {
-    if (!r) {
-        return;
-    }
-    free(r->id);
-    free(r->title);
-    free(r->project);
-    free(r->harness);
-    free(r);
-}
-
-typedef struct {
-    AmPty *pty;
-    char *fed; /* snapshot already shown in the VTE ("" = nothing yet) */
-} LivePty;
-
-static void live_free(LivePty *l) {
-    if (!l) {
-        return;
-    }
-    bridge_pty_free(l->pty);
-    free(l->fed);
-    free(l);
-}
 
 typedef struct {
     AdwApplication *app;
     AmCore *core;
-    GPtrArray *rows;           /* SessionRow*, launch snapshot order */
-    GHashTable *live;          /* id -> LivePty* */
+    /* Display cache: badge label per row id, rebuilt by refresh_roster.
+     * Rows, selection, filter, live-ness, and statuses all live in the
+     * core run registry — this shell keeps no roster copy and no live
+     * PTY map (dumb-shell contract: render what the core reports). */
     GHashTable *row_widgets;   /* id -> GtkWidget* (badge label) */
-    char *selected;            /* selected row id */
     GtkListBox *list;
     GtkSearchEntry *filter;
     VteTerminal *term;
     AdwWindowTitle *header_title;
     GtkButton *spawn_btn;
-    GtkButton *save_btn;
-    GtkDropDown *theme_drop;
     GtkRevealer *find_revealer;
     GtkSearchEntry *find_entry;
     GtkScrolledWindow *term_scroll;
     int cols, rows_grid;
-    char *theme_path; /* plain-file theme pref (local-only, no gsettings) */
+    /* Feed state: snapshot already shown per selected row (the core owns
+     * the screens; the shell only reconciles view deltas). */
+    char *fed_id;
+    char *fed_text;
 } Shell;
 
-static const char *status_label(int st) {
-    switch (st) {
-    case 0: return "Needs input";
-    case 2: return "Active";
-    default: return "Idle";
-    }
+/* Status header text via the core (single copy: "Needs input"/"Working"
+ * replaces the old "Active" label). The returned string is core-owned:
+ * free with bridge_string_free(). */
+static char *section_for(int st) {
+    return bridge_section_title(st);
 }
 
-/* Relative-age label for a roster row: the shared core label
- * (`am_relative_age` in `src/shell_shared.rs`), so every shell renders
- * the same glanceable text. Owned; free with free(). */
-static char *age_string(long long epoch) {
-    return am_relative_age((int64_t)time(NULL), (int64_t)epoch);
+/* Human age via the core (single copy of the bucket rule). */
+static char *age_via_core(long long epoch) {
+    return bridge_age_string((long long)time(NULL), epoch);
 }
 
-/* ------------------------------------------------------------------ */
-/* Theme (libadwaita chrome + VTE palette), plain-file pref. */
-/* ------------------------------------------------------------------ */
+/* Non-color status marker via the core (`●`/`◐`/`○`): rows are never
+ * color-only, matching the Windows glyphs. */
+static char *glyph_via_core(int st) {
+    return bridge_status_glyph(st);
+}
 
-static void apply_theme(Shell *sh, int idx) {
+/* Follow the system appearance (no manual theme override): the VTE
+ * palette tracks libadwaita's dark bit, like the macOS shell follows
+ * the system appearance and the Windows shell uses ThemeResources. */
+static void apply_system_theme(Shell *sh) {
     AdwStyleManager *sm = adw_style_manager_get_default();
-    AdwColorScheme scheme = ADW_COLOR_SCHEME_DEFAULT;
-    if (idx == 1) {
-        scheme = ADW_COLOR_SCHEME_FORCE_DARK;
-    } else if (idx == 2) {
-        scheme = ADW_COLOR_SCHEME_FORCE_LIGHT;
-    }
-    adw_style_manager_set_color_scheme(sm, scheme);
-
-    /* VTE palette follows the same choice so the terminal never ends up
-     * dark-on-dark or light-on-light against the window chrome. */
+    adw_style_manager_set_color_scheme(sm, ADW_COLOR_SCHEME_DEFAULT);
     GdkRGBA fg, bg;
-    if (scheme == ADW_COLOR_SCHEME_FORCE_LIGHT ||
-        (scheme == ADW_COLOR_SCHEME_DEFAULT &&
-         !adw_style_manager_get_dark(sm))) {
+    if (!adw_style_manager_get_dark(sm)) {
         gdk_rgba_parse(&fg, "#1e1e1e");
         gdk_rgba_parse(&bg, "#ffffff");
     } else {
@@ -290,113 +264,157 @@ static void apply_theme(Shell *sh, int idx) {
         gdk_rgba_parse(&bg, "#1e1e2e");
     }
     vte_terminal_set_colors(sh->term, &fg, &bg, NULL, 0);
-
-    if (sh->theme_path) {
-        char v[2] = { (char)('0' + idx), '\0' };
-        g_file_set_contents(sh->theme_path, v, -1, NULL);
-    }
-}
-
-static int load_theme_pref(Shell *sh) {
-    char *contents = NULL;
-    int idx = 0;
-    if (g_file_get_contents(sh->theme_path, &contents, NULL, NULL) &&
-        contents[0] >= '0' && contents[0] <= '2') {
-        idx = contents[0] - '0';
-    }
-    g_free(contents);
-    return idx;
 }
 
 /* ------------------------------------------------------------------ */
 /* Roster. */
 /* ------------------------------------------------------------------ */
 
+/* Rebuild the roster list from the core registry (rows, statuses,
+ * live-ness all come from the core now — no launch snapshot, no local
+ * row cache). Rows carry their JSON + status + id as widget data; the
+ * filter/sort callbacks read the same core state, so grouping is the
+ * shared needs-input → working → idle → history order. */
+static void refresh_roster(Shell *sh);
+
+/* Subtitle: selection context + live-ness + attention count, all from
+ * the core registry. */
 static void reload_statuses(Shell *sh) {
-    for (guint i = 0; i < sh->rows->len; i++) {
-        SessionRow *r = sh->rows->pdata[i];
-        int st = bridge_status(sh->core, i);
-        if (st < 0) {
-            continue;
-        }
-        r->status = st;
-        GtkWidget *badge = g_hash_table_lookup(sh->row_widgets, r->id);
-        if (badge) {
-            gtk_label_set_text(GTK_LABEL(badge), status_label(st));
-        }
-    }
+    size_t n = bridge_session_count(sh->core);
+    size_t sel = bridge_selected(sh->core);
     int attention = 0;
-    for (guint i = 0; i < sh->rows->len; i++) {
-        if (((SessionRow *)sh->rows->pdata[i])->status == 0) {
+    for (size_t i = 0; i < n; i++) {
+        if (bridge_status(sh->core, i) == AM_STATUS_ATTENTION) {
             attention++;
         }
     }
-    SessionRow *sel = NULL;
-    for (guint i = 0; i < sh->rows->len; i++) {
-        SessionRow *r = sh->rows->pdata[i];
-        if (sh->selected && strcmp(r->id, sh->selected) == 0) {
-            sel = r;
-            break;
-        }
-    }
     char *sub;
-    if (sel) {
-        char *age = age_string(sel->last_active);
-        LivePty *lp = g_hash_table_lookup(sh->live, sel->id);
-        sub = g_strdup_printf("%s · %s · %s%s%s%s", sel->project,
-                              sel->harness, age ? age : "",
-                              lp ? " · live" : "",
-                              attention ? " · needs input: " : "",
-                              attention ? "" : "");
-        free(age);
-        if (attention) {
-            char *with_n = g_strdup_printf("%s%d", sub, attention);
-            g_free(sub);
-            sub = with_n;
+    if (sel < n) {
+        char *json = bridge_session_json(sh->core, sel);
+        char *project = json_string(json ? json : "{}", "project");
+        char *harness = json_string(json ? json : "{}", "harness");
+        char *id = json_string(json ? json : "{}", "id");
+        long long last = json_int(json ? json : "{}", "last_active", 0);
+        bridge_string_free(json);
+        char *age = age_via_core(last);
+        int live = (id && bridge_is_live(sh->core, id)) ? 1 : 0;
+        /* Badge labels follow the registry statuses on every tick. */
+        for (size_t i = 0; i < n; i++) {
+            char *rj = bridge_session_json(sh->core, i);
+            char *rid = json_string(rj ? rj : "{}", "id");
+            bridge_string_free(rj);
+            if (!rid) {
+                continue;
+            }
+            GtkWidget *badge = g_hash_table_lookup(sh->row_widgets, rid);
+            if (badge) {
+                int st = bridge_status(sh->core, i);
+                char *hdr = section_for(st < 0 ? 1 : st);
+                char *glyph = glyph_via_core(st < 0 ? 1 : st);
+                char *label = g_strdup_printf(
+                    "%s %s", glyph ? glyph : "", hdr ? hdr : "");
+                gtk_label_set_text(GTK_LABEL(badge), label);
+                g_free(label);
+                bridge_string_free(hdr);
+                bridge_string_free(glyph);
+            }
+            free(rid);
         }
+        if (attention > 0) {
+            sub = g_strdup_printf(
+                "%s · %s · %s%s · %d need input",
+                project ? project : "", harness ? harness : "",
+                age ? age : "", live ? " · live" : "", attention);
+        } else {
+            sub = g_strdup_printf("%s · %s · %s%s",
+                                  project ? project : "",
+                                  harness ? harness : "", age ? age : "",
+                                  live ? " · live" : "");
+        }
+        free(project);
+        free(harness);
+        free(id);
+        bridge_string_free(age);
     } else {
-        sub = g_strdup_printf("%u runs%s", sh->rows->len,
-                              attention ? "" : "");
-        if (attention) {
-            char *with_n = g_strdup_printf("%s · %d need input", sub, attention);
-            g_free(sub);
-            sub = with_n;
+        if (attention > 0) {
+            sub = g_strdup_printf("%zu runs · %d need input", n, attention);
+        } else if (n == 0) {
+            sub = g_strdup("No runs yet — New run spawns one");
+        } else {
+            sub = g_strdup_printf("%zu runs", n);
         }
     }
     adw_window_title_set_subtitle(sh->header_title, sub);
     g_free(sub);
 }
 
-/* Sidebar filter: the shared core match (`am_roster_matches` in
- * `src/shell_shared.rs`) — case-insensitive title/project/id, blank
- * passes — so every shell filters identically. */
 static gboolean row_matches(GtkListBoxRow *row, gpointer data) {
     Shell *sh = data;
     const char *q = gtk_editable_get_text(GTK_EDITABLE(sh->filter));
-    SessionRow *r = g_object_get_data(G_OBJECT(row), "am-row");
-    if (!r) {
+    if (!q || !*q) {
         return TRUE;
     }
-    return am_roster_matches(r->title, r->project, r->id, q ? q : "");
+    /* Core-owned filter rule (title/project/id, case-insensitive). The
+     * row index rides on the widget; the core answers match/no-match. */
+    int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "am-idx"));
+    if (idx < 0) {
+        return TRUE;
+    }
+    return bridge_row_matches(sh->core, (size_t)idx, q) ? TRUE : FALSE;
 }
 
-/* Order: needs-input first, then active, then idle; recent first within. */
+/* Order: needs-input first, then working, then idle, history last;
+ * recent first within. Statuses + ids come from the core registry. */
 static int row_order(GtkListBoxRow *a, GtkListBoxRow *b, gpointer data) {
-    (void)data;
-    SessionRow *ra = g_object_get_data(G_OBJECT(a), "am-row");
-    SessionRow *rb = g_object_get_data(G_OBJECT(b), "am-row");
-    if (!ra || !rb) {
+    Shell *sh = data;
+    int ia = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(a), "am-idx"));
+    int ib = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "am-idx"));
+    if (ia < 0 || ib < 0) {
         return 0;
     }
-    int pa = ra->status == 0 ? 0 : ra->status == 2 ? 1 : 2;
-    int pb = rb->status == 0 ? 0 : rb->status == 2 ? 1 : 2;
+    int sa = bridge_status(sh->core, (size_t)ia);
+    int sb = bridge_status(sh->core, (size_t)ib);
+    int la = bridge_is_live(sh->core, NULL);
+    (void)la;
+    /* History (no live PTY) sorts last regardless of status. */
+    char *ja = bridge_session_json(sh->core, (size_t)ia);
+    char *jb = bridge_session_json(sh->core, (size_t)ib);
+    char *ida = json_string(ja ? ja : "{}", "id");
+    char *idb = json_string(jb ? jb : "{}", "id");
+    bridge_string_free(ja);
+    bridge_string_free(jb);
+    int live_a = (ida && bridge_is_live(sh->core, ida)) ? 1 : 0;
+    int live_b = (idb && bridge_is_live(sh->core, idb)) ? 1 : 0;
+    free(ida);
+    free(idb);
+    if (!live_a && live_b) {
+        return 1;
+    }
+    if (live_a && !live_b) {
+        return -1;
+    }
+    int pa = sa == 0 ? 0 : sa == 2 ? 1 : 2;
+    int pb = sb == 0 ? 0 : sb == 2 ? 1 : 2;
     if (pa != pb) {
         return pa - pb;
     }
-    if (ra->last_active != rb->last_active) {
-        return ra->last_active < rb->last_active ? 1 : -1;
+    char *ka = bridge_session_json(sh->core, (size_t)ia);
+    char *kb = bridge_session_json(sh->core, (size_t)ib);
+    long long ta = json_int(ka ? ka : "{}", "last_active", 0);
+    long long tb = json_int(kb ? kb : "{}", "last_active", 0);
+    char *tita = json_string(ka ? ka : "{}", "title");
+    char *titb = json_string(kb ? kb : "{}", "title");
+    bridge_string_free(ka);
+    bridge_string_free(kb);
+    int rc;
+    if (ta != tb) {
+        rc = ta < tb ? 1 : -1;
+    } else {
+        rc = strcmp(tita ? tita : "", titb ? titb : "");
     }
-    return strcmp(ra->title, rb->title);
+    free(tita);
+    free(titb);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -433,19 +451,14 @@ static void on_spawn(GtkButton *btn, gpointer data) {
     /* Split-button main: repeat the last launch instantly (the
      * null-CLI/null-folder/zero-yolo form resolves the core's effective
      * default, so a picker-confirmed claude/yolo combo repeats here).
-     * The fresh PTY mints a local id like the picker path: the core
-     * roster snapshot is launch-time, so there is no row to attach to.
-     * Local PTYs are capped (same 10-run ceiling as the macOS shell) so
-     * one-click spawning cannot grow the live set without bound. */
-    if (g_hash_table_size(sh->live) >= 10) {
-        toast(sh, "At 10 live sessions — close one first.");
-        return;
-    }
+     * The core run registry attaches the PTY to a new roster row under
+     * the shared cap — no shell-local ids, no shell-local live map. */
+    char id[128] = { 0 };
     char *err = NULL;
-    AmPty *pty = bridge_spawn_launch(sh->core, NULL, NULL, 0,
-                                     (unsigned)sh->cols,
-                                     (unsigned)sh->rows_grid, &err);
-    if (!pty) {
+    int rc = bridge_run_spawn(sh->core, NULL, NULL, 0,
+                              (unsigned)sh->cols,
+                              (unsigned)sh->rows_grid, id, sizeof id, &err);
+    if (rc != 0) {
         char *msg = g_strdup_printf("Could not start session: %s",
                                     err ? err : "unknown error");
         toast(sh, msg);
@@ -453,21 +466,15 @@ static void on_spawn(GtkButton *btn, gpointer data) {
         free(err);
         return;
     }
-    char *id = g_strdup_printf("local-%u", g_random_int());
-    LivePty *lp = calloc(1, sizeof *lp);
-    lp->pty = pty;
-    lp->fed = strdup("");
-    g_hash_table_insert(sh->live, id, lp);
-    free(sh->selected);
-    sh->selected = strdup(id);
-    bridge_note_launch(sh->core, NULL, NULL, NULL);
     /* Name the effective CLI so the repeat is verifiable (the null
      * form resolves last-used / configured / autodetected). */
     char *eff = bridge_effective_cli(sh->core, NULL);
-    char *preview = picker_preview(eff ? eff : NULL, NULL, 0);
+    char *preview =
+        bridge_spawn_preview(eff ? eff : "muse", NULL, 0);
     bridge_string_free(eff);
     toast(sh, preview ? preview : "Session started.");
     free(preview);
+    refresh_roster(sh);
     show_selected_in_terminal(sh);
     update_spawn_state(sh);
     reload_statuses(sh);
@@ -476,6 +483,13 @@ static void on_spawn(GtkButton *btn, gpointer data) {
 /* ------------------------------------------------------------------ */
 /* 2D new-session picker (folder x CLI + yolo).                        */
 /* ------------------------------------------------------------------ */
+
+/* Picker catalog row (parsed from the core CLI catalog JSON). */
+typedef struct {
+    char *id;
+    char *path; /* NULL when unavailable */
+    int available;
+} PickerCli;
 
 typedef struct {
     Shell *sh;
@@ -492,8 +506,131 @@ typedef struct {
     AdwDialog *dialog;
 } PickerUi;
 
+/* Minimal catalog/recents JSON parse (flat shapes from the core; the
+ * full picker-logic copies now live in the core — this only extracts
+ * rows for native radio widgets). */
+static PickerCli *parse_clis(const char *json, size_t *n_out) {
+    *n_out = 0;
+    if (!json) {
+        return NULL;
+    }
+    size_t cap = 4, n = 0;
+    PickerCli *out = calloc(cap, sizeof *out);
+    if (!out) {
+        return NULL;
+    }
+    const char *p = json;
+    while ((p = strstr(p, "\"id\"")) != NULL) {
+        const char *c = strchr(p, ':');
+        if (!c) {
+            break;
+        }
+        c++;
+        while (*c == ' ' || *c == '\t' || *c == '"') {
+            c++;
+        }
+        const char *e = strchr(c, '"');
+        if (!e) {
+            break;
+        }
+        /* Availability lives in the same object span: search between
+         * here and the closing brace of this object. */
+        const char *obj_end = strchr(e, '}');
+        if (!obj_end) {
+            obj_end = e + strlen(e);
+        }
+        int avail = 0;
+        {
+            const char *a = strstr(p, "\"available\"");
+            if (a && a < obj_end) {
+                const char *t = strstr(a, "true");
+                avail = (t && t < obj_end) ? 1 : 0;
+            }
+        }
+        if (n == cap) {
+            cap *= 2;
+            PickerCli *nb = realloc(out, cap * sizeof *out);
+            if (!nb) {
+                break;
+            }
+            out = nb;
+        }
+        out[n].id = strndup(c, (size_t)(e - c));
+        out[n].path = NULL;
+        out[n].available = avail;
+        n++;
+        p = e;
+    }
+    *n_out = n;
+    return out;
+}
+
+static char **parse_recents(const char *json, size_t *n_out) {
+    *n_out = 0;
+    if (!json) {
+        return NULL;
+    }
+    size_t cap = 4, n = 0;
+    char **out = calloc(cap, sizeof *out);
+    if (!out) {
+        return NULL;
+    }
+    const char *p = strchr(json, '[');
+    if (!p) {
+        return out;
+    }
+    p++;
+    while (*p && *p != ']') {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ||
+               *p == ',') {
+            p++;
+        }
+        if (*p != '"') {
+            break;
+        }
+        p++;
+        const char *e = p;
+        while (*e && *e != '"') {
+            e += (*e == '\\' && e[1]) ? 2 : 1;
+        }
+        if (n == cap) {
+            cap *= 2;
+            char **nb = realloc(out, cap * sizeof *out);
+            if (!nb) {
+                break;
+            }
+            out = nb;
+        }
+        out[n++] = strndup(p, (size_t)(e - p));
+        p = (*e) ? e + 1 : e;
+    }
+    *n_out = n;
+    return out;
+}
+
+static void clis_free(PickerCli *clis, size_t n) {
+    if (!clis) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        free(clis[i].id);
+        free(clis[i].path);
+    }
+    free(clis);
+}
+
+static void recents_free(char **recents, size_t n) {
+    if (!recents) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        free(recents[i]);
+    }
+    free(recents);
+}
+
 /* Refresh the `runs: <cli> in <folder> + yolo` preview line from the
- * current widget state. */
+ * current widget state (core-owned preview copy). */
 static void picker_refresh_preview(PickerUi *pu) {
     const char *cli = "muse";
     for (size_t i = 0; i < pu->n_clis; i++) {
@@ -504,8 +641,8 @@ static void picker_refresh_preview(PickerUi *pu) {
     }
     const char *folder = gtk_editable_get_text(GTK_EDITABLE(pu->folder));
     int yolo =
-        picker_yolo_value((int)gtk_drop_down_get_selected(pu->yolo));
-    char *text = picker_preview(cli, folder, yolo);
+        bridge_yolo_value((int)gtk_drop_down_get_selected(pu->yolo));
+    char *text = bridge_spawn_preview(cli, folder, yolo);
     gtk_label_set_text(pu->preview, text ? text : "runs: muse");
     free(text);
 }
@@ -552,8 +689,8 @@ static void picker_free(PickerUi *pu) {
     if (!pu) {
         return;
     }
-    picker_clis_free(pu->clis, pu->n_clis);
-    picker_recents_free(pu->recents, pu->n_recents);
+    clis_free(pu->clis, pu->n_clis);
+    recents_free(pu->recents, pu->n_recents);
     free(pu->cli_btns);
     free(pu);
 }
@@ -563,20 +700,26 @@ static void picker_free(PickerUi *pu) {
  * a spawn failure toasts and closes (the core error names the fix). */
 static void picker_confirm(PickerUi *pu) {
     Shell *sh = pu->sh;
-    char *folder_raw =
-        g_strdup(gtk_editable_get_text(GTK_EDITABLE(pu->folder)));
-    char *folder = picker_effective_folder(folder_raw);
-    g_free(folder_raw);
+    const char *raw =
+        gtk_editable_get_text(GTK_EDITABLE(pu->folder));
+    char *folder = NULL;
+    {
+        const char *b = raw;
+        while (*b == ' ' || *b == '\t') {
+            b++;
+        }
+        size_t len = strlen(b);
+        while (len > 0 && (b[len - 1] == ' ' || b[len - 1] == '\t')) {
+            len--;
+        }
+        if (len > 0) {
+            folder = strndup(b, len);
+        }
+    }
     if (folder && !g_file_test(folder, G_FILE_TEST_IS_DIR)) {
         char *msg = g_strdup_printf("No such folder: %s", folder);
         gtk_label_set_text(pu->error, msg);
         g_free(msg);
-        free(folder);
-        return;
-    }
-    if (g_hash_table_size(sh->live) >= 10) {
-        gtk_label_set_text(pu->error,
-                           "At 10 live sessions — close one first.");
         free(folder);
         return;
     }
@@ -587,13 +730,23 @@ static void picker_confirm(PickerUi *pu) {
             break;
         }
     }
+    /* Core yolo mapping (single copy of the tri-state rule). */
     int yolo =
-        picker_yolo_value((int)gtk_drop_down_get_selected(pu->yolo));
+        bridge_yolo_value((int)gtk_drop_down_get_selected(pu->yolo));
+    /* The core registry enforces the shared cap (reaping oldest-exited
+     * first); a refusal names per-run close like every other shell. */
+    char id[128] = { 0 };
     char *err = NULL;
-    AmPty *pty = bridge_spawn_launch(sh->core, cli, folder, yolo,
-                                     (unsigned)sh->cols,
-                                     (unsigned)sh->rows_grid, &err);
-    if (!pty) {
+    int rc = bridge_run_spawn(sh->core, cli, folder, yolo,
+                              (unsigned)sh->cols,
+                              (unsigned)sh->rows_grid, id, sizeof id, &err);
+    if (rc != 0) {
+        if (err && strstr(err, "live runs")) {
+            gtk_label_set_text(pu->error, err);
+            free(err);
+            free(folder);
+            return;
+        }
         char *msg = g_strdup_printf("Could not start session: %s",
                                     err ? err : "unknown error");
         toast(sh, msg);
@@ -603,21 +756,12 @@ static void picker_confirm(PickerUi *pu) {
         adw_dialog_close(pu->dialog);
         return;
     }
-    /* Native shells mint their own live ids (the roster snapshot is
-     * launch-time): track the PTY under a local id and select it. */
-    char *id = g_strdup_printf("local-%u", g_random_int());
-    LivePty *lp = calloc(1, sizeof *lp);
-    lp->pty = pty;
-    lp->fed = strdup("");
-    g_hash_table_insert(sh->live, id, lp);
-    free(sh->selected);
-    sh->selected = strdup(id);
-    bridge_note_launch(sh->core, cli, folder, NULL);
-    char *preview = picker_preview(cli, folder, yolo);
+    char *preview = bridge_spawn_preview(cli, folder, yolo);
     toast(sh, preview ? preview : "Session started.");
     free(preview);
     free(folder);
     adw_dialog_close(pu->dialog);
+    refresh_roster(sh);
     show_selected_in_terminal(sh);
     update_spawn_state(sh);
     reload_statuses(sh);
@@ -649,12 +793,11 @@ static void on_pick_session(GtkButton *btn, gpointer data) {
     }
     pu->sh = sh;
     char *clis_json = bridge_clis_json();
-    pu->clis = picker_parse_clis(clis_json ? clis_json : "[]", &pu->n_clis);
+    pu->clis = parse_clis(clis_json ? clis_json : "[]", &pu->n_clis);
     bridge_string_free(clis_json);
     char *recents_json = bridge_recent_json(sh->core);
     pu->recents =
-        picker_parse_recents(recents_json ? recents_json : "[]",
-                             &pu->n_recents);
+        parse_recents(recents_json ? recents_json : "[]", &pu->n_recents);
     bridge_string_free(recents_json);
     if (!pu->clis) {
         picker_free(pu);
@@ -719,15 +862,7 @@ static void on_pick_session(GtkButton *btn, gpointer data) {
     for (size_t i = 0; i < pu->n_clis; i++) {
         char *label;
         if (pu->clis[i].available) {
-            label = g_strdup_printf(
-                "%s — ready%s%s", pu->clis[i].id,
-                pu->clis[i].path ? " (" : "",
-                pu->clis[i].path ? pu->clis[i].path : "");
-            if (pu->clis[i].path) {
-                char *tmp = g_strdup_printf("%s)", label);
-                g_free(label);
-                label = tmp;
-            }
+            label = g_strdup_printf("%s — ready", pu->clis[i].id);
         } else {
             label = g_strdup_printf("%s — not installed", pu->clis[i].id);
         }
@@ -740,7 +875,7 @@ static void on_pick_session(GtkButton *btn, gpointer data) {
         gtk_widget_set_sensitive(row, pu->clis[i].available ? TRUE : FALSE);
         gtk_widget_set_tooltip_text(
             row, pu->clis[i].available
-                     ? (pu->clis[i].path ? pu->clis[i].path : pu->clis[i].id)
+                     ? pu->clis[i].id
                      : "Install this CLI and ensure it is on PATH.");
         g_signal_connect(row, "toggled", G_CALLBACK(picker_cli_toggled),
                          pu);
@@ -794,106 +929,125 @@ static void on_pick_session(GtkButton *btn, gpointer data) {
     adw_dialog_present(dialog, GTK_WIDGET(win));
 }
 
-/* Encode one key press into the raw bytes the child expects and forward
- * them with bridge_write. Returns TRUE when handled (stop VTE from also
- * processing the key: with no VTE-side PTY there is exactly one line
- * discipline — the core's — so nothing double-echoes). */
+/* Map one GDK keyval to the core's logical key name (the shared key
+ * table in `am_key_encode` owns the bytes; this only translates). */
+static const char *gdk_key_name(guint keyval) {
+    switch (keyval) {
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+    case GDK_KEY_ISO_Enter: return "enter";
+    case GDK_KEY_BackSpace: return "backspace";
+    case GDK_KEY_Tab: return "tab";
+    case GDK_KEY_Escape: return "escape";
+    case GDK_KEY_Up: return "up";
+    case GDK_KEY_Down: return "down";
+    case GDK_KEY_Right: return "right";
+    case GDK_KEY_Left: return "left";
+    case GDK_KEY_Home: return "home";
+    case GDK_KEY_End: return "end";
+    case GDK_KEY_Insert: return "insert";
+    case GDK_KEY_Delete: return "delete";
+    case GDK_KEY_Page_Up: return "pageup";
+    case GDK_KEY_Page_Down: return "pagedown";
+    case GDK_KEY_F1: return "f1";
+    case GDK_KEY_F2: return "f2";
+    case GDK_KEY_F3: return "f3";
+    case GDK_KEY_F4: return "f4";
+    case GDK_KEY_F5: return "f5";
+    case GDK_KEY_F6: return "f6";
+    case GDK_KEY_F7: return "f7";
+    case GDK_KEY_F8: return "f8";
+    case GDK_KEY_F9: return "f9";
+    case GDK_KEY_F10: return "f10";
+    case GDK_KEY_F11: return "f11";
+    case GDK_KEY_F12: return "f12";
+    default: return NULL;
+    }
+}
+
+/* Selected row id from the core (owned copy; NULL when empty). */
+static char *selected_id(Shell *sh) {
+    size_t n = bridge_session_count(sh->core);
+    size_t sel = bridge_selected(sh->core);
+    if (sel >= n) {
+        return NULL;
+    }
+    char *json = bridge_session_json(sh->core, sel);
+    char *id = json_string(json ? json : "{}", "id");
+    bridge_string_free(json);
+    return id;
+}
+
+/* Forward one key press to the selected run's child via the shared core
+ * key table. Returns TRUE when handled (stop VTE from also processing
+ * the key: with no VTE-side PTY there is exactly one line discipline —
+ * the core's — so nothing double-echoes). */
 static gboolean on_key_pressed(GtkEventControllerKey *ctl, guint keyval,
                                guint keycode, GdkModifierType state,
                                gpointer data) {
     (void)ctl;
     (void)keycode;
     Shell *sh = data;
-    LivePty *lp =
-        sh->selected ? g_hash_table_lookup(sh->live, sh->selected) : NULL;
-    if (!lp) {
+    char *id = selected_id(sh);
+    if (!id || !bridge_is_live(sh->core, id)) {
+        free(id);
         return FALSE;
     }
     gboolean ctrl = (state & GDK_CONTROL_MASK) != 0;
     gboolean shift = (state & GDK_SHIFT_MASK) != 0;
     gboolean alt = (state & GDK_ALT_MASK) != 0;
 
-    /* Let VTE keep its own copy/paste shortcuts. */
+    /* Let VTE keep its own copy/paste shortcuts (shared reserve rule). */
     if (ctrl && shift && (keyval == GDK_KEY_C || keyval == GDK_KEY_V)) {
+        free(id);
         return FALSE;
     }
 
-    char buf[16];
-    size_t n = 0;
-    switch (keyval) {
-    case GDK_KEY_Return:
-    case GDK_KEY_KP_Enter:
-    case GDK_KEY_ISO_Enter:
-        buf[0] = '\r';
-        n = 1;
-        break;
-    case GDK_KEY_BackSpace: buf[0] = 0x7f; n = 1; break;
-    case GDK_KEY_Tab: buf[0] = '\t'; n = 1; break;
-    case GDK_KEY_Escape: buf[0] = 0x1b; n = 1; break;
-    case GDK_KEY_Up: memcpy(buf, "\x1b[A", 3); n = 3; break;
-    case GDK_KEY_Down: memcpy(buf, "\x1b[B", 3); n = 3; break;
-    case GDK_KEY_Right: memcpy(buf, "\x1b[C", 3); n = 3; break;
-    case GDK_KEY_Left: memcpy(buf, "\x1b[D", 3); n = 3; break;
-    case GDK_KEY_Home: memcpy(buf, "\x1b[H", 3); n = 3; break;
-    case GDK_KEY_End: memcpy(buf, "\x1b[F", 3); n = 3; break;
-    case GDK_KEY_Insert: memcpy(buf, "\x1b[2~", 4); n = 4; break;
-    case GDK_KEY_Delete: memcpy(buf, "\x1b[3~", 4); n = 4; break;
-    case GDK_KEY_Page_Up: memcpy(buf, "\x1b[5~", 4); n = 4; break;
-    case GDK_KEY_Page_Down: memcpy(buf, "\x1b[6~", 4); n = 4; break;
-    case GDK_KEY_F1: memcpy(buf, "\x1bOP", 3); n = 3; break;
-    case GDK_KEY_F2: memcpy(buf, "\x1bOQ", 3); n = 3; break;
-    case GDK_KEY_F3: memcpy(buf, "\x1bOR", 3); n = 3; break;
-    case GDK_KEY_F4: memcpy(buf, "\x1bOS", 3); n = 3; break;
-    case GDK_KEY_F5: memcpy(buf, "\x1b[15~", 5); n = 5; break;
-    case GDK_KEY_F6: memcpy(buf, "\x1b[17~", 5); n = 5; break;
-    case GDK_KEY_F7: memcpy(buf, "\x1b[18~", 5); n = 5; break;
-    case GDK_KEY_F8: memcpy(buf, "\x1b[19~", 5); n = 5; break;
-    case GDK_KEY_F9: memcpy(buf, "\x1b[20~", 5); n = 5; break;
-    case GDK_KEY_F10: memcpy(buf, "\x1b[21~", 5); n = 5; break;
-    case GDK_KEY_F11: memcpy(buf, "\x1b[23~", 5); n = 5; break;
-    case GDK_KEY_F12: memcpy(buf, "\x1b[24~", 5); n = 5; break;
-    default: break;
+    /* Logical key name + typed char for the core table. */
+    const char *name = gdk_key_name(keyval);
+    char *owned_name = NULL;
+    char key_char[8] = { 0 };
+    const char *key_char_arg = NULL;
+    guint32 uc = gdk_keyval_to_unicode(keyval);
+    if (uc != 0) {
+        int m = g_unichar_to_utf8((gunichar)uc, key_char);
+        if (m > 0) {
+            key_char[m] = '\0';
+            key_char_arg = key_char;
+        }
+        if (!name) {
+            /* Single printable char: the key name is the char itself
+             * (the core table prefers key_char, layout-correct). */
+            if (g_utf8_strlen(key_char, -1) == 1) {
+                owned_name = g_strdup(key_char);
+                name = owned_name;
+            }
+        }
     }
-    if (n == 0) {
-        guint32 uc = gdk_keyval_to_unicode(keyval);
-        if (uc == 0) {
-            return FALSE; /* Super, modifiers, media keys: leave to GTK. */
-        }
-        if (ctrl && !alt && uc < 128) {
-            /* Ctrl+letter -> control code (Ctrl+C interrupts the child;
-             * copy stays on Ctrl+Shift+C, handled above). */
-            char lower = (char)tolower((int)uc);
-            if (lower >= 'a' && lower <= 'z') {
-                buf[0] = (char)(lower - 'a' + 1);
-                n = 1;
-            } else {
-                return FALSE;
-            }
-        } else {
-            char tmp[8];
-            int m = g_unichar_to_utf8((gunichar)uc, tmp);
-            if (m <= 0) {
-                return FALSE;
-            }
-            if (alt) {
-                buf[0] = 0x1b;
-                memcpy(buf + 1, tmp, (size_t)m);
-                n = (size_t)m + 1;
-            } else {
-                memcpy(buf, tmp, (size_t)m);
-                n = (size_t)m;
-            }
-        }
+    if (!name) {
+        free(owned_name);
+        free(id);
+        return FALSE; /* Super, modifiers, media keys: leave to GTK. */
+    }
+
+    unsigned char buf[16];
+    int n = bridge_key_encode(name, key_char_arg, ctrl ? 1 : 0,
+                              alt ? 1 : 0, buf, sizeof buf);
+    free(owned_name);
+    if (n <= 0) {
+        free(id);
+        return n < 0 ? FALSE : TRUE;
     }
 
     char *err = NULL;
-    if (bridge_write(lp->pty, (unsigned char *)buf, n, &err) != 0) {
+    if (bridge_run_write(sh->core, id, buf, (size_t)n, &err) != 0) {
         char *msg = g_strdup_printf("Could not send input: %s",
                                     err ? err : "unknown error");
         toast(sh, msg);
         g_free(msg);
         free(err);
     }
+    free(id);
     return TRUE;
 }
 
@@ -906,51 +1060,89 @@ static void feed_to_vte(Shell *sh, const char *feed) {
 }
 
 /* Show the selected run's current snapshot in the VTE from scratch
- * (selection change or fresh spawn): reset, then feed the full screen. */
+ * (selection change or fresh spawn): reset, then feed the full screen.
+ * Reads the core registry by row id — no shell-local PTY map. */
 static void show_selected_in_terminal(Shell *sh) {
     vte_terminal_reset(sh->term, TRUE, TRUE);
-    LivePty *lp =
-        sh->selected ? g_hash_table_lookup(sh->live, sh->selected) : NULL;
-    if (!lp) {
-        vte_terminal_feed(sh->term, "(no live session — press New run)\r\n",
-                          -1);
+    char *id = selected_id(sh);
+    if (!id || !bridge_is_live(sh->core, id)) {
+        /* No live session on the selected row: offer restart/resume
+         * when the row exists (ended run or historic entry), else the
+         * empty hint. Same recovery rule as the other shells. */
+        size_t n = bridge_session_count(sh->core);
+        size_t sel = bridge_selected(sh->core);
+        if (sel < n) {
+            vte_terminal_feed(sh->term,
+                              "(run ended — press R to restart)\r\n", -1);
+        } else {
+            vte_terminal_feed(sh->term,
+                              "(no live session — press New run)\r\n", -1);
+        }
+        free(id);
+        free(sh->fed_id);
+        sh->fed_id = NULL;
+        free(sh->fed_text);
+        sh->fed_text = strdup("");
         return;
     }
-    char *snap = bridge_screen_text(lp->pty);
+    char *snap = bridge_run_screen_text(sh->core, id);
     const char *text = snap ? snap : "";
-    char *feed = am_feed_delta("", text);
+    char *feed = bridge_feed_delta("", text);
     if (feed) {
         feed_to_vte(sh, feed);
         free(feed);
     }
-    free(lp->fed);
-    lp->fed = strdup(text);
+    free(sh->fed_id);
+    sh->fed_id = id;
+    free(sh->fed_text);
+    sh->fed_text = strdup(text);
     bridge_string_free(snap);
 }
 
+/* Pump: the core registry feeds every live run (statuses, links, and
+ * re-sort inside via `bridge_pump_all` — the roster now actually moves),
+ * then the selected run's delta reaches the VTE, the roster rebuilds on
+ * change, and persistence autosaves on a throttle. */
+static int save_counter = 0;
+
 static gboolean pump_tick(gpointer data) {
     Shell *sh = data;
-    GHashTableIter it;
-    gpointer k, v;
-    g_hash_table_iter_init(&it, sh->live);
-    while (g_hash_table_iter_next(&it, &k, &v)) {
-        const char *id = k;
-        LivePty *lp = v;
-        if (!bridge_pump(lp->pty)) {
-            continue;
-        }
-        char *snap = bridge_screen_text(lp->pty);
+    int dirty = bridge_pump_all(sh->core);
+    /* Selected run's delta (by row id, not by a shell-local map). */
+    char *id = selected_id(sh);
+    if (id && bridge_is_live(sh->core, id)) {
+        char *snap = bridge_run_screen_text(sh->core, id);
         const char *text = snap ? snap : "";
-        char *feed = am_feed_delta(lp->fed ? lp->fed : "", text);
-        if (feed && feed[0] && sh->selected && strcmp(id, sh->selected) == 0) {
+        const char *fed =
+            (sh->fed_id && strcmp(sh->fed_id, id) == 0 && sh->fed_text)
+                ? sh->fed_text
+                : "";
+        char *feed = bridge_feed_delta(fed, text);
+        if (feed && feed[0]) {
             feed_to_vte(sh, feed);
         }
         free(feed);
-        free(lp->fed);
-        lp->fed = strdup(text);
+        free(sh->fed_id);
+        sh->fed_id = id;
+        id = NULL;
+        free(sh->fed_text);
+        sh->fed_text = strdup(text);
         bridge_string_free(snap);
+        dirty = 1;
     }
+    free(id);
+    /* Roster rebuild on change (new rows attach in the core now). */
+    refresh_roster(sh);
     reload_statuses(sh);
+    /* Autosave throttle (replaces the manual Save button): persist at
+     * most every ~5s while dirty, like the gpui pump persist. */
+    if (dirty && (++save_counter % 100) == 0) {
+        char *err = NULL;
+        if (bridge_core_save(sh->core, &err) != 0) {
+            free(err);
+        }
+    }
+    (void)dirty;
     return G_SOURCE_CONTINUE;
 }
 
@@ -968,12 +1160,16 @@ static void on_term_resize(VteTerminal *term, guint w, guint h,
     if ((int)cols != sh->cols || (int)rows != sh->rows_grid) {
         sh->cols = (int)cols;
         sh->rows_grid = (int)rows;
-        GHashTableIter it;
-        gpointer k, v;
-        g_hash_table_iter_init(&it, sh->live);
-        while (g_hash_table_iter_next(&it, &k, &v)) {
-            (void)k;
-            bridge_resize(((LivePty *)v)->pty, (unsigned)cols, (unsigned)rows);
+        size_t n = bridge_session_count(sh->core);
+        for (size_t i = 0; i < n; i++) {
+            char *json = bridge_session_json(sh->core, i);
+            char *rid = json_string(json ? json : "{}", "id");
+            bridge_string_free(json);
+            if (rid) {
+                bridge_run_resize(sh->core, rid, (unsigned)cols,
+                                  (unsigned)rows);
+                free(rid);
+            }
         }
         /* Reflow replays the selected screen from scratch. */
         show_selected_in_terminal(sh);
@@ -989,9 +1185,13 @@ static void on_row_selected(GtkListBox *box, GtkListBoxRow *row,
                             gpointer data) {
     (void)box;
     Shell *sh = data;
-    SessionRow *r = row ? g_object_get_data(G_OBJECT(row), "am-row") : NULL;
-    free(sh->selected);
-    sh->selected = r ? strdup(r->id) : NULL;
+    /* Core-owned selection: the row index rides on the widget. */
+    int idx = row
+        ? GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "am-idx"))
+        : -1;
+    if (idx >= 0) {
+        bridge_select(sh->core, (size_t)idx);
+    }
     show_selected_in_terminal(sh);
     update_spawn_state(sh);
     reload_statuses(sh);
@@ -1000,28 +1200,57 @@ static void on_row_selected(GtkListBox *box, GtkListBoxRow *row,
 static void on_filter_changed(GtkSearchEntry *entry, gpointer data) {
     (void)entry;
     Shell *sh = data;
+    /* Core-owned filter text (snaps selection); the list filter reads
+     * the same core state. */
+    bridge_set_filter(
+        sh->core, gtk_editable_get_text(GTK_EDITABLE(sh->filter)));
     gtk_list_box_invalidate_filter(sh->list);
 }
 
-static void on_save(GtkButton *btn, gpointer data) {
+/* Per-run close (parity with the `x` key everywhere): drop the selected
+ * run's PTY + entry, persist, rebuild. */
+static void on_close_run(GtkButton *btn, gpointer data) {
     (void)btn;
     Shell *sh = data;
+    char *id = selected_id(sh);
+    if (!id) {
+        return;
+    }
+    bridge_run_close(sh->core, id);
+    free(id);
     char *err = NULL;
     if (bridge_core_save(sh->core, &err) != 0) {
-        char *msg =
-            g_strdup_printf("Could not save: %s", err ? err : "unknown error");
+        free(err);
+    }
+    refresh_roster(sh);
+    show_selected_in_terminal(sh);
+    reload_statuses(sh);
+}
+
+/* Restart/resume the selected run (parity with the `r` key): re-attach
+ * on the same id, keeping title and links. */
+static void on_restart_run(GtkButton *btn, gpointer data) {
+    (void)btn;
+    Shell *sh = data;
+    char *id = selected_id(sh);
+    if (!id) {
+        return;
+    }
+    char *err = NULL;
+    if (bridge_run_restart(sh->core, id, (unsigned)sh->cols,
+                           (unsigned)sh->rows_grid, &err) != 0) {
+        char *msg = g_strdup_printf("Could not restart: %s",
+                                    err ? err : "unknown error");
         toast(sh, msg);
         g_free(msg);
         free(err);
+        free(id);
         return;
     }
-    toast(sh, "Saved");
-}
-
-static void on_theme_changed(GObject *obj, GParamSpec *ps, gpointer data) {
-    (void)ps;
-    Shell *sh = data;
-    apply_theme(sh, (int)gtk_drop_down_get_selected(GTK_DROP_DOWN(obj)));
+    free(id);
+    refresh_roster(sh);
+    show_selected_in_terminal(sh);
+    reload_statuses(sh);
 }
 
 static void on_find_changed(GtkSearchEntry *entry, gpointer data) {
@@ -1126,8 +1355,9 @@ static void on_term_menu(GtkGestureClick *gest, int n_press, double x,
     g_object_unref(ag);
 }
 
-/* App-level shortcuts: Ctrl+F find, Ctrl+S save, Ctrl+N spawn,
- * Ctrl+Shift+N picker. */
+/* App-level shortcuts: Ctrl+F find, Ctrl+N repeat-last spawn,
+ * Ctrl+Shift+N picker, Ctrl+R restart/resume, Ctrl+W close run,
+ * Up/Down step selection. Persistence is automatic (no Ctrl+S). */
 static gboolean on_window_key(GtkEventControllerKey *ctl, guint keyval,
                               guint keycode, GdkModifierType state,
                               gpointer data) {
@@ -1137,10 +1367,6 @@ static gboolean on_window_key(GtkEventControllerKey *ctl, guint keyval,
     if ((state & GDK_CONTROL_MASK) && !(state & GDK_ALT_MASK)) {
         if (keyval == GDK_KEY_f || keyval == GDK_KEY_F) {
             toggle_find(sh);
-            return TRUE;
-        }
-        if (keyval == GDK_KEY_s || keyval == GDK_KEY_S) {
-            on_save(NULL, sh);
             return TRUE;
         }
         if ((keyval == GDK_KEY_n || keyval == GDK_KEY_N) &&
@@ -1153,6 +1379,28 @@ static gboolean on_window_key(GtkEventControllerKey *ctl, guint keyval,
             on_pick_session(NULL, sh);
             return TRUE;
         }
+        if (keyval == GDK_KEY_r || keyval == GDK_KEY_R) {
+            on_restart_run(NULL, sh);
+            return TRUE;
+        }
+        if (keyval == GDK_KEY_w || keyval == GDK_KEY_W) {
+            on_close_run(NULL, sh);
+            return TRUE;
+        }
+    }
+    if (keyval == GDK_KEY_Up && (state & GDK_CONTROL_MASK)) {
+        bridge_select_step(sh->core, 0);
+        refresh_roster(sh);
+        show_selected_in_terminal(sh);
+        reload_statuses(sh);
+        return TRUE;
+    }
+    if (keyval == GDK_KEY_Down && (state & GDK_CONTROL_MASK)) {
+        bridge_select_step(sh->core, 1);
+        refresh_roster(sh);
+        show_selected_in_terminal(sh);
+        reload_statuses(sh);
+        return TRUE;
     }
     return FALSE;
 }
@@ -1204,21 +1452,20 @@ static void build_ui(Shell *sh) {
     gtk_widget_set_sensitive(pick_btn, TRUE);
     adw_header_bar_pack_start(ADW_HEADER_BAR(bar), new_box);
 
-    sh->save_btn = GTK_BUTTON(gtk_button_new_with_label("Save"));
-    g_signal_connect(sh->save_btn, "clicked", G_CALLBACK(on_save), sh);
-    adw_header_bar_pack_end(ADW_HEADER_BAR(bar), GTK_WIDGET(sh->save_btn));
-
-    /* Theme picker: System / Dark / Light. */
-    const char *themes[] = { "System", "Dark", "Light", NULL };
-    sh->theme_drop = GTK_DROP_DOWN(
-        gtk_drop_down_new_from_strings(themes));
-    gtk_drop_down_set_selected(sh->theme_drop,
-                               (guint)load_theme_pref(sh));
-    gtk_widget_set_tooltip_text(GTK_WIDGET(sh->theme_drop), "Theme");
-    g_signal_connect(sh->theme_drop, "notify::selected",
-                     G_CALLBACK(on_theme_changed), sh);
-    adw_header_bar_pack_end(ADW_HEADER_BAR(bar),
-                            GTK_WIDGET(sh->theme_drop));
+    /* Restart + close run buttons (parity with Ctrl+R / Ctrl+W and the
+     * `r`/`x` keys everywhere). Persistence is automatic — no Save
+     * button, no theme picker: the shell follows the system appearance
+     * like macOS/Windows. */
+    GtkWidget *restart_btn = gtk_button_new_with_label("Restart");
+    gtk_widget_set_tooltip_text(restart_btn,
+                                "Restart/resume the selected run (Ctrl+R)");
+    g_signal_connect(restart_btn, "clicked", G_CALLBACK(on_restart_run),
+                     sh);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(bar), restart_btn);
+    GtkWidget *close_btn = gtk_button_new_with_label("Close run");
+    gtk_widget_set_tooltip_text(close_btn, "Close the selected run (Ctrl+W)");
+    g_signal_connect(close_btn, "clicked", G_CALLBACK(on_close_run), sh);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(bar), close_btn);
 
     /* Split view: roster sidebar + terminal. */
     AdwOverlaySplitView *split =
@@ -1299,70 +1546,13 @@ static void build_ui(Shell *sh) {
     g_signal_connect(win_keys, "key-pressed", G_CALLBACK(on_window_key), sh);
     gtk_widget_add_controller(GTK_WIDGET(win), win_keys);
 
-    /* Roster rows (launch snapshot; statuses refresh on the pump tick). */
+    /* Follow the system appearance (no manual override); rows come from
+     * the core registry via refresh_roster below. */
+    apply_system_theme(sh);
+    refresh_roster(sh);
+
     size_t n = bridge_session_count(sh->core);
-    for (size_t i = 0; i < n; i++) {
-        char *json = bridge_session_json(sh->core, i);
-        if (!json) {
-            continue;
-        }
-        SessionRow *r = calloc(1, sizeof *r);
-        r->id = json_string(json, "id");
-        r->title = json_string(json, "title");
-        r->project = json_string(json, "project");
-        r->harness = json_string(json, "harness");
-        r->last_active = json_int(json, "last_active", 0);
-        r->status = bridge_status(sh->core, i);
-        bridge_string_free(json);
-        if (!r->id) {
-            row_free(r);
-            continue;
-        }
-        if (!r->title) {
-            r->title = strdup("(untitled)");
-        }
-        if (!r->project) {
-            r->project = strdup("");
-        }
-        if (!r->harness) {
-            r->harness = strdup("");
-        }
-        g_ptr_array_add(sh->rows, r);
-
-        GtkWidget *row = gtk_list_box_row_new();
-        g_object_set_data_full(G_OBJECT(row), "am-row-id", strdup(r->id),
-                               free);
-        g_object_set_data(G_OBJECT(row), "am-row", r);
-        GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_widget_set_margin_start(hbox, 8);
-        gtk_widget_set_margin_end(hbox, 8);
-        gtk_widget_set_margin_top(hbox, 6);
-        gtk_widget_set_margin_bottom(hbox, 6);
-        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-        gtk_widget_set_hexpand(vbox, TRUE);
-        GtkWidget *t = gtk_label_new(r->title);
-        gtk_label_set_xalign(GTK_LABEL(t), 0);
-        gtk_label_set_ellipsize(GTK_LABEL(t), PANGO_ELLIPSIZE_END);
-        char *detail = g_strdup_printf("%s · %s", r->project, r->harness);
-        GtkWidget *d = gtk_label_new(detail);
-        g_free(detail);
-        gtk_label_set_xalign(GTK_LABEL(d), 0);
-        gtk_widget_add_css_class(d, "dim-label");
-        gtk_box_append(GTK_BOX(vbox), t);
-        gtk_box_append(GTK_BOX(vbox), d);
-        GtkWidget *badge = gtk_label_new(status_label(r->status));
-        gtk_label_set_xalign(GTK_LABEL(badge), 1);
-        gtk_widget_add_css_class(badge, "caption");
-        gtk_box_append(GTK_BOX(hbox), vbox);
-        gtk_box_append(GTK_BOX(hbox), badge);
-        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
-        gtk_list_box_append(sh->list, row);
-        g_hash_table_insert(sh->row_widgets, strdup(r->id), badge);
-    }
-
-    apply_theme(sh, (int)gtk_drop_down_get_selected(sh->theme_drop));
-
-    if (sh->rows->len > 0) {
+    if (n > 0) {
         GtkListBoxRow *first = gtk_list_box_get_row_at_index(sh->list, 0);
         if (first) {
             gtk_list_box_select_row(sh->list, first);
@@ -1379,6 +1569,117 @@ static void build_ui(Shell *sh) {
     g_timeout_add(PUMP_MS, pump_tick, sh);
 }
 
+/* Rebuild the roster list from the core registry. Fingerprinted on
+ * (row count + per-row id/status/live + filter + selection) so ticks
+ * leave the selection alone unless the roster actually changed. */
+static void refresh_roster(Shell *sh) {
+    static char *last_fp = NULL;
+    size_t n = bridge_session_count(sh->core);
+    const char *fq =
+        gtk_editable_get_text(GTK_EDITABLE(sh->filter));
+    GString *fp = g_string_new(NULL);
+    g_string_append_printf(fp, "%zu|%s|%zu|", n, fq ? fq : "",
+                           bridge_selected(sh->core));
+    for (size_t i = 0; i < n; i++) {
+        char *json = bridge_session_json(sh->core, i);
+        char *id = json_string(json ? json : "{}", "id");
+        bridge_string_free(json);
+        g_string_append_printf(fp, "%d%s;", bridge_status(sh->core, i),
+                               (id && bridge_is_live(sh->core, id)) ? "L"
+                                                                   : "h");
+        free(id);
+    }
+    if (last_fp && strcmp(last_fp, fp->str) == 0) {
+        g_string_free(fp, TRUE);
+        return;
+    }
+    free(last_fp);
+    last_fp = g_strdup(fp->str);
+    g_string_free(fp, TRUE);
+
+    /* Clear and rebuild (fingerprint-gated: only on real change). */
+    GtkWidget *child;
+    while ((child = gtk_widget_get_first_child(GTK_WIDGET(sh->list)))) {
+        gtk_list_box_remove(sh->list, child);
+    }
+    g_hash_table_remove_all(sh->row_widgets);
+    for (size_t i = 0; i < n; i++) {
+        char *json = bridge_session_json(sh->core, i);
+        if (!json) {
+            continue;
+        }
+        char *id = json_string(json, "id");
+        char *title = json_string(json, "title");
+        char *project = json_string(json, "project");
+        char *harness = json_string(json, "harness");
+        long long last = json_int(json, "last_active", 0);
+        bridge_string_free(json);
+        if (!id) {
+            free(title);
+            free(project);
+            free(harness);
+            continue;
+        }
+        int st = bridge_status(sh->core, i);
+        if (st < 0) {
+            st = 1;
+        }
+        GtkWidget *row = gtk_list_box_row_new();
+        g_object_set_data_full(G_OBJECT(row), "am-row-id", strdup(id),
+                               free);
+        g_object_set_data(G_OBJECT(row), "am-idx",
+                          GINT_TO_POINTER((int)i));
+        GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_margin_start(hbox, 8);
+        gtk_widget_set_margin_end(hbox, 8);
+        gtk_widget_set_margin_top(hbox, 6);
+        gtk_widget_set_margin_bottom(hbox, 6);
+        /* Non-color marker + title + detail (single shared format). */
+        char *glyph = glyph_via_core(st);
+        GtkWidget *mark =
+            gtk_label_new(glyph ? glyph : "");
+        bridge_string_free(glyph);
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_hexpand(vbox, TRUE);
+        GtkWidget *t = gtk_label_new(title ? title : "(untitled)");
+        gtk_label_set_xalign(GTK_LABEL(t), 0);
+        gtk_label_set_ellipsize(GTK_LABEL(t), PANGO_ELLIPSIZE_END);
+        char *age = age_via_core(last);
+        char *detail = g_strdup_printf(
+            "%s · %s · %s%s", project ? project : "",
+            harness ? harness : "", age ? age : "",
+            bridge_is_live(sh->core, id) ? " · live" : "");
+        bridge_string_free(age);
+        GtkWidget *d = gtk_label_new(detail);
+        g_free(detail);
+        gtk_label_set_xalign(GTK_LABEL(d), 0);
+        gtk_widget_add_css_class(d, "dim-label");
+        gtk_box_append(GTK_BOX(vbox), t);
+        gtk_box_append(GTK_BOX(vbox), d);
+        char *hdr = section_for(st);
+        GtkWidget *badge = gtk_label_new(hdr ? hdr : "");
+        bridge_string_free(hdr);
+        gtk_label_set_xalign(GTK_LABEL(badge), 1);
+        gtk_widget_add_css_class(badge, "caption");
+        gtk_box_append(GTK_BOX(hbox), mark);
+        gtk_box_append(GTK_BOX(hbox), vbox);
+        gtk_box_append(GTK_BOX(hbox), badge);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
+        gtk_list_box_append(sh->list, row);
+        g_hash_table_insert(sh->row_widgets, strdup(id), badge);
+        free(id);
+        free(title);
+        free(project);
+        free(harness);
+    }
+    /* Restore the core selection into the list. */
+    size_t sel = bridge_selected(sh->core);
+    GtkListBoxRow *at = gtk_list_box_get_row_at_index(sh->list, (int)sel);
+    if (at) {
+        gtk_list_box_select_row(sh->list, at);
+    }
+}
+
 static void on_activate(GtkApplication *app, gpointer data) {
     (void)app;
     build_ui(data);
@@ -1392,9 +1693,9 @@ int main(int argc, char **argv) {
     Shell *sh = calloc(1, sizeof *sh);
     sh->cols = DEFAULT_COLS;
     sh->rows_grid = DEFAULT_ROWS;
-    sh->rows = g_ptr_array_new_with_free_func((GDestroyNotify)row_free);
-    sh->live = g_hash_table_new_full(g_str_hash, g_str_equal, free,
-                                     (GDestroyNotify)live_free);
+    /* No roster copy, no live map, no theme pref: the core registry owns
+     * rows/selection/filter/live-ness, persistence is automatic, and the
+     * shell follows the system appearance. */
     sh->row_widgets =
         g_hash_table_new_full(g_str_hash, g_str_equal, free, NULL);
 
@@ -1405,23 +1706,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char *cfg = g_build_filename(g_get_user_config_dir(), "agent-manager",
-                                 "gtk-theme", NULL);
-    char *dir = g_path_get_dirname(cfg);
-    g_mkdir_with_parents(dir, 0700);
-    g_free(dir);
-    sh->theme_path = cfg;
-
     sh->app = ADW_APPLICATION(
         adw_application_new("com.example.agent-manager", G_APPLICATION_DEFAULT_FLAGS));
     g_signal_connect(sh->app, "activate", G_CALLBACK(on_activate), sh);
     int rc = g_application_run(G_APPLICATION(sh->app), argc, argv);
 
-    g_hash_table_destroy(sh->live);
     g_hash_table_destroy(sh->row_widgets);
-    g_ptr_array_free(sh->rows, TRUE);
-    free(sh->selected);
-    free(sh->theme_path);
+    free(sh->fed_id);
+    free(sh->fed_text);
     bridge_core_free(sh->core);
     g_object_unref(sh->app);
     free(sh);

@@ -1,8 +1,8 @@
 //! C ABI foundation over the shared core (epic #60, slice 2).
 //!
 //! Minimal, portable `extern "C"` seam for the future native shells: owned
-//! screen snapshots (no `LiveView` lifetime crosses FFI, §5.2), integer
-//! error codes + a thread-local message (§5.3), and spawn / pump / write /
+//! screen snapshots (no `LiveView` lifetime crosses FFI, -ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½5.2), integer
+//! error codes + a thread-local message (-ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½5.3), and spawn / pump / write /
 //! resize / screen-text / status functions. Pure Rust, no codegen, so it
 //! verifies on every OS gate. SwiftUI scaffold is slice 3.
 
@@ -15,10 +15,7 @@ use crate::embedded::{EmbeddedPty, SpawnKind};
 use crate::launch;
 use crate::parsers::registry::RegistryParser;
 use crate::persist;
-use crate::providers::{
-    AntigravityCliProvider, ClaudeCliProvider, CodexCliProvider, MuseCliProvider,
-    OpencodeCliProvider, Provider,
-};
+use crate::providers::{MuseCliProvider, OpencodeCliProvider, Provider};
 use crate::runs::RunRegistry;
 
 /// Integer error codes returned by every fallible `am_*` function.
@@ -151,27 +148,6 @@ pub unsafe extern "C" fn am_core_new() -> *mut AmCore {
         OpencodeCliProvider::with_default_program(Box::new(RegistryParser::default()))
             .discover_sessions(),
     );
-    discovered.extend(
-        ClaudeCliProvider::new(
-            ClaudeCliProvider::default_store_root(),
-            Box::new(RegistryParser::default()),
-        )
-        .discover_sessions(),
-    );
-    discovered.extend(
-        CodexCliProvider::new(
-            CodexCliProvider::default_store_root(),
-            Box::new(RegistryParser::default()),
-        )
-        .discover_sessions(),
-    );
-    discovered.extend(
-        AntigravityCliProvider::new(
-            AntigravityCliProvider::default_store_root(),
-            Box::new(RegistryParser::default()),
-        )
-        .discover_sessions(),
-    );
     let persisted = persist::load_sessions();
     let mut reg = RunRegistry::new(persist::merge_sessions(discovered, persisted));
     // Native shells previously ran with a default config (their spawns
@@ -193,7 +169,7 @@ pub unsafe extern "C" fn am_core_free(core: *mut AmCore) {
 }
 
 /// Persist core state (user config + run list). Shells call this on a
-/// timer tick while dirty, on close, and after closing a run — never via
+/// timer tick while dirty, on close, and after closing a run ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ never via
 /// a manual Save button (removed from every shell: persistence is
 /// automatic, like the gpui shell's throttled pump persist). Returns an
 /// [`AmError`] code.
@@ -241,8 +217,8 @@ pub unsafe extern "C" fn am_spawn(
     spawn_into(out, &program, &args, cwd, cols, rows)
 }
 
-/// Spawn a 2D-launch session PTY (folder × CLI + yolo) of `cols` x `rows`.
-/// `cli` names the harness id (`muse`, `claude`, …; null/empty repeats the
+/// Spawn a 2D-launch session PTY (folder +ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ CLI + yolo) of `cols` x `rows`.
+/// `cli` names the harness id (`muse`, `claude`, ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã¢â‚¬Â¡Ãƒâ€šÃ‚Âª; null/empty repeats the
 /// last-used/default resolution), `cwd` is null (inherit) or a path,
 /// `yolo` is tri-state: >0 forces the canonical yolo flag on for this
 /// spawn only, <0 forces it off, 0 follows the per-agent config default.
@@ -765,7 +741,7 @@ pub unsafe extern "C" fn am_is_live(core: *const AmCore, id: *const c_char) -> b
 
 /// Pump every live run: feed output, rescan attention + links for changed
 /// runs, reclassify statuses, re-sort pinned to selection. Returns true
-/// when anything visible changed — the shell's only repaint gate (and its
+/// when anything visible changed ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ the shell's only repaint gate (and its
 /// roster/status refresh gate: statuses now actually move, unlike the
 /// launch-snapshot rows the old shells polled). Null is false, never UB.
 ///
@@ -818,7 +794,7 @@ pub unsafe extern "C" fn am_run_spawn(
             Some(_) => {}
             None => {
                 set_error(format!(
-                    "at {} live runs — close one first",
+                    "at {} live runs ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ close one first",
                     crate::shell_shared::MAX_LIVE_RUNS
                 ));
                 return AmError::Spawn.code();
@@ -827,7 +803,7 @@ pub unsafe extern "C" fn am_run_spawn(
     }
     // Resolve the spawn exactly like `am_spawn_launch` (same CLI/yolo
     // rule), then attach to a fresh roster row via the single
-    // `App::start_launch` funnel — the id is the row key, so the roster
+    // `App::start_launch` funnel ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ the id is the row key, so the roster
     // and the PTY map can never desync again.
     let cli_str = if cli.is_null() {
         None
@@ -1170,7 +1146,7 @@ pub unsafe extern "C" fn am_run_exited(core: *const AmCore, id: *const c_char) -
 // --- Shared shell helpers ----------------------------------------------------
 //
 // Thin `am_*` wrappers over `shell` so C/Swift shells call one code path:
-// key encoding, the snapshot→stream reconciler, the SGR renderer, picker
+// key encoding, the snapshotÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½stream reconciler, the SGR renderer, picker
 // helpers, display formatting, and selection state.
 
 /// Encode one logical keypress into child bytes. `key`/`key_char` are
@@ -1436,7 +1412,7 @@ pub extern "C" fn am_yolo_value(selected: c_int) -> c_int {
     crate::shell_shared::yolo_value(selected)
 }
 
-/// Human age for `last_active` (`just now`, `5m ago`, …). Free with
+/// Human age for `last_active` (`just now`, `5m ago`, ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã¢â‚¬Â¡Ãƒâ€šÃ‚Âª). Free with
 /// [`am_screen_text_free`].
 #[no_mangle]
 pub extern "C" fn am_age_string(now_unix: i64, then_unix: i64) -> *mut c_char {
@@ -1446,7 +1422,7 @@ pub extern "C" fn am_age_string(now_unix: i64, then_unix: i64) -> *mut c_char {
     }
 }
 
-/// Non-color status marker for a status code (`●`/`◐`/`○`).
+/// Non-color status marker for a status code (`ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½`/`ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½`/`ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½`).
 /// Free with [`am_screen_text_free`].
 #[no_mangle]
 pub extern "C" fn am_status_glyph(code: c_int) -> *mut c_char {
@@ -1505,7 +1481,7 @@ pub unsafe extern "C" fn am_row_matches(
 }
 
 /// Replace the title filter, snapping the selection into the matches.
-/// Null query clears. Always persists via [`am_core_save`] semantics? No —
+/// Null query clears. Always persists via [`am_core_save`] semantics? No ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½
 /// callers persist on close; this only mutates in-memory state.
 ///
 /// # Safety
@@ -1556,7 +1532,7 @@ pub unsafe extern "C" fn am_select(core: *mut AmCore, row: usize) {
 }
 
 /// Step selection next/prev (`forward` nonzero = next), wrapping within
-/// the current filter matches — the same rule as the gpui list keys.
+/// the current filter matches ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ the same rule as the gpui list keys.
 ///
 /// # Safety
 /// `core` must be null or live.
@@ -1650,7 +1626,7 @@ mod tests {
 
     #[test]
     fn snapshot_owns_data_after_pty_drop() {
-        // §5.2 core claim: the snapshot outlives (and is unaffected by
+        // -ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½5.2 core claim: the snapshot outlives (and is unaffected by
         // mutating/dropping) the PTY it was copied from.
         unsafe {
             let core = am_core_new();
@@ -2105,7 +2081,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn spawn_launch_yolo_tristate_reaches_child_argv() {
-        // 2D launch: the tri-state yolo int flows into the child argv —
+        // 2D launch: the tri-state yolo int flows into the child argv ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¿Ãƒâ€šÃ‚Â½
         // force-on appends the canonical flag, force-off suppresses the
         // opted-in config default, default follows it. The fake `muse`
         // echoes its argv, so the screen proves the flag story.

@@ -32,11 +32,52 @@ enum Smoke {
         if core.sessionRow(oob) != nil { return fail("am_session_json OOB non-nil") }
         if Core.lastError().isEmpty { return fail("am_last_error empty after failure") }
 
+        // Shared-helper surface: key table, reconciler, preview, yolo,
+        // age, glyphs, headers, clamp, filter/selection — one copy in
+        // the core, same on every shell.
+        guard Core.keyEncode(key: "enter", keyChar: nil, ctrl: false, alt: false) == [0x0D] else {
+            return fail("am_key_encode enter != CR")
+        }
+        guard Core.keyEncode(key: "shift", keyChar: nil, ctrl: false, alt: false) == nil else {
+            return fail("am_key_encode shift should Keep")
+        }
+        guard Core.feedDelta(old: "a", new: "a\nb\n") == "\r\nb\r\n" else {
+            return fail("am_feed_delta append")
+        }
+        guard Core.feedDelta(old: "same", new: "same") == nil else {
+            return fail("am_feed_delta identical != nil")
+        }
+        let spansDoc = #"[[{"text":"red","fg":[205,0,0],"bg":null,"bold":false,"italic":false,"underline":false}]]"#
+        guard Core.ansiRender(json: spansDoc) == "\u{1B}[0;38;2;205;0;0mred" else {
+            return fail("am_ansi_render red span")
+        }
+        guard Core.spawnPreview(cli: "muse", folder: "/tmp/api", yolo: 1) == "runs: muse in /tmp/api + yolo" else {
+            return fail("am_spawn_preview")
+        }
+        guard Core.yoloValue(1) == 1, Core.yoloValue(2) == -1 else {
+            return fail("am_yolo_value")
+        }
+        guard Core.ageString(now: 600, then: 0) == "10m ago" else {
+            return fail("am_age_string")
+        }
+        guard Core.statusGlyph(0) == "●" else {
+            return fail("am_status_glyph")
+        }
+        guard Core.sectionTitle(2) == "Working" else {
+            return fail("am_section_title")
+        }
+        guard Core.maxRuns == 10 else {
+            return fail("am_max_runs != 10")
+        }
+        guard core.liveCount == 0 else {
+            return fail("fresh core has live runs")
+        }
+
         print("SMOKE-OK sessions=\(n)")
 
         // Opt-in live converse proof against the real agent command:
-        // spawn, pump for output, write (no newline: echoed or buffered,
-        // never submitted), resize, free. Bounded by timeouts.
+        // registry spawn, pump for output, write (no newline: echoed or
+        // buffered, never submitted), resize, close. Bounded by timeouts.
         if CommandLine.arguments.contains("--smoke-live") {
             guard liveConverse(core: core, fail: fail) else { return false }
         }
@@ -44,19 +85,19 @@ enum Smoke {
     }
 
     static func liveConverse(core: Core, fail: (String) -> Bool) -> Bool {
-        let pty: Pty
+        let id: String
         do {
-            pty = try core.spawn(cols: 80, rows: 24)
+            id = try core.runSpawn(cli: nil, cwd: nil, yolo: 0, cols: 80, rows: 24)
         } catch {
             return fail("live spawn: \(error.localizedDescription)")
         }
-        defer { _ = pty } // am_pty_free on scope exit (reaps the child)
+        defer { core.runClose(id: id) }
 
         // Pump until the child produces visible output.
         var firstBytes = 0
         let start = Date()
         while Date().timeIntervalSince(start) < 15 {
-            if pty.pump(), let text = pty.screenText() {
+            if core.runPump(id: id), let text = core.runScreenText(id: id) {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     firstBytes = text.utf8.count
@@ -69,16 +110,16 @@ enum Smoke {
 
         // Input reaches the PTY: the write must succeed at the fd level.
         do {
-            try pty.write(Array("smoke-probe-62".utf8))
+            try core.runWrite(id: id, bytes: Array("smoke-probe-62".utf8))
         } catch {
             return fail("live write: \(error.localizedDescription)")
         }
 
         // Resize keeps the seam alive; the screen stays readable.
-        pty.resize(cols: 100, rows: 30)
+        core.runResize(id: id, cols: 100, rows: 30)
         Thread.sleep(forTimeInterval: 0.3)
-        _ = pty.pump()
-        guard let after = pty.screenText(), !after.isEmpty else {
+        _ = core.runPump(id: id)
+        guard let after = core.runScreenText(id: id), !after.isEmpty else {
             return fail("live: unreadable screen after resize")
         }
 

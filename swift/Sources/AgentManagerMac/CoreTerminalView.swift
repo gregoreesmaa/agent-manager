@@ -84,7 +84,11 @@ struct CoreTerminalView: NSViewRepresentable {
 
         // MARK: - TerminalViewDelegate
 
-        /// Keystrokes and pastes, already key-encoded: straight to the child.
+        /// SwiftTerm hands us raw key bytes; they travel to the child
+        /// through the core run registry (`am_run_write`). SwiftTerm's
+        /// own encoding already matches the shared core key table's
+        /// output for the keys it produces (Return → CR, Ctrl+C → ETX),
+        /// so no re-encoding is needed here.
         func send(source _: TerminalView, data: ArraySlice<UInt8>) {
             state.sendToPty(rowId: rowId, bytes: Array(data))
         }

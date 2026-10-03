@@ -1,11 +1,15 @@
-/* Unit tests for the WinUI picker logic (native/windows/src/picker.h).
- * Mirrors the Linux `am-picker-test` cases so both shells pin the same
- * catalog/recents/folder/yolo/preview behavior. Any C++17 compiler
- * builds it; exit 0 prints PICKER-OK, 1 on first failure. */
+/* Bridge tests for the shared picker/display helpers (dumb-shell
+ * parity). The preview, yolo, age, glyph, and section rules live in the
+ * core (`am_spawn_preview`, ...), pinned by `cargo test --lib`; the
+ * catalog/recents JSON shapes still parse locally for native widgets
+ * (picker.h), pinned here. Links the real staticlib via core_bridge.c;
+ * exit 0 prints PICKER-OK, 1 on first failure. */
 
+#include "core_bridge.h"
 #include "picker.h"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 static int failures = 0;
@@ -43,27 +47,39 @@ static void recents_parse(void) {
     CHECK(picker::parse_recents("[]").empty(), "empty recents");
 }
 
-static void folder_yolo_preview(void) {
-    CHECK(picker::effective_folder("").empty(), "blank inherits");
-    CHECK(picker::effective_folder("   ").empty(), "spaces inherit");
-    CHECK(picker::effective_folder("  C:\\a  ") == "C:\\a",
-          "folder trimmed");
-    CHECK(picker::yolo_value(0) == 0, "yolo default");
-    CHECK(picker::yolo_value(1) == 1, "yolo on");
-    CHECK(picker::yolo_value(2) == -1, "yolo off");
-    CHECK(picker::preview("muse", "C:\\a", 1) ==
-              "runs: muse in C:\\a + yolo",
+static void shared_helpers_come_from_core(void) {
+    /* Preview / yolo / age / glyph / section through the bridge. */
+    char *prev = bridge_spawn_preview("muse", "C:\\a", 1);
+    CHECK(prev && strcmp(prev, "runs: muse in C:\\a + yolo") == 0,
           "preview full");
-    CHECK(picker::preview("claude", "", 0) == "runs: claude",
-          "preview bare");
-    CHECK(picker::preview("muse", "", -1) == "runs: muse (yolo off)",
-          "preview off");
+    free(prev);
+    char *bare = bridge_spawn_preview("claude", "", 0);
+    CHECK(bare && strcmp(bare, "runs: claude") == 0, "preview bare");
+    free(bare);
+    char *off = bridge_spawn_preview("muse", "", -1);
+    CHECK(off && strcmp(off, "runs: muse (yolo off)") == 0, "preview off");
+    free(off);
+    CHECK(bridge_yolo_value(0) == 0, "yolo default");
+    CHECK(bridge_yolo_value(1) == 1, "yolo on");
+    CHECK(bridge_yolo_value(2) == -1, "yolo off");
+    char *age = bridge_age_string(600, 0);
+    CHECK(age && strcmp(age, "10m ago") == 0, "age buckets");
+    bridge_string_free(age);
+    char *hdr = bridge_section_title(2);
+    CHECK(hdr && strcmp(hdr, "Working") == 0, "section working");
+    bridge_string_free(hdr);
+    /* Registry surface on a fresh core (no PTY needed). */
+    AmCore *core = bridge_core_new();
+    CHECK(core != nullptr, "core new");
+    CHECK(bridge_max_runs() == 10, "cap is 10");
+    CHECK(bridge_live_count(core) == 0, "no live runs");
+    bridge_core_free(core);
 }
 
 int main(void) {
     catalog_parses_in_order();
     recents_parse();
-    folder_yolo_preview();
+    shared_helpers_come_from_core();
     if (failures == 0) {
         std::printf("PICKER-OK\n");
     }

@@ -28,7 +28,7 @@ double-echoes — the same single-emulator rule as the Linux shell's
 ## Build
 
 The core staticlib must exist first (CMake and msbuild search
-`target/debug` by default, or pass `-DCORE_LIB_DIR=` /
+`target/debug` by default, or pass `-Dcore_lib_dir=` /
 `/p:CoreLibDir=`):
 
 ```powershell
@@ -70,38 +70,46 @@ powershell -ExecutionPolicy Bypass `
 
 | Test | What it proves |
 |---|---|
-| `feed` | `am-win-feed-test`: the core snapshot→stream reconciler plus roster-match and age-label helpers over the real staticlib, mirroring Swift's `TerminalFeedTests` 1:1 |
-| `picker` | `am-win-picker-test`: 2D-launch picker logic (catalog/recents parse, folder/yolo mapping, preview copy), mirroring Linux `am-picker-test` |
-| `keys` | `am-win-keys-test`: the converse-key contract the terminal preview-tunnel relies on (Return→CR, Ctrl+C→ETX, Ctrl+Shift+C/V reserve stays with the control) |
-| `smoke` | `am-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog surface |
-| `smoke-live` | `smoke_live.ps1`: compiles `tests/fake_muse.c` to `muse.exe`, then spawn/pump/write/resize against it in a scratch profile (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
+| `feed` | `am-win-feed-test`: the bridge's reconciler wrapper (`bridge_feed_delta` over the shared `am_feed_delta`) against the real staticlib, no WinUI |
+| `picker` | `am-win-picker-test`: the catalog/recents parse (native ComboBox rows) plus the shared preview/yolo/age/section/registry surface via the bridge, mirroring Linux `am-picker-test` |
+| `keys` | `am-win-keys-test`: the bridge's key-table wrapper (`bridge_key_encode` over the shared core table) — Return→CR, Ctrl+C→ETX, keep-keys→0, the contract the terminal preview-tunnel relies on |
+| `smoke` | `am-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog and shared-helper surface |
+| `smoke-live` | `smoke_live.ps1`: compiles `tests/fake_muse.c` to `muse.exe`, then registry spawn/pump/write/resize/close against it in a scratch profile (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
 
-## Wiring (all through the C ABI)
+## Wiring (dumb renderer over the core run registry)
+
+The core owns the roster, selection, filter, PTYs, statuses, links,
+key table, feed reconciler, preview copy, and persistence; this shell
+owns WinUI controls, event wiring, clipboard access, and byte transport
+only. Same contract as the macOS/Linux shells (native look, identical
+behavior).
 
 | Feature | Path |
 |---|---|
-| Roster | `am_session_count` + `am_session_json` at launch, `am_status` every 50 ms tick; live groups ordered needs-input / working / idle like the macOS sidebar; rows show age + link badges (`am_last_active` / `am_relative_age` / `am_link_count`); search filters every group via `am_roster_matches`; no heading, and the status line stays empty until a real failure needs it |
-| Spawn | split-button 2D launch: New Session face / Ctrl+N / empty-overlay button repeats the last folder × CLI + yolo via `bridge_spawn_launch` (null CLI/folder); the chevron / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, spawn preview) → `bridge_spawn_launch` + `bridge_note_launch` |
-| Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px, persisted in `LocalSettings` |
-| Converse | key encoder (`src/terminal_keys.h`, layout-aware via ToUnicode) → `bridge_write`; pump → `bridge_feed_delta` (the core reconciler in `src/shell_shared.rs`) → append to the output box. Return and plain Ctrl+C ride `TermBox_PreviewKeyDown` (tunneling: the read-only box would otherwise swallow them before they bubble); everything else bubbles via `RootGrid_KeyDown`. New Session focuses the terminal, so typing + Enter submits immediately |
-| Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_write`; Ctrl+C forwards ETX (interrupts the child) |
+| Roster | core registry rows (`am_session_count` + `am_session_json` live, `am_pump_all` refreshes statuses/links), grouped Needs input → Working → Idle → History; one shared selection across the four lists, stored in the core (`am_selected`/`am_select`) |
+| Spawn | split-button 2D launch: New Session face / Ctrl+N repeats the last folder × CLI + yolo via `bridge_run_spawn` (null CLI/folder, attaches a real roster row under the shared cap); the chevron / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, core preview `bridge_spawn_preview`) → `bridge_run_spawn` |
+| Restart / close | Restart + Close run buttons / Ctrl+R / Ctrl+W → `bridge_run_restart` (same id, keeps title/links) / `bridge_run_close` + autosave; ended rows offer restart inline in the terminal pane |
+| Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px (shared `bridge_clamp_sidebar` rule), persisted in `LocalSettings` |
+| Converse | key event → `bridge_key_encode` (shared table; printables resolve through the thread layout via ToUnicode, so non-US layouts type correctly) → `bridge_run_write`; pump → `bridge_feed_delta` → append to the output box. Return and plain Ctrl+C ride `TermBox_PreviewKeyDown` (tunneling: the read-only box would otherwise swallow them before they bubble); everything else bubbles via `RootGrid_KeyDown`. New Session focuses the terminal, so typing + Enter submits immediately |
+| Select / copy / paste | native read-only TextBox selection + Ctrl+Shift+C; Ctrl+V pastes via Clipboard → `bridge_run_write`; Ctrl+C forwards ETX (interrupts the child) |
 | Scroll | output TextBox in a `ScrollViewer`, auto-tails; per-run text retained (capped at 100 000 chars) |
-| Search / filter | sidebar search box filters every roster group |
+| Search / filter | sidebar search box writes the core filter (`bridge_set_filter`), rows match via `bridge_row_matches` in every group |
 | History | collapsed group of rows with no live PTY, restored every launch; per-run output retained while the window lives |
-| Persistence | Ctrl+S / close hook → `bridge_core_save` |
+| Persistence | automatic: throttled pump autosave + close hook → `bridge_core_save` (no manual control) |
 
 ## Notes
 
-- The shell's own key encoding sends Return as CR, BackSpace as DEL,
-  arrows/Home/End/navigation as xterm sequences, Ctrl+letter as control
-  codes (Ctrl+C interrupts the child); Ctrl+Shift+C/V stay with the
-  native control for copy. Printable keys resolve through the current
-  thread layout (`ToUnicode`), so non-US layouts type correctly; AltGr
+- Key encoding is the shared core table (`bridge_key_encode` — the old
+  per-shell `src/terminal_keys.h` port is deleted): Return is CR,
+  BackSpace is DEL, arrows/Home/End/navigation are xterm sequences,
+  Ctrl+letter are control codes (Ctrl+C interrupts the child);
+  Ctrl+Shift+C/V stay with the native control for copy. AltGr
   (Ctrl+Alt) passes through as a character modifier while bare Alt keeps
   the Linux ESC-prefix parity.
 - Spawning runs the effective CLI (last-used, configured default, or
-  first autodetected); without any CLI on PATH the shell reports the
-  core's error message in the status bar.
+  first autodetected, with the stored per-agent flags — the core loads
+  the user config, so native spawns honor it); without any CLI on PATH
+  the shell reports the core's error message in the status bar.
 - Styling (issue #72) targets the Windows App SDK gallery look: Mica system backdrop, content extended into the title bar with a custom drag region, card surfaces with rounded corners, Segoe UI Variable type ramp, and ThemeResource brushes throughout so the window follows the system theme. No behavior changes.
 - This directory must stay free of the macOS GUI framework in code and
   prose alike (CI enforces it with a literal grep gate): the Windows

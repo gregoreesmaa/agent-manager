@@ -5,6 +5,14 @@
  * (core/PTY freed exactly once, strings freed with am_screen_text_free),
  * same status-code contract (Attention=0, Idle=1, Working=2; negatives
  * are null handle / out of bounds).
+ *
+ * Run-registry half (dumb-shell contract): the shell keeps no `live`
+ * map of its own — spawns attach to roster rows in the core
+ * (`bridge_run_spawn`/`bridge_run_restart`), converse/resize/pump go by
+ * row id, and `bridge_pump_all` refreshes statuses/links like the gpui
+ * pump. Shared helpers (key encoding, feed delta, preview, filter,
+ * selection, display strings) are one-line forwards to the core so all
+ * three shells behave identically.
  */
 
 #ifndef AM_CORE_BRIDGE_H
@@ -83,6 +91,86 @@ int bridge_note_launch(AmCore *core, const char *cli, const char *cwd,
 /* Feed queued output into the emulator. Nonzero when the screen may
  * have changed (the shell's only repaint gate). */
 int bridge_pump(AmPty *pty);
+
+/* Pump every attached run (statuses/links refresh + re-sort inside).
+ * Nonzero when anything visible changed — the roster/status repaint
+ * gate. Replaces per-shell status polling. */
+int bridge_pump_all(AmCore *core);
+
+/* Number of live (attached) runs; the shared live-run ceiling. */
+size_t bridge_live_count(const AmCore *core);
+size_t bridge_max_runs(void);
+
+/* True when the row id owns a live PTY in the registry. */
+int bridge_is_live(const AmCore *core, const char *id);
+
+/* Spawn a 2D-launch session attached to a new roster row, under the
+ * shared cap. Returns 0 with the row id in `id_out` (up to `id_cap`
+ * bytes incl. NUL); nonzero with `msg_out` set like bridge_core_save. */
+int bridge_run_spawn(AmCore *core, const char *cli, const char *cwd,
+                     int yolo, unsigned cols, unsigned rows, char *id_out,
+                     size_t id_cap, char **msg_out);
+
+/* Restart an ended run / resume a historic entry on the same id.
+ * Returns 0, or nonzero with `msg_out` set. */
+int bridge_run_restart(AmCore *core, const char *id, unsigned cols,
+                       unsigned rows, char **msg_out);
+
+/* Close (kill) a run: drops its PTY, removes its entry. Unknown ids are
+ * a no-op success. */
+int bridge_run_close(AmCore *core, const char *id);
+
+/* True when quitting deserves a confirmation step. */
+int bridge_needs_quit_confirm(const AmCore *core);
+
+/* Pump / write / resize / screen-text / spans / exit by row id. Write
+ * returns 0, or nonzero with `msg_out` set. Screen/spans strings free
+ * with bridge_string_free(). */
+int bridge_run_pump(AmCore *core, const char *id);
+int bridge_run_write(AmCore *core, const char *id,
+                     const unsigned char *data, size_t len,
+                     char **msg_out);
+void bridge_run_resize(AmCore *core, const char *id, unsigned cols,
+                       unsigned rows);
+char *bridge_run_screen_text(const AmCore *core, const char *id);
+char *bridge_run_spans_json(const AmCore *core, const char *id);
+int bridge_run_exited(const AmCore *core, const char *id);
+
+/* Encode one logical keypress into child bytes (the single shared key
+ * table). Returns the byte count in `bytes_out` (up to `cap` bytes), 0
+ * when the native control keeps the key, -1 on null key. */
+int bridge_key_encode(const char *key, const char *key_char, int ctrl,
+                      int alt, unsigned char *bytes_out, size_t cap);
+
+/* Feed text advancing a view showing `old` to also show `new`
+ * (snapshot→stream reconciler). Malloc'd; NULL when current. Free with
+ * free(). */
+char *bridge_feed_delta(const char *old_text, const char *new_text);
+
+/* One-line spawn preview (`runs: muse in ~/api + yolo`). Malloc'd; free
+ * with free(). */
+char *bridge_spawn_preview(const char *cli, const char *folder, int yolo);
+
+/* Tri-state yolo int from a segmented-control index. */
+int bridge_yolo_value(int selected);
+
+/* Human age (`just now`, `5m ago`, ...), status glyph (`●`/`◐`/`○`),
+ * section header (`Needs input`/`Idle`/`Working`). Malloc'd; free with
+ * bridge_string_free(). */
+char *bridge_age_string(long long now_unix, long long then_unix);
+char *bridge_status_glyph(int code);
+char *bridge_section_title(int code);
+
+/* Clamp a sidebar width into the shared 220..480px range. */
+double bridge_clamp_sidebar(double px);
+
+/* Filter + selection (core-owned): row match test, replace the filter
+ * (snaps selection), selected index, move/step the selection. */
+int bridge_row_matches(const AmCore *core, size_t row, const char *query);
+void bridge_set_filter(AmCore *core, const char *query);
+size_t bridge_selected(const AmCore *core);
+void bridge_select(AmCore *core, size_t row);
+void bridge_select_step(AmCore *core, int forward);
 
 /* Forward raw bytes (already key-encoded by the shell) to the child.
  * Returns 0 on success; on failure returns nonzero with `msg_out`

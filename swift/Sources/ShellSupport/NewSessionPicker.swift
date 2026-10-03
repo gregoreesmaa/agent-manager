@@ -1,15 +1,14 @@
 /// Two-dimensional new-session picker model (folder × CLI + yolo).
 ///
 /// Pure Swift with no C ABI references, so it unit-tests without linking
-/// the core staticlib (same split as `TerminalFeed`). The core owns the
-/// same semantics framework-free (`src/launch.rs`); this mirrors the
-/// picker half a native shell renders: the CLI catalog rows (decoded
-/// from `am_clis_json`), the folder input + recents (from
-/// `am_recent_json`), and the per-run yolo tri-state.
+/// the core staticlib. The preview/yolo/folder rules now live in the
+/// core (`am_spawn_preview`, `am_yolo_value`); this type keeps the widget
+/// state the sheet renders (CLI cursor, folder text, recents, yolo
+/// choice) and delegates the rules to `Core` where possible.
 ///
 /// Split-button contract (see `docs/new-session-picker.md`): the main
 /// action repeats the last launch instantly (null CLI/folder through
-/// `am_spawn_launch`, which resolves the core's effective default); the
+/// `am_run_spawn`, which resolves the core's effective default); the
 /// picker confirms an explicit folder × CLI + yolo combination.
 public struct NewSessionPicker {
     /// CLI catalog rows in core order (muse, claude, opencode, codex).
