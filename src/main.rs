@@ -1,10 +1,10 @@
-//! staap: native GUI harness for live `muse` runs (gpui, no webview).
+//! staap (gpui shell, macOS-only): live agent runs beside an embedded PTY.
 //!
 //! Left panel: live runs started in-app (`n` or the New button); starts
 //! empty, shows animal placeholder titles until the first submitted prompt
-//! renames a run, groups by Needs input / Idle / Active with counts, and
-//! lists every GitHub PR link ever seen in each run (accumulated, not just
-//! the visible screen). Central pane: the embedded interactive `muse`
+//! renames a run, groups by Needs input / Working / Idle with counts (then
+//! History), and lists every link ever seen in each run (accumulated, not
+//! just the visible screen). Central pane: the embedded interactive agent
 //! terminal, rendered from the vt100 emulator grid; drag to highlight text
 //! (copy-on-select), Cmd+C copies, Cmd/Ctrl+V pastes.
 //! Keys (nav focus): j/k move, n new, y copy selection-or-screen, p paste,

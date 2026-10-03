@@ -1,9 +1,12 @@
 # staap
 
-Native GUI harness (gpui, no webview) for managing and chatting with live
-`muse` agent CLI sessions. Each run is a real interactive `muse` process
-behind an embedded PTY; the window shows the run list beside the live
-terminal of the selected run.
+Local-first mission control for agent runs. Each run is a real interactive
+agent CLI session behind an embedded PTY; the window shows the run list
+beside the live terminal of the selected run. One framework-free Rust core
+(run registry, PTY pipeline, link parsers, providers, C ABI in
+`include/staap.h`) with four thin native shells over it: the original macOS
+gpui shell (`src/main.rs` + `src/gui/`), `StaapMac` (SwiftUI + SwiftTerm),
+`staap-gtk` (GTK4/libadwaita + VTE), and `StaapWinUI` (WinUI 3 + ConPTY).
 
 ## Why staap?
 
@@ -28,20 +31,33 @@ build.
 
 ## Prerequisites
 
-- macOS with **full Xcode** installed (not just CommandLineTools), the
-  accepted license (`sudo xcodebuild -license`), and the Metal toolchain
-  component (`xcodebuild -downloadComponent MetalToolchain`). gpui compiles
-  its Metal shaders at build time and the `metal` compiler ships only with
-  Xcode.
-- Rust toolchain (`cargo`).
-- The `muse` CLI on `PATH`.
+- Rust toolchain (`cargo`) — every shell needs the core staticlib first
+  (`cargo build --lib`).
+- At least one agent CLI on `PATH` (`muse`, `claude`, `opencode`, `codex`
+  — autodetected; `muse` stays first as the historic default).
+- Per-shell toolchain (see the shell READMEs for detail):
+  - gpui shell + `StaapMac`: macOS with **full Xcode** (the gpui shell
+    compiles its Metal shaders at build time, which needs the Xcode Metal
+    toolchain, not just CommandLineTools).
+  - `staap-gtk`: Ubuntu 24.04 GTK4/libadwaita/VTE dev libs + meson
+    (`native/linux/README.md`).
+  - `StaapWinUI`: Visual Studio 2026 with the UWP build-tools workload
+    (`native/windows/README.md`).
 
 ## Build & run
 
 ```sh
-cargo build
-./target/debug/staap
+cargo build --lib   # core staticlib every shell links (target/debug/libstaap.a)
 ```
+
+Then one shell:
+
+| Shell | Build & run |
+| --- | --- |
+| gpui (macOS) | `cargo build` then `./target/debug/staap` |
+| `StaapMac` | `(cd swift && swift build)` then `swift/.build/debug/StaapMac` (or `./build-and-run.sh`) |
+| `staap-gtk` | `meson setup native/linux/build native/linux && meson compile -C native/linux/build`, then `./native/linux/build/staap-gtk` |
+| `StaapWinUI` | `msbuild native/windows/StaapWinUI.vcxproj` (see `native/windows/README.md`; or `build-and-run.ps1`) |
 
 `cargo test --all-targets` runs the suite; `cargo fmt --check` and
 `cargo clippy --all-targets -- -D warnings` must stay clean (all three
@@ -57,10 +73,16 @@ machine and never leaves it.
 
 ## Using it
 
-### Keyboard
+Every shell shares one contract: sessions-first flow (spawn, switch, type,
+copy, paste), runs grouped **Needs input → Working → Idle → History** with
+per-group counts, background runs keep streaming and never die on switch,
+and every link ever seen in a run stays attached under its title
+(accumulated first-seen order, click/keyboard to copy). New sessions repeat
+your last folder × CLI instantly, or open the picker (folder + autodetected
+CLI + per-run yolo toggle). Shortcuts below are the gpui shell's; each
+native shell's README documents its own keys for the same actions.
 
-Sessions-first flow: a new user can spawn, switch, copy, and paste without
-reading source. `Tab` toggles which pane owns the keyboard.
+### Keyboard (gpui shell)
 
 | Key | List focus | Terminal focus |
 | --- | --- | --- |
@@ -99,13 +121,14 @@ reading source. `Tab` toggles which pane owns the keyboard.
 - The sessions panel is library chrome (`gpui-component` sidebar: header,
   groups, menu rows), dark-themed to match the terminal. Click a run (or
   `j`/`k`) to switch; background runs keep streaming and never die on
-  switch. Runs group by **Needs input**, **Idle**, **Active** with
-  per-group counts. Every GitHub PR URL ever seen in a run appears under
-  its title (accumulated first-seen order, so links that scrolled off stay
-  visible); the panel scrolls, and clicking a link copies it. Keyboard:
-  `PgUp`/`PgDn` page the list, `o` moves link focus across the selected
-  run's links, and `Enter` copies the focused link (`Enter`/`i` with no
-  link focused types into `muse`).
+  switch. Runs group by **Needs input → Working → Idle**, then **History**
+  (ended runs, restorable), with per-group counts. Every link ever seen in
+  a run — GitHub PR/issue/commit URLs and `file:line` references —
+  appears under its title (accumulated first-seen order, so links that
+  scrolled off stay visible); the panel scrolls, and clicking a link
+  copies it. Keyboard: `PgUp`/`PgDn` page the list, `o` moves link focus
+  across the selected run's links, and `Enter` copies the focused link
+  (`Enter`/`i` with no link focused types into `muse`).
 - Click the terminal (or `Tab`/`i`/`Cmd+2`) to type into `muse`; the
   status line reads `▸ terminal · typing in muse …` while it owns the
   keyboard (`▸ sessions …` otherwise, plus a frame around the terminal
@@ -199,20 +222,34 @@ filter, `Esc` clears it) without changing sort order.
 
 ## How it works
 
+Framework-free Rust core (no toolkit types; its headless tests are the
+cross-platform contract), exposed to native shells through the C ABI in
+`include/staap.h` (regenerate with cbindgen after any FFI change):
+
 - `src/embedded.rs` — PTY spawn/pump/resize/reap via `portable-pty`, plus a
   vt100 emulator. It answers terminal cursor-position queries the way a
-  real terminal would; without that, `muse` times out its startup
+  real terminal would; without that, the agent CLI times out its startup
   handshake and exits.
-- `src/gui/terminal.rs` — vt100 screen → styled text rows (framework-free).
-- `src/gui/keys.rs` — keystroke → PTY bytes (framework-free).
-- `src/gui/shell.rs` — thin gpui view: component-library sessions panel
-  (`Sidebar`/`Button`, via `Root` + theme in `main.rs`), hand-rolled
-  terminal pane, status line (panel footer; slim bar on narrow windows),
-  pump loop, clipboard.
-- `src/app.rs` — run list state, titles, activity sort.
-- `src/parsers/` — modular link parsers (GitHub PR URLs today).
-- `src/providers/` — session-provider abstraction (parked for a future
-  historic-attach flow; live runs are spawned in-app).
+- `src/app.rs` + `src/runs.rs` — run registry: titles, attention status,
+  urgency sort, eviction.
+- `src/keys.rs`, `src/shell_shared.rs` — shared key table and
+  feed-reconciler every shell uses instead of reimplementing.
+- `src/parsers/` — modular link parsers (GitHub PR/issue/commit URLs,
+  `file:line` references).
+- `src/providers/` + `src/launch.rs` — per-CLI providers and launch
+  catalog (`muse`, `claude`, `opencode`, `codex`).
+- `src/config.rs`, `src/persist.rs` — plain-file local state
+  (`~/.config/staap/config.json`).
+- `src/transcript.rs`, `src/scrollback.rs` — export and retained output.
+
+Thin shells over the core (seam spec: `docs/native-core-seam.md`):
+
+| Shell | Stack | Detail |
+| --- | --- | --- |
+| gpui (`src/main.rs` + `src/gui/`) | gpui, macOS-only | Original shell; component-library sessions panel, hand-rolled terminal pane |
+| `swift/` | SwiftUI + SwiftTerm | `StaapMac` (`swift/README.md`) |
+| `native/linux/` | GTK4/libadwaita + VTE | `staap-gtk` (`native/linux/README.md`) |
+| `native/windows/` | WinUI 3 + ConPTY | `StaapWinUI` (`native/windows/README.md`) |
 
 ## Regression shield
 
