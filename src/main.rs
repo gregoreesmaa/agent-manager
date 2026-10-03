@@ -37,16 +37,17 @@ use gpui_component::{Root, Theme};
 #[cfg(target_os = "macos")]
 use gui::shell::ShellView;
 #[cfg(target_os = "macos")]
-use providers::{MuseCliProvider, OpencodeCliProvider, Provider};
+use providers::{ClaudeCliProvider, MuseCliProvider, OpencodeCliProvider, Provider};
 
 #[cfg(target_os = "macos")]
 fn main() {
     // Historic attach: provider-discovered sessions seed the list before
     // any PTY exists (unreachable stores degrade to an empty list, never
-    // a startup failure). `r` on a seeded entry re-attaches it. Muse and
-    // opencode sessions merge here; ids are provider-scoped (muse session
-    // dirs, opencode `ses-*` ids), and `merge_sessions` keeps one row per
-    // id — opencode rows re-attach via `opencode --session <id>`.
+    // a startup failure). `r` on a seeded entry re-attaches it. Muse,
+    // opencode, and Claude Code stores merge here; ids are provider-scoped
+    // (muse session dirs, opencode `ses-*` ids, claude `sessionId`s), and
+    // `merge_sessions` keeps one row per id — opencode rows re-attach via
+    // `opencode --session <id>`, claude rows via `claude --resume <id>`.
     let mut discovered = MuseCliProvider::new(
         MuseCliProvider::default_store_root(),
         Box::new(parsers::registry::RegistryParser::default()),
@@ -56,6 +57,13 @@ fn main() {
         OpencodeCliProvider::with_default_program(Box::new(
             parsers::registry::RegistryParser::default(),
         ))
+        .discover_sessions(),
+    );
+    discovered.extend(
+        ClaudeCliProvider::new(
+            ClaudeCliProvider::default_store_root(),
+            Box::new(parsers::registry::RegistryParser::default()),
+        )
         .discover_sessions(),
     );
     // Issues #33/#34: user config (per-agent flags, theme choice); a
