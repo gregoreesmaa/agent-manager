@@ -2,7 +2,7 @@
 # Regenerate: cbindgen --config cbindgen.toml --crate staap \
 #   --output include/staap.h
 language = "C"
-include_guard = "staap"
+include_guard = "STAAP_H"
 autogen_warning = "/* Warning: regenerate with cbindgen, do not hand-edit beyond the checked-in snapshot. */"
 sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
 

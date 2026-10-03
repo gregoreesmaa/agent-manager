@@ -23,7 +23,7 @@
 //! so all shells reconcile identically.
 
 /// ANSI reset the terminal views understand: clear screen, home cursor.
-/// Matches Swift `TerminalFeed.clearScreen` and the old `staap_FEED_CLEAR`.
+/// Matches Swift `TerminalFeed.clearScreen` and the old `AM_FEED_CLEAR`.
 pub const FEED_CLEAR: &str = "\x1b[2J\x1b[H";
 
 /// Feed text that advances a view showing `old` to also show `new`, or
