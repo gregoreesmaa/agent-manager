@@ -1743,10 +1743,7 @@ mod tests {
         // Issue #48: rows stay glanceable — last two components, with
         // an ellipsis cap for absurd tails.
         assert_eq!(short_cwd("/tmp/demo-proj"), "tmp/demo-proj");
-        assert_eq!(
-            short_cwd("/Users/greg/projects/agent-manager"),
-            "projects/agent-manager"
-        );
+        assert_eq!(short_cwd("/Users/greg/projects/staap"), "projects/staap");
         assert_eq!(short_cwd("/tmp"), "tmp");
         assert_eq!(short_cwd("/"), "");
         let long = "/a/very-long-directory-name-here/another-long-one";

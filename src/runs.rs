@@ -4,13 +4,13 @@
 //! the three native shells each kept their own `live` map (`LivePty`,
 //! `ptys`) with three different eviction/attach policies. This module is
 //! the single framework-free registry behind the FFI run functions
-//! (`am_run_*`): spawn attaches a live PTY to a roster row, the pump
+//! (`staap_run_*`): spawn attaches a live PTY to a roster row, the pump
 //! refreshes statuses/links/recency like `gui::pump::refresh`, and shells
 //! only render what the getters report.
 //!
 //! Design: `RunRegistry` owns `App` (roster + config) plus one
 //! `LiveRun` per attached row. Native shells drive it through `ffi`
-//! (`AmCore` wraps this type); the gpui shell keeps its own `ShellView`
+//! (`StaapCore` wraps this type); the gpui shell keeps its own `ShellView`
 //! (which predates this registry and owns extra view state like pager
 //! offsets — no behavior change there).
 

@@ -94,7 +94,7 @@ mod tests {
         // default dir, so verify content through the shared writer here
         // and the action's flash through the default path.
         let dir = std::env::temp_dir().join(format!(
-            "agent-manager-export-test-{}",
+            "staap-export-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

@@ -1,7 +1,7 @@
 //! Keystroke → PTY bytes, framework-free (regression shield).
 //!
 //! Shared by the gpui shell (`gui::spawn::forward_key`, re-exported here)
-//! and the native shells (via `shell::encode_key` / the `am_key_*` FFI):
+//! and the native shells (via `shell::encode_key` / the `staap_key_*` FFI):
 //! one key table, pinned by unit tests, surviving toolkit upgrades
 //! untouched. Moved out of `gui/` so the framework-free core owns it —
 //! the gpui shell is one consumer among four, not the owner.

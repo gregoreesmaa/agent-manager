@@ -2,8 +2,8 @@
 //!
 //! Issue #33: `muse --yolo`, `claude --dangerously-skip-permissions`,
 //! and friends. The file is JSON at
-//! `~/.config/agent-manager/config.json` (overridable for tests via
-//! `AGENT_MANAGER_CONFIG`):
+//! `~/.config/staap/config.json` (overridable for tests via
+//! `STAAP_CONFIG`):
 //!
 //! ```json
 //! { "agents": { "muse": { "extra_args": ["--yolo"] } } }
@@ -250,16 +250,16 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Path of the config file: `$AGENT_MANAGER_CONFIG` when set (tests),
-    /// otherwise `~/.config/agent-manager/config.json`.
+    /// Path of the config file: `$STAAP_CONFIG` when set (tests),
+    /// otherwise `~/.config/staap/config.json`.
     pub fn config_path() -> PathBuf {
-        if let Ok(path) = std::env::var("AGENT_MANAGER_CONFIG") {
+        if let Ok(path) = std::env::var("STAAP_CONFIG") {
             return PathBuf::from(path);
         }
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         PathBuf::from(home)
             .join(".config")
-            .join("agent-manager")
+            .join("staap")
             .join("config.json")
     }
 
@@ -321,10 +321,10 @@ mod tests {
     use super::*;
 
     fn scoped_env(path: &std::path::Path) -> Option<String> {
-        // Single test in this module touches AGENT_MANAGER_CONFIG, so no
+        // Single test in this module touches STAAP_CONFIG, so no
         // cross-test interference: nothing else reads this variable.
-        let old = std::env::var("AGENT_MANAGER_CONFIG").ok();
-        std::env::set_var("AGENT_MANAGER_CONFIG", path);
+        let old = std::env::var("STAAP_CONFIG").ok();
+        std::env::set_var("STAAP_CONFIG", path);
         old
     }
 
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn missing_or_malformed_file_falls_back_to_default() {
-        let dir = std::env::temp_dir().join("agent-manager-cfg-test-missing");
+        let dir = std::env::temp_dir().join("staap-cfg-test-missing");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(Config::load_from(&dir.join("nope.json")), Config::default());
         std::fs::create_dir_all(&dir).unwrap();
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn save_and_load_preserve_extra_args() {
-        let dir = std::env::temp_dir().join("agent-manager-cfg-test-save");
+        let dir = std::env::temp_dir().join("staap-cfg-test-save");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
@@ -524,9 +524,9 @@ mod tests {
         cfg.save().unwrap();
         assert_eq!(Config::load(), cfg);
         if let Some(v) = old {
-            std::env::set_var("AGENT_MANAGER_CONFIG", v);
+            std::env::set_var("STAAP_CONFIG", v);
         } else {
-            std::env::remove_var("AGENT_MANAGER_CONFIG");
+            std::env::remove_var("STAAP_CONFIG");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

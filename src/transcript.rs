@@ -965,12 +965,8 @@ mod tests {
 
     #[test]
     fn opencode_windows_directory_projects_split_on_backslash() {
-        let tail =
-            r#"{"info": {"directory": "C:\\Users\\grego\\projects\\agent-manager", "title": "t"}}"#;
-        assert_eq!(
-            extract_opencode_project(tail).as_deref(),
-            Some("agent-manager")
-        );
+        let tail = r#"{"info": {"directory": "C:\\Users\\grego\\projects\\staap", "title": "t"}}"#;
+        assert_eq!(extract_opencode_project(tail).as_deref(), Some("staap"));
     }
 
     #[test]

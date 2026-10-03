@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn detect_finds_a_fake_cli_on_path() {
         let dir = std::env::temp_dir().join(format!(
-            "agent-manager-launch-detect-{}",
+            "staap-launch-detect-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

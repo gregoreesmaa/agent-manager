@@ -5,7 +5,7 @@
 //! snapshot→stream reconciler, roster grouping/filter, status badges,
 //! attention counts, the new-session preview, key encoding, and the
 //! styled-span→SGR renderer. Shells collect native widgets/events, call
-//! into these pure helpers (or the thin `am_*` wrappers in [`crate::ffi`]),
+//! into these pure helpers (or the thin `staap_*` wrappers in [`crate::ffi`]),
 //! and render whatever comes back. Visual styling stays native per OS;
 //! behavior is identical because it is the same code.
 //!
@@ -19,11 +19,11 @@
 //! and `native/windows/src/feed.c`; the C ports are gone, so every C
 //! shell reconciles through this module. The Swift `TerminalFeed`
 //! implementation stays as the Swift-idiomatic original (it feeds a
-//! SwiftTerm view directly); production may call the core (`am_feed_delta`)
+//! SwiftTerm view directly); production may call the core (`staap_feed_delta`)
 //! so all shells reconcile identically.
 
 /// ANSI reset the terminal views understand: clear screen, home cursor.
-/// Matches Swift `TerminalFeed.clearScreen` and the old `AM_FEED_CLEAR`.
+/// Matches Swift `TerminalFeed.clearScreen` and the old `staap_FEED_CLEAR`.
 pub const FEED_CLEAR: &str = "\x1b[2J\x1b[H";
 
 /// Feed text that advances a view showing `old` to also show `new`, or
@@ -128,7 +128,7 @@ pub fn clamp_sidebar_width(px: f64) -> f64 {
     px.clamp(SIDEBAR_MIN_PX, SIDEBAR_MAX_PX)
 }
 
-/// Roster status code crossing FFI as a plain int (mirrors `am_status`).
+/// Roster status code crossing FFI as a plain int (mirrors `staap_status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowStatus {
     Attention,
@@ -137,7 +137,7 @@ pub enum RowStatus {
 }
 
 impl RowStatus {
-    /// Code used across the C ABI (`am_status`).
+    /// Code used across the C ABI (`staap_status`).
     pub fn code(self) -> i32 {
         match self {
             Self::Attention => 0,
@@ -312,7 +312,7 @@ pub fn needs_input_count(sessions: &[ChatSession]) -> usize {
 // --- Key encoding -----------------------------------------------------------
 
 /// What a shell key event means after core encoding: forward these bytes
-/// to the child via `am_write`, or keep the key for the native control.
+/// to the child via `staap_write`, or keep the key for the native control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyDecision {
     /// Forward these bytes to the child.
@@ -353,7 +353,7 @@ pub fn keep_for_control(key: &str, ctrl: bool, shift: bool) -> bool {
 // --- Styled-span → SGR renderer ----------------------------------------------
 
 /// One styled run inside a snapshot row, matching the core's
-/// `am_spans_json` shape (`{text,fg,bg,bold,italic,underline}` with
+/// `staap_spans_json` shape (`{text,fg,bg,bold,italic,underline}` with
 /// `fg`/`bg` as `[r,g,b]` or null). Ports Swift `AnsiFeed`: every span
 /// carries a complete SGR sequence (reset + attributes), so any fragment
 /// of a render is self-contained and `feed_delta` works on rendered
@@ -414,7 +414,7 @@ fn rgb_value(v: &serde_json::Value) -> Option<(u8, u8, u8)> {
     ))
 }
 
-/// Render an `am_spans_json` document, or `None` when it does not decode
+/// Render an `staap_spans_json` document, or `None` when it does not decode
 /// (the pump then falls back to the plain-text snapshot).
 pub fn render_ansi_json(json: &str) -> Option<String> {
     let rows: Vec<Vec<serde_json::Value>> = serde_json::from_str(json).ok()?;
@@ -473,7 +473,7 @@ pub fn effective_folder(folder: &str) -> Option<String> {
     }
 }
 
-/// Segmented-control index → tri-state yolo int for `am_spawn_launch`
+/// Segmented-control index → tri-state yolo int for `staap_spawn_launch`
 /// (1 = force on, 2 = force off, else config default).
 pub fn yolo_value(selected: i32) -> i32 {
     if selected == 1 {

@@ -1,4 +1,4 @@
-//! agent-manager: native GUI harness for live `muse` runs (gpui, no webview).
+//! staap: native GUI harness for live `muse` runs (gpui, no webview).
 //!
 //! Left panel: live runs started in-app (`n` or the New button); starts
 //! empty, shows animal placeholder titles until the first submitted prompt
@@ -23,7 +23,7 @@
 // green on every runner because the portable gate is the lib suite
 // (each per-OS shell proves itself in its own CI job).
 #[cfg(target_os = "macos")]
-pub use agent_manager::{
+pub use staap::{
     app, config, embedded, keys, launch, parsers, persist, providers, scrollback, transcript,
 };
 #[cfg(target_os = "macos")]
@@ -145,7 +145,7 @@ fn main() {
 #[cfg(not(target_os = "macos"))]
 fn main() {
     eprintln!(
-        "agent-manager: the gpui shell runs on macOS only; on Windows use \
+        "staap: the gpui shell runs on macOS only; on Windows use \
          the WinUI shell (native/windows) and on Linux the GTK shell \
          (native/linux), both over the core C ABI."
     );

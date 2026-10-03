@@ -21,21 +21,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-manager"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "gpui",
- "gpui-component",
- "portable-pty",
- "regex",
- "serde",
- "serde_json",
- "vt100",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5482,6 +5467,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "staap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gpui",
+ "gpui-component",
+ "portable-pty",
+ "regex",
+ "serde",
+ "serde_json",
+ "vt100",
 ]
 
 [[package]]

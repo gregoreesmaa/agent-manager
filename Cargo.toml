@@ -1,16 +1,16 @@
 [package]
-name = "agent-manager"
+name = "staap"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 [lib]
-name = "agent_manager"
+name = "staap"
 path = "src/lib.rs"
 crate-type = ["staticlib", "rlib"]
 
 [[bin]]
-name = "agent-manager"
+name = "staap"
 path = "src/main.rs"
 
 [dependencies]
@@ -26,7 +26,7 @@ vt100 = "0.15"
 # (src/lib.rs) is framework-free by contract (see docs/native-core-seam.md),
 # so the GUI-stack deps stay macOS-scoped: Linux links only the core
 # staticlib into the GTK shell (native/linux, issue #63), and Windows
-# links only agent_manager.lib into the WinUI shell (native/windows,
+# links only staap.lib into the WinUI shell (native/windows,
 # issue #64) — neither ever pays for, or even compiles, the macOS GUI
 # stack.
 [target.'cfg(target_os = "macos")'.dependencies]

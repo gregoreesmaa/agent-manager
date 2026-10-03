@@ -221,7 +221,7 @@ mod tests {
 
     fn seed(files: &[(&str, String)]) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "agent-manager-codex-{}",
+            "staap-codex-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

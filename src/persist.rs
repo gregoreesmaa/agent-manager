@@ -15,14 +15,14 @@ pub const RUNS_FILENAME: &str = "runs.json";
 /// Subdir of [`data_dir`] holding exported markdown.
 pub const EXPORTS_DIRNAME: &str = "exports";
 
-/// Platform data dir for local-only state (`agent-manager` subdir).
+/// Platform data dir for local-only state (`staap` subdir).
 pub fn data_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        PathBuf::from(xdg).join("agent-manager")
+        PathBuf::from(xdg).join("staap")
     } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".local/share/agent-manager")
+        PathBuf::from(home).join(".local/share/staap")
     } else {
-        PathBuf::from(".local/share/agent-manager")
+        PathBuf::from(".local/share/staap")
     }
 }
 
@@ -247,7 +247,7 @@ mod tests {
 
     fn tmp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "agent-manager-persist-test-{}-{name}",
+            "staap-persist-test-{}-{name}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

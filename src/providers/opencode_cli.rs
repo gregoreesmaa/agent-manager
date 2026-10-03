@@ -304,7 +304,7 @@ fi
     #[cfg(unix)]
     fn tmpdir(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "agent-manager-opencode-{tag}-{}",
+            "staap-opencode-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

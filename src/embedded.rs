@@ -1039,7 +1039,7 @@ mod tests {
         // `pwd` is Unix-only (and Git-Bash `pwd` prints POSIX paths),
         // so Windows asks `cmd /C cd`, which prints the native path.
         let dir = std::env::temp_dir().join(format!(
-            "agent-manager-cwd-test-{}",
+            "staap-cwd-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1153,7 +1153,7 @@ mod tests {
         // Issue #64: the Windows backend searches the registry PATH, so
         // the seam pre-resolves bare names against the process PATH.
         let dir = std::env::temp_dir().join(format!(
-            "agent-manager-resolve-test-{}",
+            "staap-resolve-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1217,7 +1217,7 @@ mod tests {
         // Runs on every OS: pure PATH probing + string building, joined
         // with the platform separator so the fake dir scans first.
         let dir = std::env::temp_dir().join(format!(
-            "agent-manager-shim-test-{}",
+            "staap-shim-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

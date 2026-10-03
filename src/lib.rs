@@ -1,4 +1,4 @@
-//! agent-manager core: framework-free shared logic for native shells.
+//! staap core: framework-free shared logic for native shells.
 //!
 //! This library is the cross-platform contract behind epic #60: the eight
 //! core modules stay UI-toolkit agnostic (no toolkit, no shell code) so

@@ -1,8 +1,8 @@
-# cbindgen config for include/agent_manager.h (issue #61).
-# Regenerate: cbindgen --config cbindgen.toml --crate agent-manager \
-#   --output include/agent_manager.h
+# cbindgen config for include/staap.h (issue #61).
+# Regenerate: cbindgen --config cbindgen.toml --crate staap \
+#   --output include/staap.h
 language = "C"
-include_guard = "agent_manager"
+include_guard = "staap"
 autogen_warning = "/* Warning: regenerate with cbindgen, do not hand-edit beyond the checked-in snapshot. */"
 sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
 

@@ -202,7 +202,7 @@ mod tests {
         // in the tail means Attention even though the log mtime is fresh
         // (which alone would read Working).
         let root = std::env::temp_dir().join(format!(
-            "agent-manager-classify-{}",
+            "staap-classify-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn discovers_session_jsonl_layout() {
         let root = std::env::temp_dir().join(format!(
-            "agent-manager-test-{}",
+            "staap-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn populates_transcript_and_single_line_title() {
         let root = std::env::temp_dir().join(format!(
-            "agent-manager-transcript-{}",
+            "staap-transcript-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

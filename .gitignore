@@ -3,8 +3,8 @@ swift/.build
 swift/.swiftpm
 .DS_Store
 *.pdb
-agent-manager-state.json
-agent-manager-prefs.json
+staap-state.json
+staap-prefs.json
 
 # crash dumps (e.g. Linux core dump from a crashed test binary)
 /core
