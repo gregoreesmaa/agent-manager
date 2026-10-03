@@ -28,6 +28,12 @@ core_lib = cc.find_library('agent_manager', dirs: core_lib_dir, required: true)
 core_inc = include_directories('../../include')
 src_inc = include_directories('src')
 
+# The Rust staticlib's own link closure (sockets, threads, math).
+sys_libs = [core_lib,
+            cc.find_library('dl', required: false),
+            cc.find_library('pthread', required: false),
+            cc.find_library('m', required: false)]
+
 # Shared-logic contract tests: the reconciler, key table, preview, and
 # picker helpers now live in the core (`am_feed_delta`, `am_key_encode`,
 # `am_spawn_preview`, ...), pinned by `cargo test --lib`. The per-shell C
@@ -47,12 +53,6 @@ picker_test_exe = executable('am-picker-test',
   dependencies: sys_libs,
   install: false)
 test('picker', picker_test_exe)
-
-# The Rust staticlib's own link closure (sockets, threads, math).
-sys_libs = [core_lib,
-            cc.find_library('dl', required: false),
-            cc.find_library('pthread', required: false),
-            cc.find_library('m', required: false)]
 
 # Headless C ABI runtime check: no display needed, CI-greppable output.
 smoke_exe = executable('am-gtk-smoke',
