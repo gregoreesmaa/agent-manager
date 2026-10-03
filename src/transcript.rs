@@ -189,6 +189,129 @@ pub fn parse_claude_tail(tail: &str) -> ParsedTranscript {
     cap_messages(messages)
 }
 
+/// Codex rollout tail: one JSON event object per line with
+/// `payload.type` (`user` input text / `assistant` message text).
+/// Non-JSON lines are kept as [`Role::Unknown`] (same contract as
+/// [`parse_transcript`]). Command-execution / file-change / reasoning
+/// events surface as `🔧 <kind>` summaries; anything else is skipped.
+pub fn parse_codex_tail(tail: &str) -> ParsedTranscript {
+    let mut messages = Vec::new();
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => extract_codex_value(&value, &mut messages),
+            Err(_) => push_capped(&mut messages, Role::Unknown, line.to_string()),
+        }
+    }
+    cap_messages(messages)
+}
+
+/// Best-effort resume handle for a Codex tail: the first `session_id`
+/// (or legacy `id` shaped like a session) found on an event or inside
+/// its payload. Falls back to the log filename at the provider layer.
+pub fn extract_codex_session_id(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        for key in ["session_id", "sessionId", "thread_id"] {
+            if let Some(id) = value
+                .get(key)
+                .or_else(|| value.get("payload").and_then(|p| p.get(key)))
+                .and_then(|v| v.as_str())
+            {
+                if !id.trim().is_empty() {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort project name for a Codex tail: basename of the first
+/// `payload.cwd` (or top-level `cwd`) found (both `/` and `\` split, so
+/// Windows paths work too).
+pub fn extract_codex_project(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let cwd = value
+            .get("payload")
+            .and_then(|p| p.get("cwd"))
+            .or_else(|| value.get("cwd"))
+            .and_then(|v| v.as_str());
+        let Some(cwd) = cwd else { continue };
+        if cwd.trim().is_empty() {
+            continue;
+        }
+        let name = cwd
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(cwd);
+        if !name.trim().is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn extract_codex_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    let payload = value.get("payload").unwrap_or(value);
+    let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        "user" => {
+            let text = payload
+                .get("text")
+                .or_else(|| payload.get("input"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !text.is_empty() {
+                push_capped(out, Role::User, text);
+            }
+        }
+        "assistant" => {
+            let text = payload
+                .get("text")
+                .or_else(|| payload.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !text.is_empty() {
+                push_capped(out, Role::Assistant, text);
+            }
+        }
+        "command_execution" | "file_change" | "reasoning" | "tool_call" | "web_search" => {
+            let label = payload
+                .get("command")
+                .or_else(|| payload.get("summary"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(kind);
+            let label = label.trim();
+            if !label.is_empty() {
+                push_capped(out, Role::Assistant, format!("🔧 {label}"));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn opencode_role(role: &str) -> Option<Role> {
     match role {
         "user" => Some(Role::User),
@@ -793,35 +916,60 @@ mod tests {
     }
 
     #[test]
-    fn claude_tool_use_blocks_surface_as_tool_summaries() {
-        let tail = serde_json::json!({
-            "type": "assistant",
-            "sessionId": "s-2",
-            "cwd": "C:\\work\\myproj",
-            "message": {"role": "assistant",
-                "content": [{"type": "tool_use", "name": "Edit"}]}
-        })
-        .to_string();
-        let parsed = parse_claude_tail(&tail);
-        assert_eq!(parsed.messages.len(), 1);
-        assert_eq!(parsed.messages[0].role, Role::Assistant);
-        assert_eq!(parsed.messages[0].text, "🔧 Edit");
-        // Windows path projects split on backslashes too.
-        assert_eq!(extract_claude_project(&tail).as_deref(), Some("myproj"));
-    }
-
-    #[test]
-    fn claude_bare_string_content_and_plain_text_lines_parse() {
-        let tail = serde_json::json!({
-            "type": "user",
-            "sessionId": "s-3",
-            "message": {"content": "Fix login"}
-        })
-        .to_string();
-        let parsed = parse_claude_tail(&format!("{tail}\nplain line\n"));
+    fn parses_codex_user_and_assistant_events_in_order() {
+        let tail = [
+            serde_json::json!({
+                "id": "evt-1",
+                "session_id": "sess-codex-9",
+                "payload": {"type": "user", "text": "Fix login",
+                    "cwd": "/tmp/work/shop"}
+            }),
+            serde_json::json!({
+                "id": "evt-2",
+                "session_id": "sess-codex-9",
+                "payload": {"type": "assistant", "text": "Done"}
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_codex_tail(&tail);
+        assert!(!parsed.truncated);
         assert_eq!(parsed.messages.len(), 2);
         assert_eq!(parsed.messages[0].role, Role::User);
         assert_eq!(parsed.messages[0].text, "Fix login");
-        assert_eq!(parsed.messages[1].role, Role::Unknown);
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[1].text, "Done");
+        assert_eq!(
+            extract_codex_session_id(&tail).as_deref(),
+            Some("sess-codex-9")
+        );
+        assert_eq!(extract_codex_project(&tail).as_deref(), Some("shop"));
+        assert_eq!(extract_codex_project("not json\n"), None);
+        assert_eq!(extract_codex_session_id("not json\n"), None);
+    }
+
+    #[test]
+    fn codex_command_events_surface_as_tool_summaries() {
+        let tail = serde_json::json!({
+            "id": "evt-3",
+            "payload": {"type": "command_execution",
+                "command": "bash -lc ls", "cwd": "C:\\work\\myproj"}
+        })
+        .to_string();
+        let parsed = parse_codex_tail(&tail);
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Assistant);
+        assert_eq!(parsed.messages[0].text, "🔧 bash -lc ls");
+        // Windows path projects split on backslashes too.
+        assert_eq!(extract_codex_project(&tail).as_deref(), Some("myproj"));
+    }
+
+    #[test]
+    fn codex_plain_text_lines_become_unknown_messages() {
+        let parsed = parse_codex_tail("Fix login\n");
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Unknown);
     }
 }
