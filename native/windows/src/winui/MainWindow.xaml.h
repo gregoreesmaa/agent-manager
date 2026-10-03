@@ -71,6 +71,10 @@ namespace winrt::AgentManagerWinUI::implementation
         void TermBox_PreviewKeyDown(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args);
+        /* Empty-overlay button (XAML-wired handlers must be public). */
+        void EmptyButton_Click(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::RoutedEventArgs const &args);
 
     private:
         void OnTick(
@@ -84,9 +88,6 @@ namespace winrt::AgentManagerWinUI::implementation
         void ShowEmpty(std::wstring const &title, std::wstring const &detail,
                        std::wstring const &button);
         long long RowIndexById(std::wstring const &id);
-        void EmptyButton_Click(
-            Windows::Foundation::IInspectable const &sender,
-            Microsoft::UI::Xaml::RoutedEventArgs const &args);
         /* Group-list helpers (issue #73): the four lists share one
          * selection, kept in the core (`am_selected`); m_syncing guards
          * the SelectionChanged fan-out while the selection is moved. */
