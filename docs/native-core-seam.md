@@ -1,11 +1,11 @@
 # Native core seam (proposal)
 
 Status: proposal only — except for the three landed consumers: `swift/`
-(`AgentManagerMac`, #62) binds the C ABI below via SwiftTerm + SwiftUI
+(`StaapMac`, #62) binds the C ABI below via SwiftTerm + SwiftUI
 (see `swift/README.md` for its wiring table), `native/linux/`
-(`agent-manager-gtk`, #63) binds the same C ABI via GTK4/libadwaita +
+(`staap-gtk`, #63) binds the same C ABI via GTK4/libadwaita +
 VTE (see `native/linux/README.md` for its wiring table), and
-`native/windows/` (`AgentManagerWinUI`, #64) binds it via WinUI 3 +
+`native/windows/` (`StaapWinUI`, #64) binds it via WinUI 3 +
 ConPTY (see `native/windows/README.md` for its wiring table). The rest
 of this doc records the audit result, the decoupling already landed,
 and the exact core API a per-OS shell binds against.
@@ -98,8 +98,8 @@ can link them.
   `Config.{default_cli, default_cwd, last_cli, recent_folders}`,
   `yolo_default_for(agent)`, `note_launch(cli, cwd)`; old files load via
   serde defaults; the picker override never writes back implicitly.
-- FFI: `am_spawn_launch(core, out, cli, cwd, yolo, cols, rows)`,
-  `am_clis_json()`, `am_recent_json(core)`, `am_note_launch(core, cli,
+- FFI: `staap_spawn_launch(core, out, cli, cwd, yolo, cols, rows)`,
+  `staap_clis_json()`, `staap_recent_json(core)`, `staap_note_launch(core, cli,
   cwd)` (regenerate the header with cbindgen after any FFI change).
 
 ### Spawn with cwd/flags (`embedded` + `config`)
@@ -185,7 +185,7 @@ can link them.
 
 ## 3. Binding shape sketches
 
-### Option A — C ABI (`extern "C"` over opaque handles)
+### Option A — C ABI (`extern "C"` over opaque handles; sketch, superseded by §5 Landed C ABI)
 
 ```c
 // Opaque handles; the shell never sees Rust internals.
@@ -276,19 +276,19 @@ behavior with native look:
 
 - Roster: core registry rows, grouped Needs input → Working → Idle →
   History on every shell; one shared cap (10, oldest-exited reaped
-  first); spawns attach real rows (`am_run_spawn`), restart/resume keep
-  the id (`am_run_restart`), close drops entry + PTY (`am_run_close`).
-- Statuses actually move: `am_pump_all` refreshes attention/links and
+  first); spawns attach real rows (`staap_run_spawn`), restart/resume keep
+  the id (`staap_run_restart`), close drops entry + PTY (`staap_run_close`).
+- Statuses actually move: `staap_pump_all` refreshes attention/links and
   re-sorts inside (the old launch-snapshot rows never changed).
 - Persistence is automatic (throttled pump autosave + close hooks):
   no Save buttons, no Ctrl/Cmd+S. Theme follows the system appearance:
   no theme pickers (the Linux System/Dark/Light dropdown and its
   plain-file pref are deleted, like the never-existing macOS/Windows
   overrides).
-- One key table (`am_key_encode`), one reconciler (`am_feed_delta`), one
-  SGR renderer (`am_ansi_render`), one preview (`am_spawn_preview`), one
-  filter/selection (`am_row_matches`/`am_set_filter`/`am_selected`/
-  `am_select`/`am_select_step`), one sidebar clamp (`am_clamp_sidebar`).
+- One key table (`staap_key_encode`), one reconciler (`staap_feed_delta`), one
+  SGR renderer (`staap_ansi_render`), one preview (`staap_spawn_preview`), one
+  filter/selection (`staap_row_matches`/`staap_set_filter`/`staap_selected`/
+  `staap_select`/`staap_select_step`), one sidebar clamp (`staap_clamp_sidebar`).
   The per-shell C/Swift ports (`feed.c`, `picker.c`, `terminal_keys.h`,
   the Swift feed/ANSI duplicates as production paths) are deleted; the
   pure-Swift helpers stay for unit tests only, production calls the core.
@@ -301,22 +301,22 @@ The Linux shell is the portability proof: it links only the core
 - The `gpui` / `gpui-component` deps in `Cargo.toml` are
   `[target.'cfg(target_os = "macos")'.dependencies]`-scoped. The core
   library compiles (and `cargo test --lib` passes) on Linux without ever
-  building the macOS GUI stack; the `agent-manager` binary stays
+  building the macOS GUI stack; the `staap` binary stays
   macOS-only. On Linux the gates are `cargo build --lib`,
   `cargo test --lib`, and the meson suite — `cargo test --all-targets`
   stays the macOS gate.
 - One emulator only: no PTY is spawned inside VTE. The shell translates
   key events to logical names and encodes via the shared core table
   (`bridge_key_encode` over `shell_shared::encode_key`), then feeds core
-  snapshots as a stream through the core reconciler (`am_feed_delta` in
-  `src/shell_shared.rs`, unit-pinned by `am-feed-test` mirroring
+  snapshots as a stream through the core reconciler (`staap_feed_delta` in
+  `src/shell_shared.rs`, unit-pinned by `staap-feed-test` mirroring
   `TerminalFeedTests`). A second line discipline would double-echo.
 - Reconciler parity is structural, not ported: every C shell calls the
-  same `am_feed_delta` (append-suffix hot path, scroll overlap,
+  same `staap_feed_delta` (append-suffix hot path, scroll overlap,
   clear-and-replay, CRLF normalization), so all shells show identical
   screens from identical snapshots. Swift's `TerminalFeed` stays as the
   Swift-idiomatic original feeding the SwiftTerm view directly (production
-  may call the core `am_feed_delta` instead); the old per-shell `feed.c`
+  may call the core `staap_feed_delta` instead); the old per-shell `feed.c`
   ports are gone.
 
 ### Windows notes (`native/windows/`, #64)
@@ -337,10 +337,10 @@ WinUI 3 UI over the same C ABI. What future maintainers should know:
   logic (feed reconciler, roster filter match, relative-age label,
   per-row link/age getters, plus the run registry, key table, SGR
   renderer, and preview/selection helpers) lives in the core itself
-  (`src/shell_shared.rs` + `src/runs.rs`, bound as `am_feed_delta` /
-  `am_roster_matches` / `am_relative_age` / `am_link_count` /
-  `am_last_active` and the `am_run_*` / `am_key_*` / `am_ansi_*` /
-  `am_select_*` family); `am-win-feed-test` and `am-feed-test` pin that
+  (`src/shell_shared.rs` + `src/runs.rs`, bound as `staap_feed_delta` /
+  `staap_roster_matches` / `staap_relative_age` / `staap_link_count` /
+  `staap_last_active` and the `staap_run_*` / `staap_key_*` / `staap_ansi_*` /
+  `staap_select_*` family); `staap-win-feed-test` and `staap-feed-test` pin that
   C ABI edge instead of a vendored copy.
 - Key encoding goes through the shared core table
   (`bridge_key_encode` over `shell_shared::encode_key`, replacing the
@@ -355,7 +355,7 @@ WinUI 3 UI over the same C ABI. What future maintainers should know:
 - Unlike the Linux job, the Windows CI job runs
   `cargo test --all-targets`: the gpui binary is macOS-gated in
   `src/main.rs` (the `gpui` / `gpui-component` deps stay macOS-scoped
-  in `Cargo.toml`; the Windows shell links only `agent_manager.lib` +
+  in `Cargo.toml`; the Windows shell links only `staap.lib` +
   system libs), so on `windows-latest` that exercises the full
   portable lib suite plus a stub bin. Scoping is about what the
   *native shells* link, not what the toolchain could build — and the
@@ -375,17 +375,17 @@ WinUI 3 UI over the same C ABI. What future maintainers should know:
    (`embedded::SnapSpan`-shaped: text + fg/bg/bold/italic/underline as
    plain values; palette duplicated from `gui/terminal.rs`, gui untouched).
    `view()` stays for the gui. No lifetime crosses the FFI boundary.
-3. ✅ DONE (slice 2, #60): `src/ffi.rs` maps errors to `AmError` int
+3. ✅ DONE (slice 2, #60): `src/ffi.rs` maps errors to `StaapError` int
    codes (`Ok=0, Spawn=1, Io=2, Utf8=3, Null=4, Config=5`) + a
-   thread-local message via `am_last_error()`. Degrade-to-empty on
+   thread-local message via `staap_last_error()`. Degrade-to-empty on
    missing/corrupt files is preserved (discovery + load inside
-   `am_core_new` never fail).
+   `staap_core_new` never fail).
 
 ### Landed C ABI (`src/ffi.rs`, crate-type `staticlib` + `rlib`)
 
-Opaque handles (`AmCore` owns the run registry — roster `App` + live
-PTYs; `AmPty` owns one `EmbeddedPty` for the legacy spawn path); plain
-`#[repr(C)]` `AmRgb` / `AmStyle` (`has_fg`/`has_bg` presence flags —
+Opaque handles (`StaapCore` owns the run registry — roster `App` + live
+PTYs; `StaapPty` owns one `EmbeddedPty` for the legacy spawn path); plain
+`#[repr(C)]` `StaapRgb` / `StaapStyle` (`has_fg`/`has_bg` presence flags —
 `Option` stays on the Rust side). Framework-free core modules behind
 the FFI: `shell` (roster rows, key table, feed reconciler, SGR
 renderer, preview, display strings, sidebar bounds), `runs` (live-run
@@ -395,63 +395,63 @@ plus the pre-existing `app`/`config`/`launch`/`embedded`/`parsers`/
 
 | fn | contract |
 |---|---|
-| `am_core_new` / `am_core_free` | discovery + persistence merge + user config load inside; null-safe free |
-| `am_core_save` | persist config + run list (automatic: pump throttle + close hooks, no Save button); `Config` code on failure |
-| `am_spawn(core, out, cwd, cols, rows)` | fresh `muse` session; null cwd inherits; int code (legacy path; shells use `am_run_spawn`) |
-| `am_spawn_launch(core, out, cli, cwd, yolo, cols, rows)` | 2D-launch spawn (folder × CLI + one-shot yolo); null/empty cli repeats last/default resolution; int code (legacy path; shells use `am_run_spawn`) |
-| `am_pump` | dirty gate; null → false (legacy path; shells use `am_pump_all`/`am_run_pump`) |
-| `am_write(pty, bytes, len)` | raw input bytes; int code (legacy path; shells use `am_run_write`) |
-| `am_resize` | null no-op (legacy path; shells use `am_run_resize`) |
-| `am_screen_text` + `am_screen_text_free` | owned UTF-8, caller frees (legacy path; shells use `am_run_screen_text`) |
-| `am_spans_json` | owned styled spans as JSON (rows of `{text,fg,bg,bold,italic,underline}`), freed with `am_screen_text_free` (legacy path; shells use `am_run_spans_json`) |
-| `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
-| `am_session_count` | roster row count; 0 on null (#62) |
-| `am_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `am_screen_text_free` (#62) |
-| `am_clis_json()` | owned JSON of the autodetected CLI catalog (`AvailableCli` rows in `SUPPORTED_CLIS` order); freed with `am_screen_text_free` |
-| `am_effective_cli(core, cli)` | owned harness id of the effective CLI (explicit or core resolution); freed with `am_screen_text_free` |
-| `am_recent_json(core)` | owned JSON string array of folder recents (MRU-first); null core yields `[]`; freed with `am_screen_text_free` |
-| `am_note_launch(core, cli, cwd)` | record a confirmed FFI-side launch (last-used CLI + folder MRU); int code |
-| `am_max_runs` | shared live-run ceiling (10) |
-| `am_live_count` / `am_is_live` | attached-run count / per-id live test; null-safe |
-| `am_pump_all` | pump every live run (statuses/links refresh + re-sort); true = repaint |
-| `am_run_spawn` | 2D-launch spawn attached to a new roster row under the cap; row id out; cap refusal names per-run close |
-| `am_run_restart` | restart/resume on the same id (keeps title/links) |
-| `am_run_close` | drop PTY + remove entry (unknown = no-op success) |
-| `am_needs_quit_confirm` | Working/Attention row or live PTY |
-| `am_run_pump` / `am_run_write` / `am_run_resize` | per-id pump / write / resize |
-| `am_run_screen_text` / `am_run_spans_json` | per-id owned snapshots; freed with `am_screen_text_free` |
-| `am_run_exited` | per-id exit flag |
-| `am_key_encode` | shared key table: bytes out + count, 0 = Keep, -1 = null key |
-| `am_feed_delta` | shared reconciler; owned string or null when current |
-| `am_ansi_render` | shared SGR renderer; null when undecodable |
-| `am_spawn_preview` / `am_yolo_value` | shared preview copy / tri-state mapping |
-| `am_age_string` / `am_status_glyph` / `am_section_title` | shared display strings; freed with `am_screen_text_free` |
-| `am_clamp_sidebar` | shared 220..480px sidebar clamp |
-| `am_row_matches` / `am_set_filter` | core-owned filter test / replace (snaps selection) |
-| `am_selected` / `am_select` / `am_select_step` | core-owned selection |
-| `am_last_error` | thread-local message; never null |
-| `am_pty_free` | reaps the child; null no-op |
+| `staap_core_new` / `staap_core_free` | discovery + persistence merge + user config load inside; null-safe free |
+| `staap_core_save` | persist config + run list (automatic: pump throttle + close hooks, no Save button); `Config` code on failure |
+| `staap_spawn(core, out, cwd, cols, rows)` | fresh `muse` session; null cwd inherits; int code (legacy path; shells use `staap_run_spawn`) |
+| `staap_spawn_launch(core, out, cli, cwd, yolo, cols, rows)` | 2D-launch spawn (folder × CLI + one-shot yolo); null/empty cli repeats last/default resolution; int code (legacy path; shells use `staap_run_spawn`) |
+| `staap_pump` | dirty gate; null → false (legacy path; shells use `staap_pump_all`/`staap_run_pump`) |
+| `staap_write(pty, bytes, len)` | raw input bytes; int code (legacy path; shells use `staap_run_write`) |
+| `staap_resize` | null no-op (legacy path; shells use `staap_run_resize`) |
+| `staap_screen_text` + `staap_screen_text_free` | owned UTF-8, caller frees (legacy path; shells use `staap_run_screen_text`) |
+| `staap_spans_json` | owned styled spans as JSON (rows of `{text,fg,bg,bold,italic,underline}`), freed with `staap_screen_text_free` (legacy path; shells use `staap_run_spans_json`) |
+| `staap_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
+| `staap_session_count` | roster row count; 0 on null (#62) |
+| `staap_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `staap_screen_text_free` (#62) |
+| `staap_clis_json()` | owned JSON of the autodetected CLI catalog (`AvailableCli` rows in `SUPPORTED_CLIS` order); freed with `staap_screen_text_free` |
+| `staap_effective_cli(core, cli)` | owned harness id of the effective CLI (explicit or core resolution); freed with `staap_screen_text_free` |
+| `staap_recent_json(core)` | owned JSON string array of folder recents (MRU-first); null core yields `[]`; freed with `staap_screen_text_free` |
+| `staap_note_launch(core, cli, cwd)` | record a confirmed FFI-side launch (last-used CLI + folder MRU); int code |
+| `staap_max_runs` | shared live-run ceiling (10) |
+| `staap_live_count` / `staap_is_live` | attached-run count / per-id live test; null-safe |
+| `staap_pump_all` | pump every live run (statuses/links refresh + re-sort); true = repaint |
+| `staap_run_spawn` | 2D-launch spawn attached to a new roster row under the cap; row id out; cap refusal names per-run close |
+| `staap_run_restart` | restart/resume on the same id (keeps title/links) |
+| `staap_run_close` | drop PTY + remove entry (unknown = no-op success) |
+| `staap_needs_quit_confirm` | Working/Attention row or live PTY |
+| `staap_run_pump` / `staap_run_write` / `staap_run_resize` | per-id pump / write / resize |
+| `staap_run_screen_text` / `staap_run_spans_json` | per-id owned snapshots; freed with `staap_screen_text_free` |
+| `staap_run_exited` | per-id exit flag |
+| `staap_key_encode` | shared key table: bytes out + count, 0 = Keep, -1 = null key |
+| `staap_feed_delta` | shared reconciler; owned string or null when current |
+| `staap_ansi_render` | shared SGR renderer; null when undecodable |
+| `staap_spawn_preview` / `staap_yolo_value` | shared preview copy / tri-state mapping |
+| `staap_age_string` / `staap_status_glyph` / `staap_section_title` | shared display strings; freed with `staap_screen_text_free` |
+| `staap_clamp_sidebar` | shared 220..480px sidebar clamp |
+| `staap_row_matches` / `staap_set_filter` | core-owned filter test / replace (snaps selection) |
+| `staap_selected` / `staap_select` / `staap_select_step` | core-owned selection |
+| `staap_last_error` | thread-local message; never null |
+| `staap_pty_free` | reaps the child; null no-op |
 
-### C header (`include/agent_manager.h`, hardened #61)
+### C header (`include/staap.h`, hardened #61)
 
 The header is checked in and mirrors `src/ffi.rs` exactly (20 exports;
-verified: every `am_*` in the header is a `T` symbol in
-`target/debug/libagent_manager.a` and vice versa). Regenerate after any
+verified: every `staap_*` in the header is a `T` symbol in
+`target/debug/libstaap.a` and vice versa). Regenerate after any
 FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)
 (`cbindgen.toml` at the repo root):
 
 ```sh
 cargo install cbindgen
-cbindgen --config cbindgen.toml --crate agent-manager \
-  --output include/agent_manager.h
+cbindgen --config cbindgen.toml --crate staap \
+  --output include/staap.h
 ```
 
-`cc -fsyntax-only -std=c99 -Wall include/agent_manager.h` must stay
+`cc -fsyntax-only -std=c99 -Wall include/staap.h` must stay
 clean. Error/status codes are pinned by tests, not just docs:
 `error_codes_round_trip` (`Ok=0..Config=5`),
 `status_codes_map_roster_status` (Attention=0, Idle=1, Working=2, -1
 null, -2 out of bounds), and every failure above asserts its
-`am_last_error` message. The public `am_spawn` success path is covered
+`staap_last_error` message. The public `staap_spawn` success path is covered
 hermetically (`public_spawn_success_path`: fake `muse` on `PATH`) and
-`am_core_save` success + failure without touching live config
-(`core_save_round_trips_to_scoped_config` via `$AGENT_MANAGER_CONFIG`).
+`staap_core_save` success + failure without touching live config
+(`core_save_round_trips_to_scoped_config` via `$STAAP_CONFIG`).

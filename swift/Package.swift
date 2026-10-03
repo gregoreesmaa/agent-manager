@@ -1,5 +1,5 @@
 // swift-tools-version: 5.9
-// AgentManagerMac: native macOS shell over the core staticlib C ABI
+// StaapMac: native macOS shell over the core staticlib C ABI
 // (issue #62). The Rust core builds separately (`cargo build --lib`);
 // this manifest only tells the linker where that staticlib lives.
 import Foundation
@@ -15,7 +15,7 @@ func libDir(_ config: String) -> String {
 }
 
 let package = Package(
-    name: "AgentManagerMac",
+    name: "StaapMac",
     platforms: [.macOS("26.0")],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.20.0"),
@@ -28,14 +28,14 @@ let package = Package(
             path: "Sources/ShellSupport"
         ),
         .executableTarget(
-            name: "AgentManagerMac",
+            name: "StaapMac",
             dependencies: [
                 "ShellSupport",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
-            path: "Sources/AgentManagerMac",
+            path: "Sources/StaapMac",
             linkerSettings: [
-                .linkedLibrary("agent_manager"),
+                .linkedLibrary("staap"),
                 .unsafeFlags([
                     "-L", libDir("debug"),
                     "-L", libDir("release"),

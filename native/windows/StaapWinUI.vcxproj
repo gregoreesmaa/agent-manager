@@ -2,7 +2,7 @@
 <!-- Agent Manager — WinUI 3 shell (issue #64). Unpackaged C++/WinRT app:
   no MSIX/installer (see the CI/packaging issue); CI builds the exe with
   msbuild after `msbuild -t:restore` pulls Microsoft.WindowsAppSDK.
-  The core staticlib (agent_manager.lib, from building the cargo lib
+  The core staticlib (staap.lib, from building the cargo lib
   target) links in via CoreLibDir (override with /p:CoreLibDir=dir). -->
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="NuGet">
@@ -43,11 +43,11 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{A6B4C2E1-8F3D-4B9A-9E5C-64D2A1F0B3C7}</ProjectGuid>
-    <RootNamespace>AgentManagerWinUI</RootNamespace>
+    <RootNamespace>StaapWinUI</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <TargetPlatformVersion>10.0.26100.0</TargetPlatformVersion>
     <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
-    <ProjectName>AgentManagerWinUI</ProjectName>
+    <ProjectName>StaapWinUI</ProjectName>
     <!-- Native XAML rules (runs 36330973198/36331376776, refs #64):
       *.xaml.g.h codegen comes from VS's inbox
       Microsoft.Windows.UI.Xaml.Cpp.targets, imported only when
@@ -95,7 +95,7 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup>
-    <!-- Directory holding agent_manager.lib (default: cargo's debug dir). -->
+    <!-- Directory holding staap.lib (default: cargo's debug dir). -->
     <CoreLibDir Condition="'$(CoreLibDir)' == ''">$(ProjectDir)..\..\target\debug</CoreLibDir>
     <OutDir>$(ProjectDir)bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
@@ -118,7 +118,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>$(CoreLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>agent_manager.lib;ws2_32.lib;userenv.lib;bcrypt.lib;user32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>staap.lib;ws2_32.lib;userenv.lib;bcrypt.lib;user32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <!-- /BREPRO: deterministic link, so release binaries are reproducible
         bit-for-bit from the same inputs (same MVID/timestamps every
         build). Not related to the XAML Pass1 stash (that trigger is the

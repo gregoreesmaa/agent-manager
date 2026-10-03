@@ -6,13 +6,13 @@ import SwiftUI
 /// through the C ABI in `CoreBridge.swift`; rendering is SwiftUI plus a
 /// SwiftTerm terminal view. Entry is via `main.swift` (which also hosts
 /// the `--smoke` runtime check).
-struct AgentManagerMacApp: App {
+struct StaapMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var appState: AppState
 
     init() {
         guard let core = Core() else {
-            fatalError("am_core_new returned NULL (allocation failure)")
+            fatalError("staap_core_new returned NULL (allocation failure)")
         }
         let state = AppState(core: core)
         _appState = StateObject(wrappedValue: state)

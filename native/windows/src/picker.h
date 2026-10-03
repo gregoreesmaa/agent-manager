@@ -2,10 +2,10 @@
  *
  * Only the catalog/recents JSON shapes parse locally (native ComboBox
  * rows need them); every rule — preview copy, yolo mapping, folder
- * trimming — lives once in the core (`am_spawn_preview`,
- * `am_yolo_value`, ...), pinned by `cargo test --lib` and the bridge
+ * trimming — lives once in the core (`staap_spawn_preview`,
+ * `staap_yolo_value`, ...), pinned by `cargo test --lib` and the bridge
  * section of `picker_test.cpp`. Pure header-only C++ (no WinUI types),
- * so the CMake `am-win-picker-test` pins it on every runner.
+ * so the CMake `staap-win-picker-test` pins it on every runner.
  *
  * Catalog rows come from `bridge_clis_json`
  * ([{id,program,path,available}] in core order); recents from
@@ -13,8 +13,8 @@
  * (available=false) with an install hint, never hidden.
  */
 
-#ifndef AM_WIN_PICKER_H
-#define AM_WIN_PICKER_H
+#ifndef STAAP_WIN_PICKER_H
+#define STAAP_WIN_PICKER_H
 
 #include <string>
 #include <vector>
@@ -202,4 +202,4 @@ inline std::vector<std::string> parse_recents(const std::string &json) {
 
 } /* namespace picker */
 
-#endif /* AM_WIN_PICKER_H */
+#endif /* STAAP_WIN_PICKER_H */

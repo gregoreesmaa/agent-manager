@@ -3,7 +3,7 @@
  * The core's public spawn runs the real `muse` command; the live test
  * must not need one. `tests/smoke_live.ps1` compiles this file with the
  * runner's MSVC (`cl`) to `muse.exe`, puts it first on PATH, and runs
- * `am-win-smoke --smoke-live` — the same hermetic trick as the core's
+ * `staap-win-smoke --smoke-live` — the same hermetic trick as the core's
  * `public_spawn_success_path` test and the Linux `smoke_live.sh`, but
  * with a real PE: CreateProcess cannot execute the shell-script fake
  * the unix harnesses use.

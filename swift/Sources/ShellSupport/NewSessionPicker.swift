@@ -2,13 +2,13 @@
 ///
 /// Pure Swift with no C ABI references, so it unit-tests without linking
 /// the core staticlib. The preview/yolo/folder rules now live in the
-/// core (`am_spawn_preview`, `am_yolo_value`); this type keeps the widget
+/// core (`staap_spawn_preview`, `staap_yolo_value`); this type keeps the widget
 /// state the sheet renders (CLI cursor, folder text, recents, yolo
 /// choice) and delegates the rules to `Core` where possible.
 ///
 /// Split-button contract (see `docs/new-session-picker.md`): the main
 /// action repeats the last launch instantly (null CLI/folder through
-/// `am_run_spawn`, which resolves the core's effective default); the
+/// `staap_run_spawn`, which resolves the core's effective default); the
 /// picker confirms an explicit folder × CLI + yolo combination.
 public struct NewSessionPicker {
     /// CLI catalog rows in core order (muse, claude, opencode, codex).
@@ -82,7 +82,7 @@ public struct NewSessionPicker {
 
     /// One-line spawn preview (`muse in ~/api`), so the launch is
     /// verifiable before it runs. The yolo flag itself rides inside
-    /// `am_spawn_launch`; the preview names the combination, not argv.
+    /// `staap_spawn_launch`; the preview names the combination, not argv.
     public var preview: String {
         let cli = selectedCli?.id ?? "muse"
         let where_ = effectiveFolder.map { " in \($0)" } ?? ""

@@ -8,7 +8,7 @@ tests/fake_muse.c with the runner's MSVC first (msvc-dev-cmd on CI).
 
 Usage (from the repo root, inside an MSVC environment):
   powershell -ExecutionPolicy Bypass -File native/windows/tests/smoke_live.ps1 `
-    -Smoke ./native/windows/build/Release/am-win-smoke.exe
+    -Smoke ./native/windows/build/Release/staap-win-smoke.exe
 #>
 param(
   [Parameter(Mandatory = $true)][string]$Smoke
@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 $fakeBin = Join-Path ([IO.Path]::GetTempPath()) (
   'fake-muse-64-' + [IO.Path]::GetRandomFileName())
 $scratch = Join-Path ([IO.Path]::GetTempPath()) (
-  'am-win-64-' + [IO.Path]::GetRandomFileName())
+  'staap-win-64-' + [IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $fakeBin | Out-Null
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
@@ -32,7 +32,7 @@ try {
   # Hermetic config + profile: discovery/persistence must degrade to
   # empty and never touch the developer's live files.
   $saved = @{}
-  foreach ($name in @('PATH', 'AGENT_MANAGER_CONFIG',
+  foreach ($name in @('PATH', 'STAAP_CONFIG',
       'USERPROFILE', 'APPDATA', 'LOCALAPPDATA')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name)
   }
@@ -40,7 +40,7 @@ try {
     [Environment]::SetEnvironmentVariable(
       'PATH', "$fakeBin;$($saved['PATH'])")
     [Environment]::SetEnvironmentVariable(
-      'AGENT_MANAGER_CONFIG', (Join-Path $scratch 'config.json'))
+      'STAAP_CONFIG', (Join-Path $scratch 'config.json'))
     [Environment]::SetEnvironmentVariable('USERPROFILE', $scratch)
     [Environment]::SetEnvironmentVariable(
       'APPDATA', (Join-Path $scratch 'AppData/Roaming'))
@@ -51,7 +51,7 @@ try {
     New-Item -ItemType Directory -Force `
       (Join-Path $scratch 'AppData/Local') | Out-Null
     & $Smoke --smoke-live
-    if ($LASTEXITCODE -ne 0) { throw "am-win-smoke --smoke-live failed" }
+    if ($LASTEXITCODE -ne 0) { throw "staap-win-smoke --smoke-live failed" }
   } finally {
     foreach ($name in $saved.Keys) {
       [Environment]::SetEnvironmentVariable($name, $saved[$name])

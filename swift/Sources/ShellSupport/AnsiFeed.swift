@@ -2,7 +2,7 @@ import Foundation
 
 /// Color-preserving renderer for the core's styled-span snapshots.
 ///
-/// Thin wrapper over the shared core renderer (`am_ansi_render`, via
+/// Thin wrapper over the shared core renderer (`staap_ansi_render`, via
 /// `Core.ansiRender`): one rule for every shell. The pure-Swift
 /// implementation below stays for unit tests without linking the core
 /// staticlib; production calls the core.
@@ -14,7 +14,7 @@ import Foundation
 /// plus attributes), so any fragment of a render is self-contained.
 public enum AnsiFeed {
     /// One styled run inside a snapshot row, matching the core's
-    /// `am_spans_json` shape. Style keys default when missing so a
+    /// `staap_spans_json` shape. Style keys default when missing so a
     /// skewed span degrades to the terminal default instead of failing
     /// the whole snapshot (the pump then still shows plain text).
     public struct Span: Decodable {
@@ -52,7 +52,7 @@ public enum AnsiFeed {
         rows.map { renderRow($0) }.joined(separator: "\n")
     }
 
-    /// Render an `am_spans_json` document, or nil when it does not
+    /// Render an `staap_spans_json` document, or nil when it does not
     /// decode (the pump then falls back to the plain-text snapshot).
     public static func render(json: String) -> String? {
         guard let data = json.data(using: .utf8),

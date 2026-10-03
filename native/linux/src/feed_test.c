@@ -1,5 +1,5 @@
 /* Bridge tests for the shared snapshot→stream reconciler (dumb-shell
- * parity). The reconciler lives in the core (`am_feed_delta`, pinned by
+ * parity). The reconciler lives in the core (`staap_feed_delta`, pinned by
  * `cargo test --lib` mirroring TerminalFeedTests 1:1); this target pins
  * the bridge wrapper's NULL/empty conventions against the real
  * staticlib. Exit 0 on success, 1 on first failure. */

@@ -1,6 +1,6 @@
 /* Bridge tests for the shared picker/display helpers (dumb-shell
  * parity). The preview, yolo, age, glyph, and section rules live in the
- * core (`am_spawn_preview`, ...), pinned by `cargo test --lib`; the
+ * core (`staap_spawn_preview`, ...), pinned by `cargo test --lib`; the
  * catalog/recents JSON shapes still parse locally for native widgets
  * (picker.h), pinned here. Links the real staticlib via core_bridge.c;
  * exit 0 prints PICKER-OK, 1 on first failure. */
@@ -69,7 +69,7 @@ static void shared_helpers_come_from_core(void) {
     CHECK(hdr && strcmp(hdr, "Working") == 0, "section working");
     bridge_string_free(hdr);
     /* Registry surface on a fresh core (no PTY needed). */
-    AmCore *core = bridge_core_new();
+    StaapCore *core = bridge_core_new();
     CHECK(core != nullptr, "core new");
     CHECK(bridge_max_runs() == 10, "cap is 10");
     CHECK(bridge_live_count(core) == 0, "no live runs");

@@ -7,7 +7,7 @@
 
 #include "core_bridge.h"
 
-namespace winrt::AgentManagerWinUI::implementation
+namespace winrt::StaapWinUI::implementation
 {
     /* Display cache for one roster row: the last full screen text (feed
      * delta base) plus everything fed to the view (capped). The core
@@ -89,7 +89,7 @@ namespace winrt::AgentManagerWinUI::implementation
                        std::wstring const &button);
         long long RowIndexById(std::wstring const &id);
         /* Group-list helpers (issue #73): the four lists share one
-         * selection, kept in the core (`am_selected`); m_syncing guards
+         * selection, kept in the core (`staap_selected`); m_syncing guards
          * the SelectionChanged fan-out while the selection is moved. */
         void RebuildGroupList(
             Microsoft::UI::Xaml::Controls::ListView const &list,
@@ -112,10 +112,10 @@ namespace winrt::AgentManagerWinUI::implementation
         fire_and_forget GetContentText(
             Windows::ApplicationModel::DataTransfer::DataPackageView data);
 
-        ::AmCore *m_core{nullptr};
+        ::StaapCore *m_core{nullptr};
         /* Roster row id -> display cache (feed base + shown text). The
          * core registry owns the PTYs; the selection/filter live in the
-         * core too (`am_selected`/`am_set_filter`) — this shell only
+         * core too (`staap_selected`/`staap_set_filter`) — this shell only
          * renders what the core reports. */
         std::map<std::wstring, DisplayRow> m_rows;
         bool m_syncing{false}; /* true while moving shared selection */
@@ -129,7 +129,7 @@ namespace winrt::AgentManagerWinUI::implementation
     };
 }
 
-namespace winrt::AgentManagerWinUI::factory_implementation
+namespace winrt::StaapWinUI::factory_implementation
 {
     struct MainWindow : MainWindowT<MainWindow, implementation::MainWindow>
     {

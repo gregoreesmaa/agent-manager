@@ -1,7 +1,7 @@
-# AgentManagerGTK — native Linux shell (issue #63)
+# StaapGTK — native Linux shell (issue #63)
 
 GTK4 + libadwaita + VTE front end over the core staticlib C ABI
-(`include/agent_manager.h` at the repo root). Second native shell after
+(`include/staap.h` at the repo root). Second native shell after
 `swift/` (#62): it proves the C ABI is portable, not Swift-only. Core Rust
 files are untouched by this shell — it links the framework-free core
 library only (the macOS GUI-stack deps in `Cargo.toml` are
@@ -23,10 +23,10 @@ The core staticlib must exist first (meson searches `target/debug` by
 default, or pass `-Dcore_lib_dir=`):
 
 ```sh
-cargo build --lib            # produces target/debug/libagent_manager.a
+cargo build --lib            # produces target/debug/libstaap.a
 meson setup native/linux/build native/linux
 meson compile -C native/linux/build
-./native/linux/build/agent-manager-gtk
+./native/linux/build/staap-gtk
 ```
 
 ## Tests (no display needed)
@@ -37,15 +37,15 @@ meson test -C native/linux/build
 
 | Test | What it proves |
 |---|---|
-| `feed` | `am-feed-test`: the bridge's reconciler wrapper (`bridge_feed_delta` over the shared `am_feed_delta`) against the real staticlib, no GTK |
-| `picker` | `am-picker-test`: the bridge's shared-helper wrappers (feed/key/preview/yolo/age/glyph/registry surface) against the real staticlib, no GTK |
-| `smoke` | `am-gtk-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog and shared-helper surface |
+| `feed` | `staap-feed-test`: the bridge's reconciler wrapper (`bridge_feed_delta` over the shared `staap_feed_delta`) against the real staticlib, no GTK |
+| `picker` | `staap-picker-test`: the bridge's shared-helper wrappers (feed/key/preview/yolo/age/glyph/registry surface) against the real staticlib, no GTK |
+| `smoke` | `staap-gtk-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog and shared-helper surface |
 | `smoke-live` | `smoke_live.sh`: registry spawn/pump/write/resize/close against a fake `muse` on `PATH` in a scratch `HOME` (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
 
 Headless UI run (window opens, pump ticks, quits on timeout):
 
 ```sh
-xvfb-run -a ./native/linux/build/agent-manager-gtk
+xvfb-run -a ./native/linux/build/staap-gtk
 ```
 
 ## Wiring (dumb renderer over the core run registry)
@@ -57,7 +57,7 @@ as the macOS/Windows shells (native look, identical behavior).
 
 | Feature | Path |
 |---|---|
-| Roster | core registry rows (`am_session_count` + `am_session_json` live, `am_pump_all` refreshes statuses/links), grouped Needs input → Working → Idle → History; single selection in the core (`am_selected`/`am_select`) |
+| Roster | core registry rows (`staap_session_count` + `staap_session_json` live, `staap_pump_all` refreshes statuses/links), grouped Needs input → Working → Idle → History; single selection in the core (`staap_selected`/`staap_select`) |
 | Spawn | split-button 2D launch: New-run button / Ctrl+N repeats the last folder × CLI + yolo via `bridge_run_spawn` (null CLI/folder, attaches a real roster row under the shared cap); the ▾ caret / Ctrl+Shift+N opens the picker dialog (folder entry + recents, CLI radios over the autodetected catalog, tri-state yolo, core preview `bridge_spawn_preview`) → `bridge_run_spawn` |
 | Restart / close | header buttons / Ctrl+R / Ctrl+W → `bridge_run_restart` (same id, keeps title/links) / `bridge_run_close` + autosave; ended rows offer restart inline in the terminal pane |
 | Converse | key event → `bridge_key_encode` (shared table) → `bridge_run_write`; pump → `bridge_feed_delta` → `vte_terminal_feed` |

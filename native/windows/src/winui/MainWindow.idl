@@ -1,4 +1,4 @@
-namespace AgentManagerWinUI
+namespace StaapWinUI
 {
     [default_interface]
     runtimeclass MainWindow : Microsoft.UI.Xaml.Window

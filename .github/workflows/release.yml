@@ -9,7 +9,7 @@ name: Release
 #
 # Ships (unsigned; no signing/notarization/MSIX/dmg - non-goals, see
 # packaging/README.md):
-#   macOS   arm64 (macos-latest) + x64 (macos-26-intel): AgentManagerMac zip
+#   macOS   arm64 (macos-latest) + x64 (macos-26-intel): StaapMac zip
 #   Linux   x64 (ubuntu-24.04) + arm64 (ubuntu-24.04-arm): GTK tarball
 #   Windows x64 (windows-latest) + arm64 (windows-11-vs2026-arm): WinUI app-folder zip
 #
@@ -71,14 +71,14 @@ jobs:
         # staticlib via Package.swift's target/release -L path.
         run: swift test --package-path swift
       - name: headless smoke (real C ABI)
-        run: swift/.build/release/AgentManagerMac --smoke
+        run: swift/.build/release/StaapMac --smoke
       - name: package (ditto zip; dmg stubbed - see packaging/README.md)
         run: |
           mkdir -p dist
           REF="${GITHUB_REF_NAME//\//-}"
           ditto -c -k --sequesterRsrc --keepParent \
-            swift/.build/release/AgentManagerMac \
-            "dist/AgentManagerMac-${REF}-macos-${{ matrix.arch }}.zip"
+            swift/.build/release/StaapMac \
+            "dist/StaapMac-${REF}-macos-${{ matrix.arch }}.zip"
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -130,15 +130,15 @@ jobs:
         run: meson test -C native/linux/build --print-errorlogs
       - name: headless UI run
         run: |
-          timeout -s TERM 15 xvfb-run -a ./native/linux/build/agent-manager-gtk > /tmp/app.log 2>&1 || true
+          timeout -s TERM 15 xvfb-run -a ./native/linux/build/staap-gtk > /tmp/app.log 2>&1 || true
           grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' /tmp/app.log | head -n 20
           ! grep -E 'Adwaita-ERROR|Gtk-CRITICAL|SMOKE-FAIL' /tmp/app.log
       - name: package (tarball; .deb/flatpak stubbed - see packaging/README.md)
         run: |
           mkdir -p dist
           REF="${GITHUB_REF_NAME//\//-}"
-          tar -czf "dist/agent-manager-${REF}-linux-${{ matrix.arch }}.tar.gz" \
-            -C native/linux/build agent-manager-gtk
+          tar -czf "dist/staap-${REF}-linux-${{ matrix.arch }}.tar.gz" \
+            -C native/linux/build staap-gtk
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -200,43 +200,43 @@ jobs:
         run: >
           powershell -ExecutionPolicy Bypass
           -File native/windows/tests/smoke_live.ps1
-          -Smoke ./native/windows/build/Release/am-win-smoke.exe
+          -Smoke ./native/windows/build/Release/staap-win-smoke.exe
       - name: WinUI app (msbuild, unpackaged)
         # Same restore-then-build shape as CI's screenshot step, plus
         # CoreLibDir at target/release. The vcxproj tracks the v145
         # toolset (VS 2026 - hence windows-11-vs2026-arm for arm64).
         shell: pwsh
         run: |
-          msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
+          msbuild -t:restore native/windows/StaapWinUI.vcxproj
           if ($LASTEXITCODE -ne 0) { throw "msbuild restore failed" }
-          msbuild native/windows/AgentManagerWinUI.vcxproj `
+          msbuild native/windows/StaapWinUI.vcxproj `
             /p:Configuration=Release /p:Platform=${{ matrix.msbuild_platform }} `
             "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/release"
           if ($LASTEXITCODE -ne 0) { throw "msbuild build failed" }
-          $exe = Get-ChildItem native/windows -Recurse -Filter AgentManagerWinUI.exe -File | Select-Object -First 1
+          $exe = Get-ChildItem native/windows -Recurse -Filter StaapWinUI.exe -File | Select-Object -First 1
           if (-not $exe) { throw "WinUI exe missing after build" }
       - name: package app folder (unpackaged zip; MSIX stubbed - see packaging/README.md)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $ref = ($env:GITHUB_REF_NAME -replace '/','-')
-          $exe = Get-ChildItem native/windows -Recurse -Filter AgentManagerWinUI.exe -File | Select-Object -First 1
+          $exe = Get-ChildItem native/windows -Recurse -Filter StaapWinUI.exe -File | Select-Object -First 1
           if (-not $exe) { throw "WinUI exe missing for packaging" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           # Stage the runtime payload without link/debug artifacts: the
           # self-contained folder ships a ~100MB .pdb plus .lib/.exp that
           # are useless at runtime but cost ~40% of the download.
-          $stage = Join-Path ([IO.Path]::GetTempPath()) 'am-winui-stage'
+          $stage = Join-Path ([IO.Path]::GetTempPath()) 'staap-winui-stage'
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -Path (Join-Path $exe.DirectoryName '*') -Destination $stage -Recurse -Force
           Get-ChildItem -Path $stage -Include '*.pdb','*.lib','*.exp' -Recurse -File | Remove-Item -Force
-          if (-not (Test-Path (Join-Path $stage 'AgentManagerWinUI.exe'))) { throw "staged exe missing" }
+          if (-not (Test-Path (Join-Path $stage 'StaapWinUI.exe'))) { throw "staged exe missing" }
           $leaked = @(Get-ChildItem -Path $stage -Include '*.pdb','*.lib','*.exp' -Recurse -File)
           if ($leaked.Count -gt 0) { throw ("debug artifacts leaked into stage: " + ($leaked.FullName -join ', ')) }
           Compress-Archive `
             -Path (Join-Path $stage '*') `
-            -DestinationPath "dist/AgentManagerWinUI-$ref-windows-${{ matrix.arch }}.zip"
+            -DestinationPath "dist/StaapWinUI-$ref-windows-${{ matrix.arch }}.zip"
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:

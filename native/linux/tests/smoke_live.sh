@@ -4,7 +4,7 @@
 # trick as the core's `public_spawn_success_path` test, so no real agent
 # and no live config are touched. No display needed.
 #
-# Usage: smoke_live.sh <path-to-am-gtk-smoke>
+# Usage: smoke_live.sh <path-to-staap-gtk-smoke>
 set -eu
 
 SMOKE="$1"
@@ -25,5 +25,5 @@ trap 'rm -rf "$FAKEBIN" "$SCRATCH"' EXIT INT TERM
 
 PATH="$FAKEBIN:$PATH" \
   HOME="$SCRATCH" \
-  AGENT_MANAGER_CONFIG="$SCRATCH/config.json" \
+  STAAP_CONFIG="$SCRATCH/config.json" \
   "$SMOKE" --smoke-live

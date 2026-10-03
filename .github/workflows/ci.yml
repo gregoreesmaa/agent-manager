@@ -58,7 +58,7 @@ jobs:
       - name: swift test
         run: swift test --package-path swift
       - name: headless smoke (real C ABI)
-        run: swift/.build/debug/AgentManagerMac --smoke
+        run: swift/.build/debug/StaapMac --smoke
       - name: seed mock sessions (hermetic)
         run: |
           # Deterministic fake muse-store (issue #77): three sessions across
@@ -68,7 +68,7 @@ jobs:
           # from the classifier itself: an approval marker wins regardless of
           # mtime (Attention), a fresh mtime without markers is Working, an
           # old mtime without markers is Idle.
-          SEED="$RUNNER_TEMP/am-shot"
+          SEED="$RUNNER_TEMP/staap-shot"
           STORE="$SEED/xdg/muse/sessions/2026/09/30"
           mkdir -p "$STORE/shot-attention" "$STORE/shot-working" "$STORE/shot-idle"
           cat > "$STORE/shot-attention/session.jsonl" <<'EOF'
@@ -106,18 +106,18 @@ jobs:
           # Launch the real app under the seeded profile (scratch XDG/HOME/
           # config: the runner's live files are never touched), capture the
           # main window, and fail visibly when the PNG is missing or empty.
-          SEED="$RUNNER_TEMP/am-shot"
+          SEED="$RUNNER_TEMP/staap-shot"
           # Re-fresh the working row: Working needs an mtime under 60 s old
           # at launch, and the seed step may be older than that by now.
           touch "$SEED/xdg/muse/sessions/2026/09/30/shot-working/session.jsonl"
           PATH="$SEED/bin:$PATH" HOME="$SEED/home" XDG_DATA_HOME="$SEED/xdg" \
-            AGENT_MANAGER_CONFIG="$SEED/config.json" \
-            swift/.build/debug/AgentManagerMac >"$SEED/shot/app.log" 2>&1 &
+            STAAP_CONFIG="$SEED/config.json" \
+            swift/.build/debug/StaapMac >"$SEED/shot/app.log" 2>&1 &
           APP_PID=$!
           sleep 6
           if ! kill -0 $APP_PID 2>/dev/null; then
             tail -n 40 "$SEED/shot/app.log" || true
-            echo "AgentManagerMac exited before the screenshot" >&2
+            echo "StaapMac exited before the screenshot" >&2
             exit 1
           fi
           screencapture -x -m "$SEED/shot/macos-mock.png"
@@ -131,7 +131,7 @@ jobs:
       - name: upload screenshot
         uses: actions/upload-artifact@v4
         with:
-          name: AgentManagerMac-screenshot
+          name: StaapMac-screenshot
           path: |
             dist/macos-mock.png
             dist/shot-app.log
@@ -139,13 +139,13 @@ jobs:
         run: |
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent \
-            swift/.build/debug/AgentManagerMac \
-            dist/AgentManagerMac-macos.zip
+            swift/.build/debug/StaapMac \
+            dist/StaapMac-macos.zip
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AgentManagerMac-macos
-          path: dist/AgentManagerMac-macos.zip
+          name: StaapMac-macos
+          path: dist/StaapMac-macos.zip
 
   linux:
     # Native Linux GTK shell (issue #63): the core library plus the
@@ -186,7 +186,7 @@ jobs:
         run: meson test -C native/linux/build --print-errorlogs
       - name: headless UI run
         run: |
-          timeout -s TERM 15 xvfb-run -a ./native/linux/build/agent-manager-gtk > /tmp/app.log 2>&1 || true
+          timeout -s TERM 15 xvfb-run -a ./native/linux/build/staap-gtk > /tmp/app.log 2>&1 || true
           grep -v 'libEGL\|DRI3\|session bus\|dbus-launch' /tmp/app.log | head -n 20
           ! grep -E 'Adwaita-ERROR|Gtk-CRITICAL|SMOKE-FAIL' /tmp/app.log
       - name: seed mock sessions (hermetic)
@@ -198,7 +198,7 @@ jobs:
           # from the classifier itself: an approval marker wins regardless
           # of mtime (Attention), a fresh mtime without markers is
           # Working, an old mtime without markers is Idle.
-          SEED="$RUNNER_TEMP/am-shot"
+          SEED="$RUNNER_TEMP/staap-shot"
           STORE="$SEED/xdg/muse/sessions/2026/09/30"
           mkdir -p "$STORE/shot-attention" "$STORE/shot-working" "$STORE/shot-idle"
           cat > "$STORE/shot-attention/session.jsonl" <<'EOF'
@@ -237,7 +237,7 @@ jobs:
           # XDG/HOME/config: the runner's live files are never touched)
           # on a virtual display, capture the window, and fail visibly
           # when the PNG is missing or empty.
-          SEED="$RUNNER_TEMP/am-shot"
+          SEED="$RUNNER_TEMP/staap-shot"
           # Re-fresh the working row: Working needs an mtime under 60 s old
           # at launch, and the seed step may be older than that by now.
           touch "$SEED/xdg/muse/sessions/2026/09/30/shot-working/session.jsonl"
@@ -250,13 +250,13 @@ jobs:
           XVFB_PID=$!
           sleep 2
           PATH="$SEED/bin:$PATH" HOME="$SEED/home" XDG_DATA_HOME="$SEED/xdg" \
-            AGENT_MANAGER_CONFIG="$SEED/config.json" DISPLAY=":$D" \
-            ./native/linux/build/agent-manager-gtk >"$SEED/shot/app.log" 2>&1 &
+            STAAP_CONFIG="$SEED/config.json" DISPLAY=":$D" \
+            ./native/linux/build/staap-gtk >"$SEED/shot/app.log" 2>&1 &
           APP_PID=$!
           sleep 6
           if ! kill -0 $APP_PID 2>/dev/null; then
             tail -n 40 "$SEED/shot/app.log" || true
-            echo "agent-manager-gtk exited before the screenshot" >&2
+            echo "staap-gtk exited before the screenshot" >&2
             kill $XVFB_PID 2>/dev/null || true
             exit 1
           fi
@@ -273,20 +273,20 @@ jobs:
       - name: upload screenshot
         uses: actions/upload-artifact@v4
         with:
-          name: agent-manager-linux-screenshot
+          name: staap-linux-screenshot
           path: |
             dist/linux-mock.png
             dist/shot-app.log
       - name: package (tarball; .deb/flatpak stubbed — see packaging/README.md)
         run: |
           mkdir -p dist
-          tar -czf dist/agent-manager-linux.tar.gz \
-            -C native/linux/build agent-manager-gtk
+          tar -czf dist/staap-linux.tar.gz \
+            -C native/linux/build staap-gtk
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agent-manager-linux
-          path: dist/agent-manager-linux.tar.gz
+          name: staap-linux
+          path: dist/staap-linux.tar.gz
 
   windows:
     # Native Windows WinUI shell (issue #64): the core library plus the
@@ -330,19 +330,19 @@ jobs:
         run: >
           powershell -ExecutionPolicy Bypass
           -File native/windows/tests/smoke_live.ps1
-          -Smoke ./native/windows/build/Release/am-win-smoke.exe
+          -Smoke ./native/windows/build/Release/staap-win-smoke.exe
       - name: WinUI app (msbuild, unpackaged; screenshot-only)
         # Screenshot-only use of the unpackaged exe (issue #77): MSIX stays
         # a non-goal (see packaging/README.md). windows-latest carries VS
         # 2026, whose v145 toolset is what the vcxproj tracks.
         shell: pwsh
         run: |
-          msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
+          msbuild -t:restore native/windows/StaapWinUI.vcxproj
           if ($LASTEXITCODE -ne 0) { throw "msbuild restore failed" }
-          msbuild native/windows/AgentManagerWinUI.vcxproj `
+          msbuild native/windows/StaapWinUI.vcxproj `
             /p:Configuration=Release /p:Platform=x64
           if ($LASTEXITCODE -ne 0) { throw "msbuild build failed" }
-          $exe = 'native/windows/x64/Release/AgentManagerWinUI/AgentManagerWinUI.exe'
+          $exe = 'native/windows/x64/Release/StaapWinUI/StaapWinUI.exe'
           if (-not (Test-Path $exe)) { throw "WinUI exe missing: $exe" }
       - name: seed mock sessions (hermetic)
         # Same deterministic fake muse-store as the macOS job (three
@@ -354,7 +354,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $seed = Join-Path $env:RUNNER_TEMP 'am-shot'
+          $seed = Join-Path $env:RUNNER_TEMP 'staap-shot'
           $store = Join-Path $seed 'xdg/muse/sessions/2026/09/30'
           $rows = @(
             @{ id = 'shot-attention'; project = 'shop'; prompt = 'Add checkout retries with backoff'; reply = 'Needs your approval to edit Cargo.toml (y/n)'; age = (Get-Date).AddMinutes(-5) },
@@ -390,12 +390,12 @@ jobs:
           # capture the primary screen, and fail visibly when the PNG is
           # missing or empty.
           $ErrorActionPreference = 'Stop'
-          $seed = Join-Path $env:RUNNER_TEMP 'am-shot'
+          $seed = Join-Path $env:RUNNER_TEMP 'staap-shot'
           $env:PATH = "$seed\bin;$env:PATH"
           $env:XDG_DATA_HOME = Join-Path $seed 'xdg'
-          $env:AGENT_MANAGER_CONFIG = Join-Path $seed 'config.json'
+          $env:STAAP_CONFIG = Join-Path $seed 'config.json'
           $env:HOME = Join-Path $seed 'home'
-          $exe = 'native/windows/x64/Release/AgentManagerWinUI/AgentManagerWinUI.exe'
+          $exe = 'native/windows/x64/Release/StaapWinUI/StaapWinUI.exe'
           $png = Join-Path $seed 'shot/windows-mock.png'
           # Re-fresh the working row: Working needs an mtime under 60 s old
           # at launch, and the seed step may be older than that by now.
@@ -427,7 +427,7 @@ jobs:
       - name: upload screenshot
         uses: actions/upload-artifact@v4
         with:
-          name: AgentManagerWindows-screenshot
+          name: StaapWindows-screenshot
           path: dist/windows-mock.png
       - name: package portable suite (unpackaged zip; MSIX stubbed — see packaging/README.md)
         shell: pwsh
@@ -435,9 +435,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Compress-Archive `
             -Path native/windows/build/Release/* `
-            -DestinationPath dist/AgentManagerWindows.zip
+            -DestinationPath dist/StaapWindows.zip
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AgentManagerWindows
-          path: dist/AgentManagerWindows.zip
+          name: StaapWindows
+          path: dist/StaapWindows.zip

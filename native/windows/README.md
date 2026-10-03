@@ -1,7 +1,7 @@
-# AgentManagerWinUI — native Windows shell (issue #64)
+# StaapWinUI — native Windows shell (issue #64)
 
 WinUI 3 + ConPTY front end over the core staticlib C ABI
-(`include/agent_manager.h` at the repo root). Third native shell after
+(`include/staap.h` at the repo root). Third native shell after
 `swift/` (#62) and `native/linux/` (#63): it completes the epic's
 per-OS native promise. Core Rust files are untouched by this shell —
 it links the framework-free core library only (the macOS GUI-stack
@@ -32,7 +32,7 @@ The core staticlib must exist first (CMake and msbuild search
 `/p:CoreLibDir=`):
 
 ```powershell
-cargo build --lib   # produces target/debug/agent_manager.lib
+cargo build --lib   # produces target/debug/staap.lib
 cmake -S native/windows -B native/windows/build
 cmake --build native/windows/build --config Release
 ctest --test-dir native/windows/build -C Release --output-on-failure
@@ -42,11 +42,11 @@ The WinUI app itself (unpackaged + self-contained — no MSIX/installer,
 which is a non-goal of #64 and lives with the CI/packaging issue, and no
 Windows App Runtime to preinstall — the runtime payload sits next to the
 exe, so the release distribution is the whole output folder
-`native/windows/x64/Release/AgentManagerWinUI/`, never the exe alone):
+`native/windows/x64/Release/StaapWinUI/`, never the exe alone):
 
 ```powershell
-msbuild -t:restore native/windows/AgentManagerWinUI.vcxproj
-msbuild native/windows/AgentManagerWinUI.vcxproj `
+msbuild -t:restore native/windows/StaapWinUI.vcxproj
+msbuild native/windows/StaapWinUI.vcxproj `
   /p:Configuration=Release /p:Platform=x64
 ```
 
@@ -65,15 +65,15 @@ Run these from a VS2026
 ctest --test-dir native/windows/build -C Release --output-on-failure
 powershell -ExecutionPolicy Bypass `
   -File native/windows/tests/smoke_live.ps1 `
-  -Smoke native/windows/build/Release/am-win-smoke.exe
+  -Smoke native/windows/build/Release/staap-win-smoke.exe
 ```
 
 | Test | What it proves |
 |---|---|
-| `feed` | `am-win-feed-test`: the bridge's reconciler wrapper (`bridge_feed_delta` over the shared `am_feed_delta`) against the real staticlib, no WinUI |
-| `picker` | `am-win-picker-test`: the catalog/recents parse (native ComboBox rows) plus the shared preview/yolo/age/section/registry surface via the bridge, mirroring Linux `am-picker-test` |
-| `keys` | `am-win-keys-test`: the bridge's key-table wrapper (`bridge_key_encode` over the shared core table) — Return→CR, Ctrl+C→ETX, keep-keys→0, the contract the terminal preview-tunnel relies on |
-| `smoke` | `am-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog and shared-helper surface |
+| `feed` | `staap-win-feed-test`: the bridge's reconciler wrapper (`bridge_feed_delta` over the shared `staap_feed_delta`) against the real staticlib, no WinUI |
+| `picker` | `staap-win-picker-test`: the catalog/recents parse (native ComboBox rows) plus the shared preview/yolo/age/section/registry surface via the bridge, mirroring Linux `staap-picker-test` |
+| `keys` | `staap-win-keys-test`: the bridge's key-table wrapper (`bridge_key_encode` over the shared core table) — Return→CR, Ctrl+C→ETX, keep-keys→0, the contract the terminal preview-tunnel relies on |
+| `smoke` | `staap-win-smoke`: roster count/JSON/status over the real staticlib, OOB contract (`SMOKE-OK sessions=<n>`), plus the 2D-launch catalog and shared-helper surface |
 | `smoke-live` | `smoke_live.ps1`: compiles `tests/fake_muse.c` to `muse.exe`, then registry spawn/pump/write/resize/close against it in a scratch profile (`SMOKE-LIVE-OK`), hermetic — no real agent, no live config |
 
 ## Wiring (dumb renderer over the core run registry)
@@ -86,7 +86,7 @@ behavior).
 
 | Feature | Path |
 |---|---|
-| Roster | core registry rows (`am_session_count` + `am_session_json` live, `am_pump_all` refreshes statuses/links), grouped Needs input → Working → Idle → History; one shared selection across the four lists, stored in the core (`am_selected`/`am_select`) |
+| Roster | core registry rows (`staap_session_count` + `staap_session_json` live, `staap_pump_all` refreshes statuses/links), grouped Needs input → Working → Idle → History; one shared selection across the four lists, stored in the core (`staap_selected`/`staap_select`) |
 | Spawn | split-button 2D launch: New Session face / Ctrl+N repeats the last folder × CLI + yolo via `bridge_run_spawn` (null CLI/folder, attaches a real roster row under the shared cap); the chevron / Ctrl+Shift+N opens the picker dialog (folder field + recents, CLI ComboBox over the autodetected catalog, tri-state yolo, core preview `bridge_spawn_preview`) → `bridge_run_spawn` |
 | Restart / close | Restart + Close run buttons / Ctrl+R / Ctrl+W → `bridge_run_restart` (same id, keeps title/links) / `bridge_run_close` + autosave; ended rows offer restart inline in the terminal pane |
 | Sidebar resize | drag the grip (or Tab to it + arrows/Home/End) — 220..480px (shared `bridge_clamp_sidebar` rule), persisted in `LocalSettings` |

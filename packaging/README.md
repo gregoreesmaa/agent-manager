@@ -8,9 +8,9 @@ no notarization/signing setup, no store submission, no shell features.
 
 | OS | CI job | Ships now | Stubbed (tracking note = this file) |
 |---|---|---|---|
-| macOS | `macos` | `AgentManagerMac-macos` artifact (`AgentManagerMac-macos.zip`, ditto'd Swift binary) + `v*` release asset per arch | `.dmg`: no installer layout yet; the zip is the distribution format until a `dmg` step is proposed |
-| Linux | `linux` | `agent-manager-linux` artifact (`agent-manager-linux.tar.gz` with `agent-manager-gtk`) + `v*` release asset per arch | `.deb` / Flatpak: no manifest yet; the tarball is the distribution format until a maintainer proposes one |
-| Windows | `windows` | `AgentManagerWindows` artifact (`AgentManagerWindows.zip`: portable C suite exes from `native/windows/build/Release/`) + `v*` release asset per arch (unpackaged WinUI app folder) | MSIX: the WinUI app ships unpackaged on purpose; no manifest/identity until a maintainer proposes one |
+| macOS | `macos` | `StaapMac-macos` artifact (`StaapMac-macos.zip`, ditto'd Swift binary) + `v*` release asset per arch | `.dmg`: no installer layout yet; the zip is the distribution format until a `dmg` step is proposed |
+| Linux | `linux` | `staap-linux` artifact (`staap-linux.tar.gz` with `staap-gtk`) + `v*` release asset per arch | `.deb` / Flatpak: no manifest yet; the tarball is the distribution format until a maintainer proposes one |
+| Windows | `windows` | `StaapWindows` artifact (`StaapWindows.zip`: portable C suite exes from `native/windows/build/Release/`) + `v*` release asset per arch (unpackaged WinUI app folder) | MSIX: the WinUI app ships unpackaged on purpose; no manifest/identity until a maintainer proposes one |
 
 Proposing a stubbed format means adding its manifest + a CI step that
 builds it on its own runner only (per-shell gating, issue #65), and
@@ -25,9 +25,9 @@ CPU arches per OS and publish to the tag's release. Assets:
 
 | OS | Asset (per `<tag>`, `<arch>`) | Runners |
 |---|---|---|
-| macOS | `AgentManagerMac-<tag>-macos-<arch>.zip` (ditto'd Swift binary, `<arch>` = `arm64` / `x64`) | `macos-latest`, `macos-26-intel` |
-| Linux | `agent-manager-<tag>-linux-<arch>.tar.gz` (`agent-manager-gtk`, `<arch>` = `x64` / `arm64`) | `ubuntu-24.04`, `ubuntu-24.04-arm` |
-| Windows | `AgentManagerWinUI-<tag>-windows-<arch>.zip` (unpackaged app folder, `<arch>` = `x64` / `arm64`) | `windows-latest`, `windows-11-vs2026-arm` (`-vs2026-` carries the VS 2026 v145 toolset the vcxproj tracks) |
+| macOS | `StaapMac-<tag>-macos-<arch>.zip` (ditto'd Swift binary, `<arch>` = `arm64` / `x64`) | `macos-latest`, `macos-26-intel` |
+| Linux | `staap-<tag>-linux-<arch>.tar.gz` (`staap-gtk`, `<arch>` = `x64` / `arm64`) | `ubuntu-24.04`, `ubuntu-24.04-arm` |
+| Windows | `StaapWinUI-<tag>-windows-<arch>.zip` (unpackaged app folder, `<arch>` = `x64` / `arm64`) | `windows-latest`, `windows-11-vs2026-arm` (`-vs2026-` carries the VS 2026 v145 toolset the vcxproj tracks) |
 
 All six ships ride the tag's release - a red arch fails the publish,
 never a partial upload. `workflow_dispatch` dry-runs the matrix
@@ -38,7 +38,7 @@ no accounts/telemetry/sync in the pipeline, plain-file state only.
 
 ## WinUI MSBuild packaging (hosted runners + dev machine)
 
-The WinUI 3 shell (`native/windows/AgentManagerWinUI.vcxproj`) builds
+The WinUI 3 shell (`native/windows/StaapWinUI.vcxproj`) builds
 on hosted runners - CI's `windows` job and the release workflow both
 build the unpackaged exe there (restore-then-build msbuild with the
 pinned `Microsoft.WindowsAppSDK` 2.5.1 + `Microsoft.Windows.CppWinRT`
@@ -64,7 +64,7 @@ Prerequisites:
 Build (restore and build in a single evaluation, from the repo root):
 
 ```powershell
-msbuild native/windows/AgentManagerWinUI.vcxproj /restore `
+msbuild native/windows/StaapWinUI.vcxproj /restore `
   /p:Configuration=Release /p:Platform=x64 `
   "/p:CoreLibDir=$env:GITHUB_WORKSPACE/target/debug"
 ```

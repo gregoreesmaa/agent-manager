@@ -5,7 +5,7 @@
 #include "App.g.h"
 #include "App.xaml.g.h"
 
-namespace winrt::AgentManagerWinUI::implementation
+namespace winrt::StaapWinUI::implementation
 {
     struct App : AppT<App>
     {
@@ -19,7 +19,7 @@ namespace winrt::AgentManagerWinUI::implementation
     };
 }
 
-namespace winrt::AgentManagerWinUI::factory_implementation
+namespace winrt::StaapWinUI::factory_implementation
 {
     struct App : AppT<App, implementation::App>
     {

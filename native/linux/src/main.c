@@ -1,19 +1,19 @@
-/* Agent Manager — Linux GTK4/libadwaita shell over the core C ABI.
+/* Staap: Linux GTK4/libadwaita shell over the core C ABI.
  *
  * Dumb renderer over the core run registry: the core owns the roster,
  * selection, filter, PTYs, statuses, key table, feed reconciler, and
  * persistence — this shell owns widgets, event wiring, and byte
  * transport only. Every run feature goes through `core_bridge.h` (which
- * wraps `include/agent_manager.h`).
+ * wraps `include/staap.h`).
  *
  * Parity wiring (same contract as the macOS/Windows shells):
- *   roster      core registry rows (am_session_count/json live),
+ *   roster      core registry rows (staap_session_count/json live),
  *               grouped needs-input → working → idle → history
- *   spawn       header New run (repeat-last) + ▾ picker → am_run_spawn
- *   restart     header Restart / Ctrl+R → am_run_restart (same id)
- *   close       header Close run / Ctrl+W → am_run_close + autosave
- *   converse    key event → am_key_encode → am_run_write; pump →
- *               am_feed_delta → VTE
+ *   spawn       header New run (repeat-last) + ▾ picker → staap_run_spawn
+ *   restart     header Restart / Ctrl+R → staap_run_restart (same id)
+ *   close       header Close run / Ctrl+W → staap_run_close + autosave
+ *   converse    key event → staap_key_encode → staap_run_write; pump →
+ *               staap_feed_delta → VTE
  *   copy/paste  native VTE selection + Ctrl+Shift+C/V + right-click menu
  *   scroll      VTE scrollback (capped) in a GtkScrolledWindow
  *   search      sidebar filter (core-owned text) + terminal find (Ctrl+F)
@@ -25,7 +25,7 @@
  * The core owns its emulator; the VTE widget owns a second one fed with
  * snapshot deltas (`bridge_feed_delta`, the shared reconciler). No PTY is
  * ever spawned inside VTE: typed keys are core-encoded and forwarded with
- * am_run_write, and echoed output arrives via the pump. This keeps
+ * staap_run_write, and echoed output arrives via the pump. This keeps
  * exactly one line discipline (the core's) so nothing double-echoes.
  */
 
@@ -57,7 +57,7 @@
  * POSIX (present under _POSIX_C_SOURCE above); MSVC builds use the
  * local copy below. */
 #ifdef _MSC_VER
-static char *am_strndup(const char *s, size_t n) {
+static char *staap_strndup(const char *s, size_t n) {
     char *out = malloc(n + 1);
     if (!out) {
         return NULL;
@@ -66,7 +66,7 @@ static char *am_strndup(const char *s, size_t n) {
     out[n] = '\0';
     return out;
 }
-#define strndup am_strndup
+#define strndup staap_strndup
 #endif
 /* ------------------------------------------------------------------ */
 
@@ -210,7 +210,7 @@ static long long json_int(const char *json, const char *key, long long dflt) {
 
 typedef struct {
     AdwApplication *app;
-    AmCore *core;
+    StaapCore *core;
     /* Display cache: badge label per row id, rebuilt by refresh_roster.
      * Rows, selection, filter, live-ness, and statuses all live in the
      * core run registry — this shell keeps no roster copy and no live
@@ -284,7 +284,7 @@ static void reload_statuses(Shell *sh) {
     size_t sel = bridge_selected(sh->core);
     int attention = 0;
     for (size_t i = 0; i < n; i++) {
-        if (bridge_status(sh->core, i) == AM_STATUS_ATTENTION) {
+        if (bridge_status(sh->core, i) == STAAP_STATUS_ATTENTION) {
             attention++;
         }
     }
@@ -930,7 +930,7 @@ static void on_pick_session(GtkButton *btn, gpointer data) {
 }
 
 /* Map one GDK keyval to the core's logical key name (the shared key
- * table in `am_key_encode` owns the bytes; this only translates). */
+ * table in `staap_key_encode` owns the bytes; this only translates). */
 static const char *gdk_key_name(guint keyval) {
     switch (keyval) {
     case GDK_KEY_Return:
@@ -1420,7 +1420,7 @@ static gboolean on_close(GtkWindow *win, gpointer data) {
 static void build_ui(Shell *sh) {
     AdwApplicationWindow *win = ADW_APPLICATION_WINDOW(
         adw_application_window_new(GTK_APPLICATION(sh->app)));
-    gtk_window_set_title(GTK_WINDOW(win), "Agent Manager");
+    gtk_window_set_title(GTK_WINDOW(win), "Staap");
     gtk_window_set_default_size(GTK_WINDOW(win), 1100, 700);
     g_signal_connect(win, "close-request", G_CALLBACK(on_close), sh);
 
@@ -1430,7 +1430,7 @@ static void build_ui(Shell *sh) {
 
     /* Header: subtitle shows selection context + attention count. */
     AdwHeaderBar *bar = ADW_HEADER_BAR(adw_header_bar_new());
-    GtkWidget *title = adw_window_title_new("Agent Manager", NULL);
+    GtkWidget *title = adw_window_title_new("Staap", NULL);
     sh->header_title = ADW_WINDOW_TITLE(title);
     adw_header_bar_set_title_widget(bar, title);
 
@@ -1701,13 +1701,13 @@ int main(int argc, char **argv) {
 
     sh->core = bridge_core_new();
     if (!sh->core) {
-        g_printerr("agent-manager-gtk: core init failed: %s\n",
+        g_printerr("staap-gtk: core init failed: %s\n",
                    bridge_last_error());
         return 1;
     }
 
     sh->app = ADW_APPLICATION(
-        adw_application_new("com.example.agent-manager", G_APPLICATION_DEFAULT_FLAGS));
+        adw_application_new("com.example.staap", G_APPLICATION_DEFAULT_FLAGS));
     g_signal_connect(sh->app, "activate", G_CALLBACK(on_activate), sh);
     int rc = g_application_run(G_APPLICATION(sh->app), argc, argv);
 

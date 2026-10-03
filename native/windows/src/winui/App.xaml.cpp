@@ -10,7 +10,7 @@
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 
-namespace winrt::AgentManagerWinUI::implementation
+namespace winrt::StaapWinUI::implementation
 {
     App::App() {
 #if defined _DEBUG && !defined DISABLE_XAML_GENERATED_BREAK_ON_UNHANDLED_EXCEPTION
@@ -25,7 +25,7 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     void App::OnLaunched(LaunchActivatedEventArgs const &) {
-        window = make<AgentManagerWinUI::implementation::MainWindow>();
+        window = make<StaapWinUI::implementation::MainWindow>();
         window.Activate();
     }
 }

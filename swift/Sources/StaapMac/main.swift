@@ -6,4 +6,4 @@ if CommandLine.arguments.contains("--smoke") {
     exit(Smoke.run() ? 0 : 1)
 }
 
-AgentManagerMacApp.main()
+StaapMacApp.main()

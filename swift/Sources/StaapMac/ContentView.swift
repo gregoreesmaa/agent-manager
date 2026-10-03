@@ -7,10 +7,10 @@ import SwiftUI
 /// - Roster: core registry rows grouped Needs input → Working → Idle →
 ///   History, with an inline sidebar filter field (core-owned text).
 /// - Spawn: the sidebar New Session button (or the detail Spawn
-///   button) attaches a real roster row in the core via `am_run_spawn`;
-///   Restart/Close act on the selected row via `am_run_restart` /
-///   `am_run_close`. Typing in the terminal converses through
-///   `am_run_write`.
+///   button) attaches a real roster row in the core via `staap_run_spawn`;
+///   Restart/Close act on the selected row via `staap_run_restart` /
+///   `staap_run_close`. Typing in the terminal converses through
+///   `staap_run_write`.
 /// - History: every row shows its project, harness, and last-active age;
 ///   the rows themselves come from discovery + the persisted store, so
 ///   they survive relaunches. Ended rows offer restart inline.

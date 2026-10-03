@@ -1,12 +1,12 @@
 <Window
-    x:Class="AgentManagerWinUI.MainWindow"
+    x:Class="StaapWinUI.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:primitives="using:Microsoft.UI.Xaml.Controls.Primitives"
     mc:Ignorable="d"
-    Title="Agent Manager">
+    Title="Staap">
 
     <!-- Native Windows 11 look (issue #72): Segoe Variable type ramp (see App.xaml) over
          the Mica system backdrop (see code-behind), card surfaces with
@@ -21,7 +21,7 @@
         <!-- Custom title bar: drag region via SetTitleBar in code-behind.
              Caption buttons overlay the right side, so content stays left. -->
         <Grid x:Name="AppTitleBar" Height="32">
-            <TextBlock Text="Agent Manager"
+            <TextBlock Text="Staap"
                        Style="{StaticResource CaptionTextBlockStyle}"
                        VerticalAlignment="Center"
                        Margin="16,0,0,0"/>

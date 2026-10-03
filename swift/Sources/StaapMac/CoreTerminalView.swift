@@ -5,10 +5,10 @@ import SwiftUI
 /// The session terminal: a SwiftTerm `TerminalView` (native selection,
 /// copy/paste, scrollback, and Cmd-F find) driven by the core.
 ///
-/// Output flows core PTY -> `am_pump`/`am_screen_text`+`am_spans_json` ->
+/// Output flows core PTY -> `staap_pump`/`staap_screen_text`+`staap_spans_json` ->
 /// SGR snapshot delta -> `view.feed(text:)`; keystrokes flow view ->
 /// `send` delegate ->
-/// `am_write`; window resizes flow view -> `sizeChanged` -> `am_resize`.
+/// `staap_write`; window resizes flow view -> `sizeChanged` -> `staap_resize`.
 /// The view follows the theme (text colors resolved against an explicit
 /// light/dark appearance) and owns all of the terminal grid; no terminal
 /// grid is drawn here.
@@ -85,7 +85,7 @@ struct CoreTerminalView: NSViewRepresentable {
         // MARK: - TerminalViewDelegate
 
         /// SwiftTerm hands us raw key bytes; they travel to the child
-        /// through the core run registry (`am_run_write`). SwiftTerm's
+        /// through the core run registry (`staap_run_write`). SwiftTerm's
         /// own encoding already matches the shared core key table's
         /// output for the keys it produces (Return → CR, Ctrl+C → ETX),
         /// so no re-encoding is needed here.

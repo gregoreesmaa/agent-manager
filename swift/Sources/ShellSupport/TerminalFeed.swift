@@ -2,7 +2,7 @@ import Foundation
 
 /// Snapshot-to-stream reconciler for the terminal view.
 ///
-/// Thin wrapper over the shared core reconciler (`am_feed_delta`, via
+/// Thin wrapper over the shared core reconciler (`staap_feed_delta`, via
 /// `Core.feedDelta`): one rule for every shell. The pure-Swift
 /// implementation below stays for unit tests without linking the core
 /// staticlib (same split as before); production calls the core so all

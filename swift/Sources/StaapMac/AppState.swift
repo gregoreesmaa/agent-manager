@@ -4,7 +4,7 @@ import ShellSupport
 /// Dumb-renderer state over the core run registry, on the main thread.
 ///
 /// The roster, selection, filter, live PTYs, statuses, and links all
-/// live in the core (`am_pump_all` refreshes them on every tick, like
+/// live in the core (`staap_pump_all` refreshes them on every tick, like
 /// the shared pump): this type only mirrors rows for SwiftUI rendering,
 /// routes widget events into the core, and carries the view-feed cache.
 /// No shell-local PTY map, no shell-local ids — spawns attach real rows

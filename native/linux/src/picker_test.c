@@ -1,8 +1,8 @@
 /* Bridge contract tests for the shared core logic (dumb-shell parity).
  *
  * The reconciler, key table, preview, yolo, age, glyph, and picker
- * helpers now live in the core (`am_feed_delta`, `am_key_encode`,
- * `am_spawn_preview`, ...), pinned by `cargo test --lib`. This target
+ * helpers now live in the core (`staap_feed_delta`, `staap_key_encode`,
+ * `staap_spawn_preview`, ...), pinned by `cargo test --lib`. This target
  * pins the bridge's own thin wrappers (malloc/free discipline, NULL
  * conventions) against the real staticlib — no GTK needed.
  *
@@ -71,7 +71,7 @@ int main(void) {
     CHECK(bridge_clamp_sidebar(900.0) == 480.0, "clamp ceiling");
 
     /* Registry surface on a fresh core (no PTY needed). */
-    AmCore *core = bridge_core_new();
+    StaapCore *core = bridge_core_new();
     CHECK(core != NULL, "core new");
     CHECK(bridge_max_runs() == 10, "cap is 10");
     CHECK(bridge_live_count(core) == 0, "no live runs");

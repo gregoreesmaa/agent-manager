@@ -1,13 +1,13 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build the Rust core staticlib + AgentManagerWinUI shell, then launch the app.
+  Build the Rust core staticlib + StaapWinUI shell, then launch the app.
 
 .DESCRIPTION
   Windows counterpart of build-and-run.sh (see native/windows/README.md):
-    cargo build --lib [--release]          # target/{debug,release}/agent_manager.lib
-    msbuild -t:restore AgentManagerWinUI.vcxproj
-    msbuild agentManagerWinUI.vcxproj /p:Configuration=Release /p:Platform=x64
+    cargo build --lib [--release]          # target/{debug,release}/staap.lib
+    msbuild -t:restore StaapWinUI.vcxproj
+    msbuild StaapWinUI.vcxproj /p:Configuration=Release /p:Platform=x64
 
   The WinUI app needs the VS2026 (v145) toolchain; the script locates it via
   vswhere and imports its environment, so it works from a plain prompt.
@@ -84,7 +84,7 @@ cmd /c "`"$vcvars`" >NUL && set" | ForEach-Object {
     }
 }
 
-$vcxproj = Join-Path $root 'native\windows\AgentManagerWinUI.vcxproj'
+$vcxproj = Join-Path $root 'native\windows\StaapWinUI.vcxproj'
 
 Write-Host "==> cargo build $(if ($Release) { '--release ' })--lib"
 $cargoArgs = @('build')
@@ -110,10 +110,10 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { throw "msbuild failed with exit $LASTEXITCODE" }
 }
 
-$exe = Get-ChildItem (Join-Path $root 'native\windows') -Recurse -Filter 'AgentManagerWinUI.exe' |
+$exe = Get-ChildItem (Join-Path $root 'native\windows') -Recurse -Filter 'StaapWinUI.exe' |
     Where-Object { $_.FullName -match 'Release' } |
     Select-Object -First 1 -ExpandProperty FullName
-if (-not $exe) { throw 'Build reported success but AgentManagerWinUI.exe was not found.' }
+if (-not $exe) { throw 'Build reported success but StaapWinUI.exe was not found.' }
 
 if ($BuildOnly) {
     Write-Host "built: $exe"

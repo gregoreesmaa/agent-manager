@@ -1,6 +1,6 @@
 ---
 name: bug report
-about: Something in agent-manager misbehaves
+about: Something in staap misbehaves
 title: ""
 labels: []
 ---

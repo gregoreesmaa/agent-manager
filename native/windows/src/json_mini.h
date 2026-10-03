@@ -11,13 +11,13 @@
  * JSON string (e.g. null cwd).
  */
 
-#ifndef AM_JSON_MINI_H
-#define AM_JSON_MINI_H
+#ifndef STAAP_JSON_MINI_H
+#define STAAP_JSON_MINI_H
 
 #include <string>
 #include <vector>
 
-namespace amjson {
+namespace staapjson {
 
 inline std::string get_string(const std::string &json, const std::string &key) {
     const std::string pat = "\"" + key + "\"";
@@ -246,6 +246,6 @@ inline std::vector<std::string> parse_string_array(const std::string &json) {
     return out;
 }
 
-} /* namespace amjson */
+} /* namespace staapjson */
 
-#endif /* AM_JSON_MINI_H */
+#endif /* STAAP_JSON_MINI_H */

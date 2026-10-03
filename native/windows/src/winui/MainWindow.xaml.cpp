@@ -1,4 +1,4 @@
-// Agent Manager — WinUI 3 shell over the core C ABI (issue #64).
+// Staap — WinUI 3 shell over the core C ABI (issue #64).
 //
 // Dumb renderer over the core run registry: the core owns the roster,
 // selection, filter, PTYs, statuses, key table, feed reconciler, and
@@ -48,7 +48,7 @@ using namespace Microsoft::UI::Xaml::Controls;
 using namespace Microsoft::UI::Xaml::Input;
 using namespace Windows::Foundation;
 
-namespace winrt::AgentManagerWinUI::implementation
+namespace winrt::StaapWinUI::implementation
 {
     /* Dumb renderer over the core run registry: rows, selection, filter,
      * live PTYs, statuses, links, key bytes, feed bytes, and persistence
@@ -71,7 +71,7 @@ namespace winrt::AgentManagerWinUI::implementation
      * long titles stay glanceable). The width persists in
      * LocalSettings (local-only trust: plain local store, no
      * account, no sync). */
-    /* Shared sidebar bounds/step live in the core (`am_clamp_sidebar`
+    /* Shared sidebar bounds/step live in the core (`staap_clamp_sidebar`
      * + `bridge constants`); the XAML pins the same range declaratively.
      * Local copies only feed the restore fallback below. */
     constexpr double kSidebarMin = 220.0;
@@ -210,7 +210,7 @@ namespace winrt::AgentManagerWinUI::implementation
         }
         size_t sel = bridge_selected(m_core);
         char *json = bridge_session_json(m_core, sel);
-        std::string id = json ? amjson::get_string(json ? json : "", "id") : "";
+        std::string id = json ? staapjson::get_string(json ? json : "", "id") : "";
         bridge_string_free(json);
         return to_wide(id);
     }
@@ -251,7 +251,7 @@ namespace winrt::AgentManagerWinUI::implementation
      * (no shell-local terminals). Group order is fixed (issue #73):
      * Needs input, Working, Idle, History — every row still shows its
      * core status glyph, title, project/harness, restored every launch
-     * by am_core_new. */
+     * by staap_core_new. */
     void MainWindow::RefreshRoster() {
         if (!m_core) {
             return;
@@ -274,7 +274,7 @@ namespace winrt::AgentManagerWinUI::implementation
             std::string js = json ? json : "";
             bridge_string_free(json);
             int st = bridge_status(m_core, i);
-            std::string id = amjson::get_string(js, "id");
+            std::string id = staapjson::get_string(js, "id");
             if (id.empty()) {
                 continue;
             }
@@ -290,9 +290,9 @@ namespace winrt::AgentManagerWinUI::implementation
             if (!bridge_row_matches(m_core, i, m_filter.c_str())) {
                 continue;
             }
-            std::string title = amjson::get_string(js, "title");
-            std::string project = amjson::get_string(js, "project");
-            std::string harness = amjson::get_string(js, "harness");
+            std::string title = staapjson::get_string(js, "title");
+            std::string project = staapjson::get_string(js, "project");
+            std::string harness = staapjson::get_string(js, "harness");
             std::string line = (title.empty() ? id : title);
             if (!project.empty()) {
                 line += " — " + project;
@@ -304,9 +304,9 @@ namespace winrt::AgentManagerWinUI::implementation
                 wid, std::wstring(status_glyph(st)) + to_wide(line)};
             if (!live) {
                 history.push_back(std::move(row));
-            } else if (st == AM_STATUS_ATTENTION) {
+            } else if (st == STAAP_STATUS_ATTENTION) {
                 needs.push_back(std::move(row));
-            } else if (st == AM_STATUS_WORKING) {
+            } else if (st == STAAP_STATUS_WORKING) {
                 working.push_back(std::move(row));
             } else {
                 idle.push_back(std::move(row));
@@ -316,9 +316,9 @@ namespace winrt::AgentManagerWinUI::implementation
             return;
         }
         m_fingerprint = fingerprint;
-        char *needs_hdr = bridge_section_title(AM_STATUS_ATTENTION);
-        char *work_hdr = bridge_section_title(AM_STATUS_WORKING);
-        char *idle_hdr = bridge_section_title(AM_STATUS_IDLE);
+        char *needs_hdr = bridge_section_title(STAAP_STATUS_ATTENTION);
+        char *work_hdr = bridge_section_title(STAAP_STATUS_WORKING);
+        char *idle_hdr = bridge_section_title(STAAP_STATUS_IDLE);
         NeedsHeader().Text(winrt::hstring(
             to_wide(needs_hdr ? needs_hdr : "Needs input") + L" (" +
             std::to_wstring(needs.size()) + L")"));
@@ -396,7 +396,7 @@ namespace winrt::AgentManagerWinUI::implementation
             for (size_t i = 0; i < n; ++i) {
                 char *json = bridge_session_json(m_core, i);
                 std::string rid =
-                    amjson::get_string(json ? json : "", "id");
+                    staapjson::get_string(json ? json : "", "id");
                 bridge_string_free(json);
                 if (to_wide(rid) == id) {
                     bridge_select(m_core, i);
@@ -438,7 +438,7 @@ namespace winrt::AgentManagerWinUI::implementation
             char *json = bridge_session_json(m_core, i);
             std::string js = json ? json : "";
             bridge_string_free(json);
-            if (amjson::get_string(js, "id") == want) {
+            if (staapjson::get_string(js, "id") == want) {
                 return static_cast<long long>(i);
             }
         }
@@ -498,11 +498,11 @@ namespace winrt::AgentManagerWinUI::implementation
             char *json = bridge_session_json(m_core, static_cast<size_t>(at));
             std::string js = json ? json : "";
             bridge_string_free(json);
-            std::string title = amjson::get_string(js, "title");
-            std::string project = amjson::get_string(js, "project");
-            std::string harness = amjson::get_string(js, "harness");
+            std::string title = staapjson::get_string(js, "title");
+            std::string project = staapjson::get_string(js, "project");
+            std::string harness = staapjson::get_string(js, "harness");
             if (title.empty()) {
-                title = amjson::get_string(js, "id");
+                title = staapjson::get_string(js, "id");
             }
             std::string detail = project;
             if (!harness.empty()) {
@@ -995,7 +995,7 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     /* Clamp + apply + persist one sidebar width. The range is the
-     * shared core rule (`am_clamp_sidebar`: 220..480px); persistence
+     * shared core rule (`staap_clamp_sidebar`: 220..480px); persistence
      * rides LocalSettings (local-only trust: plain local store). */
     void MainWindow::SetSidebarWidth(double w) {
         double clamped = bridge_clamp_sidebar(w);
@@ -1053,7 +1053,7 @@ namespace winrt::AgentManagerWinUI::implementation
     }
 
     /* Map a WinUI virtual key to the core's logical key name (the
-     * shared `am_key_encode` table owns the bytes; this only
+     * shared `staap_key_encode` table owns the bytes; this only
      * translates). Returns "" when the key has no logical name. */
     static std::string vk_name(int vk) {
         switch (vk) {

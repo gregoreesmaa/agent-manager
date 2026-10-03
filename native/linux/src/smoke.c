@@ -8,8 +8,8 @@
  * initialized here, so this runs under plain CI with no display.
  *
  * Usage:
- *   am-gtk-smoke            # roster, registry, shared helpers, OOB
- *   am-gtk-smoke --smoke-live  # plus spawn/pump/write/resize against the
+ *   staap-gtk-smoke            # roster, registry, shared helpers, OOB
+ *   staap-gtk-smoke --smoke-live  # plus spawn/pump/write/resize against the
  *                              # real `muse` command (or a fake one on PATH)
  */
 
@@ -56,7 +56,7 @@ static double now_seconds(void) {
 
 /* Live converse through the run registry: spawn attaches a real roster
  * row, converse/resize/close go by row id. */
-static int live_converse(AmCore *core) {
+static int live_converse(StaapCore *core) {
     char id[256] = { 0 };
     char *spawn_err = NULL;
     if (bridge_run_spawn(core, NULL, NULL, 0, 80, 24, id, sizeof id,
@@ -128,7 +128,7 @@ static int live_converse(AmCore *core) {
 int main(int argc, char **argv) {
     int live = argc > 1 && strcmp(argv[1], "--smoke-live") == 0;
 
-    AmCore *core = bridge_core_new();
+    StaapCore *core = bridge_core_new();
     if (!core) {
         return fail("bridge_core_new NULL");
     }

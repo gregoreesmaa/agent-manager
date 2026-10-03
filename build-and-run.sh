@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# build-and-run.sh — build the Rust core staticlib + AgentManagerMac Swift
+# build-and-run.sh — build the Rust core staticlib + StaapMac Swift
 # shell, then launch the built app so its window appears.
 #
 # Intended sequence (see swift/README.md):
-#   cargo build --lib            # target/debug/libagent_manager.a  (--debug)
-#   cargo build --release --lib  # target/release/libagent_manager.a (default)
+#   cargo build --lib            # target/debug/libstaap.a  (--debug)
+#   cargo build --release --lib  # target/release/libstaap.a (default)
 #   (cd swift && swift build [-c release])
 #
 # Launch path: the built binary directly
-# (swift/.build/<config>/AgentManagerMac), the same path the #67 fix
+# (swift/.build/<config>/StaapMac), the same path the #67 fix
 # verified. The app is a bundle-less SwiftPM executable, so it only
 # shows its window thanks to the #67 activation fix (regular activation
 # policy + activate on launch in the AppDelegate).
@@ -24,7 +24,7 @@ usage() {
     cat <<'EOF'
 Usage: ./build-and-run.sh [--release] [--build-only] [--help]
 
-Build the Rust core staticlib and the AgentManagerMac Swift shell,
+Build the Rust core staticlib and the StaapMac Swift shell,
 then launch the built app so its window appears.
 
   (no flags)   debug build (cargo, swift default config) + launch
@@ -48,13 +48,13 @@ if [ "$CONFIG" = "release" ]; then
     (cd "$ROOT" && cargo build --release --lib)
     echo "==> swift build -c release"
     (cd "$ROOT/swift" && swift build -c release)
-    BIN="$ROOT/swift/.build/release/AgentManagerMac"
+    BIN="$ROOT/swift/.build/release/StaapMac"
 else
     echo "==> cargo build --lib"
     (cd "$ROOT" && cargo build --lib)
     echo "==> swift build"
     (cd "$ROOT/swift" && swift build)
-    BIN="$ROOT/swift/.build/debug/AgentManagerMac"
+    BIN="$ROOT/swift/.build/debug/StaapMac"
 fi
 
 if [ "$BUILD_ONLY" = "1" ]; then
