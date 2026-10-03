@@ -46,9 +46,10 @@ add_executable(am-win-feed-test src/feed_test.c src/core_bridge.c)
 target_link_libraries(am-win-feed-test PRIVATE ${SYS_LIBS})
 add_test(NAME feed COMMAND am-win-feed-test)
 
-# 2D-launch picker logic tests (catalog/recents/folder/yolo/preview):
-# header-only C++, no WinUI, runs anywhere.
-add_executable(am-win-picker-test src/picker_test.cpp)
+# 2D-launch picker tests (native catalog/recents rows + shared core
+# helpers via the bridge, no WinUI, runs anywhere).
+add_executable(am-win-picker-test src/picker_test.cpp src/core_bridge.c)
+target_link_libraries(am-win-picker-test PRIVATE ${SYS_LIBS})
 target_compile_features(am-win-picker-test PRIVATE cxx_std_17)
 add_test(NAME picker COMMAND am-win-picker-test)
 set_tests_properties(picker PROPERTIES PASS_REGULAR_EXPRESSION "PICKER-OK")
