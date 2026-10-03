@@ -431,7 +431,7 @@ static gboolean pump_tick(gpointer data);
 static void toast(Shell *sh, const char *msg) {
     GtkWindow *win =
         gtk_application_get_active_window(GTK_APPLICATION(sh->app));
-    GtkWidget *overlay = g_object_get_data(G_OBJECT(win), "am-toast-overlay");
+    GtkWidget *overlay = g_object_get_data(G_OBJECT(win), "staap-toast-overlay");
     if (overlay) {
         adw_toast_overlay_add_toast(ADW_TOAST_OVERLAY(overlay),
                                     adw_toast_new(msg));
@@ -1425,7 +1425,7 @@ static void build_ui(Shell *sh) {
     g_signal_connect(win, "close-request", G_CALLBACK(on_close), sh);
 
     AdwToastOverlay *toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
-    g_object_set_data(G_OBJECT(win), "am-toast-overlay", toasts);
+    g_object_set_data(G_OBJECT(win), "staap-toast-overlay", toasts);
     adw_application_window_set_content(win, GTK_WIDGET(toasts));
 
     /* Header: subtitle shows selection context + attention count. */

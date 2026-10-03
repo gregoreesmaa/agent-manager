@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Agent Manager — WinUI 3 shell (issue #64). Unpackaged C++/WinRT app:
+<!-- Staap — WinUI 3 shell (issue #64). Unpackaged C++/WinRT app:
   no MSIX/installer (see the CI/packaging issue); CI builds the exe with
   msbuild after `msbuild -t:restore` pulls Microsoft.WindowsAppSDK.
   The core staticlib (staap.lib, from building the cargo lib

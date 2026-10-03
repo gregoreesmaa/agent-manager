@@ -2,7 +2,7 @@
  *
  * Thin, dependency-free wrappers over `include/staap.h` at the
  * repo root. Mirrors swift/CoreBridge.swift and
- * X.h: same owned-handle discipline
+ * native/linux/src/core_bridge.h: same owned-handle discipline
  * (core/PTY freed exactly once, strings freed with staap_screen_text_free),
  * same status-code contract (Attention=0, Idle=1, Working=2; negatives
  * are null handle / out of bounds).
