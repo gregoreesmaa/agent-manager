@@ -1135,7 +1135,7 @@ static gboolean pump_tick(gpointer data) {
     refresh_roster(sh);
     reload_statuses(sh);
     /* Autosave throttle (replaces the manual Save button): persist at
-     * most every ~5s while dirty, like the gpui pump persist. */
+     * most every ~5s while dirty, like the shared pump persist. */
     if (dirty && (++save_counter % 100) == 0) {
         char *err = NULL;
         if (bridge_core_save(sh->core, &err) != 0) {

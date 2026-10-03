@@ -5,7 +5,7 @@ import ShellSupport
 ///
 /// The roster, selection, filter, live PTYs, statuses, and links all
 /// live in the core (`am_pump_all` refreshes them on every tick, like
-/// the gpui pump): this type only mirrors rows for SwiftUI rendering,
+/// the shared pump): this type only mirrors rows for SwiftUI rendering,
 /// routes widget events into the core, and carries the view-feed cache.
 /// No shell-local PTY map, no shell-local ids — spawns attach real rows
 /// in the core, so every run rows in the roster on every shell.
@@ -302,7 +302,7 @@ final class AppState: ObservableObject {
             fedText[id] = current
         }
         // Autosave throttle (replaces the manual Save button): persist at
-        // most every ~5s while dirty, like the gpui pump persist.
+        // most every ~5s while dirty, like the shared pump persist.
         if dirty {
             saveTick += 1
             if saveTick % 100 == 0 {

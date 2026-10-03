@@ -584,7 +584,7 @@ namespace winrt::AgentManagerWinUI::implementation
         }
         RefreshRoster();
         /* Autosave throttle (replaces any manual Save): persist at most
-         * every ~5s while dirty, like the gpui pump persist. */
+         * every ~5s while dirty, like the shared pump persist. */
         if (dirty && (++save_tick % 100) == 0) {
             char *err = nullptr;
             if (bridge_core_save(m_core, &err) != 0) {

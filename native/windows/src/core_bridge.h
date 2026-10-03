@@ -10,7 +10,8 @@
  * Run-registry half (dumb-shell contract): the shell keeps no `m_live`
  * map of its own — spawns attach to roster rows in the core
  * (`bridge_run_spawn`/`bridge_run_restart`), converse/resize/pump go by
- * row id, and `bridge_pump_all` refreshes statuses/links like the gpui
+ * row id, and `bridge_pump_all` refreshes statuses/links like the
+ * shared pump does
  * pump. Shared helpers (feed delta, preview, filter, selection, display
  * strings, key encoding) are one-line forwards so all three shells
  * behave identically.
