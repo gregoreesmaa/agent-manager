@@ -1,9 +1,30 @@
-# agent-manager
+# staap
 
 Native GUI harness (gpui, no webview) for managing and chatting with live
 `muse` agent CLI sessions. Each run is a real interactive `muse` process
 behind an embedded PTY; the window shows the run list beside the live
 terminal of the selected run.
+
+## Why staap?
+
+`staap` is Estonian for (military) headquarters — the command post where
+field units report in and the duty officer sees, at a glance, where
+attention is needed. That is what this app is: your HQ for agent runs.
+
+Each run is a field unit reporting back over a live channel. The session
+behind the terminal is a real interactive PTY, never a simulation, so what
+you see on the board is what is actually happening in the field. The roster
+is the situation board: every unit pinned where you can scan it in seconds.
+When a run needs input, it is the flag stuck in the map table — triage by
+urgency, the duty officer's glance, surfacing in the run list, the status
+bar, and the background window title within a minute.
+
+The HQ works with the radios off: local-first and offline, state in plain
+JSON files on your machine, zero accounts, zero telemetry, nothing ever
+leaving the building. And it recovers in one click — no silent losses, no
+link or transcript ever dropped, because a headquarters that loses reports
+is no headquarters at all. Free and open source forever: an HQ anyone can
+build.
 
 ## Prerequisites
 
