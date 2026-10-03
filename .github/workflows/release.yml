@@ -223,8 +223,19 @@ jobs:
           $exe = Get-ChildItem native/windows -Recurse -Filter AgentManagerWinUI.exe -File | Select-Object -First 1
           if (-not $exe) { throw "WinUI exe missing for packaging" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          # Stage the runtime payload without link/debug artifacts: the
+          # self-contained folder ships a ~100MB .pdb plus .lib/.exp that
+          # are useless at runtime but cost ~40% of the download.
+          $stage = Join-Path ([IO.Path]::GetTempPath()) 'am-winui-stage'
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Path (Join-Path $exe.DirectoryName '*') -Destination $stage -Recurse -Force
+          Get-ChildItem -Path $stage -Include '*.pdb','*.lib','*.exp' -Recurse -File | Remove-Item -Force
+          if (-not (Test-Path (Join-Path $stage 'AgentManagerWinUI.exe'))) { throw "staged exe missing" }
+          $leaked = @(Get-ChildItem -Path $stage -Include '*.pdb','*.lib','*.exp' -Recurse -File)
+          if ($leaked.Count -gt 0) { throw ("debug artifacts leaked into stage: " + ($leaked.FullName -join ', ')) }
           Compress-Archive `
-            -Path (Join-Path $exe.DirectoryName '*') `
+            -Path (Join-Path $stage '*') `
             -DestinationPath "dist/AgentManagerWinUI-$ref-windows-${{ matrix.arch }}.zip"
       - name: upload artifact
         uses: actions/upload-artifact@v4
