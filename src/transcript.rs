@@ -169,6 +169,30 @@ fn cap_messages(mut messages: Vec<TranscriptMessage>) -> ParsedTranscript {
     }
 }
 
+/// Antigravity transcript row: one JSON object per line from
+/// with `source` (`USER_EXPLICIT` / `MODEL` / `SYSTEM`), `type`
+/// (`USER_INPUT`, planner/model responses, `CHECKPOINT`, `ERROR_MESSAGE`)
+/// and string `content` (user prompts arrive wrapped in `<USER_REQUEST>`
+/// with an `<ADDITIONAL_METADATA>` trailer, both stripped here).
+/// `tool_calls` arrays surface as `🔧 <names>` summaries; `CHECKPOINT`
+/// summaries and other system rows are skipped (compaction metadata, not
+/// conversation). Non-JSON lines are kept as [`Role::Unknown`] (same
+/// contract as [`parse_transcript`]).
+pub fn parse_antigravity_tail(tail: &str) -> ParsedTranscript {
+    let mut messages = Vec::new();
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => extract_antigravity_value(&value, &mut messages),
+            Err(_) => push_capped(&mut messages, Role::Unknown, line.to_string()),
+        }
+    }
+    cap_messages(messages)
+}
+
 /// Claude Code transcript tail: one JSON object per line with `type`
 /// (`user`/`assistant`) and `message.content` text blocks. Non-JSON lines
 /// are kept as [`Role::Unknown`] (same contract as [`parse_transcript`).
@@ -532,6 +556,82 @@ fn extract_claude_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessa
             push_capped(out, Role::Assistant, text);
         }
     }
+}
+
+/// Strip the `<USER_REQUEST>` envelope and `<ADDITIONAL_METADATA>`
+/// trailer from an Antigravity user prompt, so titles and transcripts
+/// read as what the user typed.
+fn clean_antigravity_content(raw: &str) -> String {
+    let mut text = raw.trim().to_string();
+    if let Some(start) = text.find("<USER_REQUEST>") {
+        let inner = &text[start + "<USER_REQUEST>".len()..];
+        text = match inner.find("</USER_REQUEST>") {
+            Some(end) => inner[..end].to_string(),
+            None => inner.to_string(),
+        };
+    }
+    if let Some(meta) = text.find("<ADDITIONAL_METADATA>") {
+        text.truncate(meta);
+    }
+    // A matching close tag without an opener (envelope already split).
+    if let Some(end) = text.find("</USER_REQUEST>") {
+        text.truncate(end);
+    }
+    text.trim().to_string()
+}
+
+fn extract_antigravity_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    let source = value.get("source").and_then(|v| v.as_str()).unwrap_or("");
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if source == "USER_EXPLICIT" || kind == "USER_INPUT" {
+        let text = value
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(clean_antigravity_content)
+            .unwrap_or_default();
+        if !text.is_empty() {
+            push_capped(out, Role::User, text);
+        }
+        return;
+    }
+    if source == "MODEL" {
+        let text = value
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !text.is_empty() {
+            push_capped(out, Role::Assistant, text);
+        }
+        let names: Vec<String> = value
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|c| c.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !names.is_empty() {
+            push_capped(out, Role::Assistant, format!("🔧 {}", names.join(", ")));
+        }
+        return;
+    }
+    if kind == "ERROR_MESSAGE" {
+        let text = value
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !text.is_empty() {
+            push_capped(out, Role::System, text);
+        }
+    }
+    // CHECKPOINT summaries and other system rows are compaction metadata,
+    // not conversation: skipped so titles/transcripts stay user-shaped.
 }
 
 /// Best-effort project name for an opencode export tail: basename of the
@@ -969,6 +1069,71 @@ mod tests {
     #[test]
     fn codex_plain_text_lines_become_unknown_messages() {
         let parsed = parse_codex_tail("Fix login\n");
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Unknown);
+    }
+
+    #[test]
+    fn parses_antigravity_user_envelope_and_model_replies() {
+        let tail = [
+            serde_json::json!({
+                "step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+                "status": "DONE", "created_at": "2026-07-31T10:08:07Z",
+                "content": "<USER_REQUEST>\nVideo root should be ingest. Make the edit!\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnoise\n</ADDITIONAL_METADATA>"
+            }),
+            serde_json::json!({
+                "step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                "status": "DONE", "created_at": "2026-07-31T10:08:07Z",
+                "content": "On it."
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_antigravity_tail(&tail);
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(
+            parsed.messages[0].text,
+            "Video root should be ingest. Make the edit!"
+        );
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[1].text, "On it.");
+        // Titles derive from the cleaned user prompt.
+        assert_eq!(
+            derive_title(&parsed.messages, "fallback"),
+            "Video root should be ingest. Make the edit!"
+        );
+    }
+
+    #[test]
+    fn antigravity_checkpoints_skip_and_tool_calls_summarize() {
+        let tail = [
+            serde_json::json!({
+                "step_index": 0, "source": "SYSTEM", "type": "CHECKPOINT",
+                "status": "DONE", "content": "{{ CHECKPOINT 0 }} summary"
+            }),
+            serde_json::json!({
+                "step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                "status": "DONE", "content": "Running tests.",
+                "tool_calls": [{"name": "run_command"}]
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_antigravity_tail(&tail);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].text, "Running tests.");
+        assert_eq!(parsed.messages[1].text, "🔧 run_command");
+    }
+
+    #[test]
+    fn antigravity_plain_text_lines_become_unknown_messages() {
+        let parsed = parse_antigravity_tail("Fix login\n");
         assert_eq!(parsed.messages.len(), 1);
         assert_eq!(parsed.messages[0].role, Role::Unknown);
     }
