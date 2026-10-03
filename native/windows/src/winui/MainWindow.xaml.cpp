@@ -110,7 +110,7 @@ namespace winrt::AgentManagerWinUI::implementation
         char *g = bridge_status_glyph(st);
         std::string narrow = g ? g : "";
         bridge_string_free(g);
-        return to_hstring(to_wide(narrow) + L" ");
+        return hstring{to_wide(narrow) + L" "};
     }
 
     /* Resolve a printable UTF-32 code point for a virtual key under the
