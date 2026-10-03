@@ -1,7 +1,7 @@
 <!-- Aligned UX vision from 5 UX designer subagents (2026-09-26). Conflicts resolved by synthesis vote; see Conflicts resolved section. Generic deltas applied (approach B: vision-only; per-CLI adapters deferred). -->
 # UX Vision
 
-Agent Manager is a native multi-run agent console (backend brand swappable: muse/claude/opencode/codex; default `muse`) where every run is a live PTY that never dies on switch. The vision: **first run succeeds in under a minute, every failure is visible until resolved with a one-click recovery, and list/terminal/status stay usable narrow, keyboard-only, and grayscale.**
+staap is a native multi-run agent console (backend brand swappable: muse/claude/opencode/codex; default `muse`) where every run is a live PTY that never dies on switch. The vision: **first run succeeds in under a minute, every failure is visible until resolved with a one-click recovery, and list/terminal/status stay usable narrow, keyboard-only, and grayscale.**
 
 ## Principles
 

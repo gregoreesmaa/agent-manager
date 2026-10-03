@@ -1,7 +1,7 @@
 <!-- Aligned Technical vision from 5 technical subagents (2026-09-26). Conflicts resolved by synthesis vote; see Conflicts resolved section. Generic deltas applied (approach B: vision-only; per-CLI adapters deferred). -->
 # Technical Vision
 
-agent-manager is a **live-first native terminal harness**: one real interactive `muse` PTY per run, thin native per-OS shells over a framework-free shared core (#60), pinned by headless + byte-exact regression tests. The north star: **idle costs ~zero, live stays faithful, framework volatility can't leak into the core, and every parked abstraction either ships or dies.**
+staap is a **live-first native terminal harness**: one real interactive `muse` PTY per run, thin native per-OS shells over a framework-free shared core (#60), pinned by headless + byte-exact regression tests. The north star: **idle costs ~zero, live stays faithful, framework volatility can't leak into the core, and every parked abstraction either ships or dies.**
 
 The exact core API a native shell binds against is documented in `docs/native-core-seam.md`.
 

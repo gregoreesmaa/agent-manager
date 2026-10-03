@@ -1,6 +1,6 @@
-# Contributing to agent-manager
+# Contributing to staap
 
-Thank you for volunteering! agent-manager is free software (MIT) —
+Thank you for volunteering! staap is free software (MIT) —
 every contribution stays free: no paywalls, no tiers, no telemetry.
 
 ## Volunteer rotations

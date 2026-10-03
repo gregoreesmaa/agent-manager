@@ -4,6 +4,16 @@ All notable changes, newest first. Issue numbers track `gh issue`.
 
 ## Unreleased (on main)
 
+- BREAKING: project renamed `agent-manager` → `staap` (no shims). Binary,
+  package, and lib are now `staap` (`staap.lib` / `libstaap.a`), the C
+  header is `include/staap.h` (guard `STAAP_H`), all FFI entry points are
+  `staap_*` with `Staap*` types, config moved to
+  `~/.config/staap/config.json` (override via `STAAP_CONFIG`), the data
+  dir moved to the `staap` subdir, shells are `StaapMac` / `staap-gtk` /
+  `StaapWinUI`, CI artifacts are `StaapMac-macos` / `StaapWindows` /
+  `staap-linux`, app id is `com.example.staap`. Old binary name, config
+  path, and the old `am_*` ABI no longer exist — reinstall and re-point
+  any scripts. Historic entries below keep the old name.
 - UX: two-dimensional new session (folder × CLI + yolo) — `n` / `+ New`
   repeats the last launch instantly, `N` opens the full picker (folder
   axis + CLI axis + one-shot yolo tri-state, autodetected from `PATH`

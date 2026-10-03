@@ -45,7 +45,7 @@ resolved below.
 
 - No settings window. Two homes only: at point of use (the picker:
   per-run CLI/folder/yolo override, never auto-written back) and the
-  flat local config file (`~/.config/agent-manager/config.json`).
+  flat local config file (`~/.config/staap/config.json`).
 - New keys (all serde-defaulted, old files load unchanged):
   `default_cli`, `default_cwd`, `last_cli` (repeat memory, refreshed on
   every confirmed spawn), `recent_folders` (MRU, capped at 10),
@@ -101,14 +101,14 @@ resolved below.
 ## Native shells (landed, dumb renderers over the core registry)
 
 All three native shells are dumb renderers over the core run registry:
-spawns attach real roster rows via `am_run_spawn` (repeat-last and picker
-confirm share one funnel), restart/resume via `am_run_restart`, close via
-`am_run_close`, statuses/links refresh via `am_pump_all`, and persistence
+spawns attach real roster rows via `staap_run_spawn` (repeat-last and picker
+confirm share one funnel), restart/resume via `staap_run_restart`, close via
+`staap_run_close`, statuses/links refresh via `staap_pump_all`, and persistence
 is automatic (throttled autosave + close hooks — no Save buttons, no
 theme pickers; every shell follows the system appearance). The preview
-(`am_spawn_preview`), yolo mapping (`am_yolo_value`), key table
-(`am_key_encode`), feed reconciler (`am_feed_delta`), SGR renderer
-(`am_ansi_render`), age/glyph/headers, filter/selection, and sidebar
+(`staap_spawn_preview`), yolo mapping (`staap_yolo_value`), key table
+(`staap_key_encode`), feed reconciler (`staap_feed_delta`), SGR renderer
+(`staap_ansi_render`), age/glyph/headers, filter/selection, and sidebar
 clamp each live once in the core — the per-shell C/Swift ports are
 deleted, and shells call the core instead of reimplementing it:
 
@@ -116,10 +116,10 @@ deleted, and shells call the core instead of reimplementing it:
   field/recents, CLI radio, tri-state yolo, core preview); widget state
   in `NewSessionPicker` (pinned by `swift test`), rules in the core.
 - GTK (`native/linux/`): linked New-run + ▾ caret (Ctrl+N / Ctrl+Shift+N);
-  AdwDialog picker over the bridge wrappers (pinned by `am-picker-test`);
+  AdwDialog picker over the bridge wrappers (pinned by `staap-picker-test`);
   smoke asserts the catalog + shared-helper surface.
 - WinUI (`native/windows/`): New Session repeat + Choose dialog
   (ContentDialog with folder/CLI/yolo + core preview, Ctrl+N /
   Ctrl+Shift+N); catalog/recents parse stays native for ComboBox rows
-  (pinned by `am-win-picker-test`), rules in the core; smoke asserts
+  (pinned by `staap-win-picker-test`), rules in the core; smoke asserts
   the catalog + shared-helper surface.

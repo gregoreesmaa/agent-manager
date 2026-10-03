@@ -3,7 +3,7 @@
 
 ## North star (3 years)
 
-Agent Manager is the local-first mission control for agent runs: every run is a real interactive session, any run needing input surfaces in seconds, no link or transcript is ever lost, and everything works offline, free and open-source forever.
+staap is the local-first mission control for agent runs: every run is a real interactive session, any run needing input surfaces in seconds, no link or transcript is ever lost, and everything works offline, free and open-source forever.
 
 In three years, success looks like this: a new user goes from clean checkout to a live agent prompt in under a minute with no docs; a user with dozens of runs — live and historic, from `muse` and other CLIs — knows in under five seconds which run needs them; failures stay visible with one-click recovery; all state survives quit, resize, and relaunch as plain local files; contributors add link types and agent adapters without touching core; and the project is still MIT/Apache-2.0, no accounts, no paywalls, no telemetry.
 
@@ -27,7 +27,7 @@ In three years, success looks like this: a new user goes from clean checkout to 
 
 **In scope:** interactive PTY hosting for multiple agent CLIs via adapters; historic session attach and resume; attention/urgency classification shared by live and historic runs; agent-agnostic link extraction (PR/issue/commit/file) that stays attached, searchable, and exportable per run; keyboard-first triage UX with bounded chrome; documented parser/provider extension points.
 
-**Non-goals:** cloud hosting, sync, or accounts; hosted orchestration, scheduling, or multi-user collaboration; paywalled tiers or usage metering; Linux/remote as a paid tier; model hosting or agent logic itself — Agent Manager hosts and triages sessions, it does not replace the CLI.
+**Non-goals:** cloud hosting, sync, or accounts; hosted orchestration, scheduling, or multi-user collaboration; paywalled tiers or usage metering; Linux/remote as a paid tier; model hosting or agent logic itself — staap hosts and triages sessions, it does not replace the CLI.
 
 ## Sustainability
 

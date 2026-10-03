@@ -189,16 +189,16 @@ can link them.
 
 ```c
 // Opaque handles; the shell never sees Rust internals.
-typedef struct AmCore AmCore;   // owns App + Config
-typedef struct AmPty AmPty;     // owns one EmbeddedPty
+typedef struct StaapCore StaapCore;   // owns App + Config
+typedef struct StaapPty StaapPty;     // owns one EmbeddedPty
 
-AmCore *am_core_new(void);      // discovery + persistence merge inside
-void am_core_free(AmCore *);
-int32_t am_spawn(AmCore *, AmPty **out, const char *cwd); // 0 = ok
-bool am_pump(AmPty *);          // dirty gate
-int32_t am_write(AmPty *, const uint8_t *, size_t);
-const char *am_screen_text(AmPty *);  // + runs/spans variant for styling
-int32_t am_status(AmCore *, size_t row);  // Attention/Idle/Working as int
+StaapCore *staap_core_new(void);      // discovery + persistence merge inside
+void staap_core_free(StaapCore *);
+int32_t staap_spawn(StaapCore *, StaapPty **out, const char *cwd); // 0 = ok
+bool staap_pump(StaapPty *);          // dirty gate
+int32_t staap_write(StaapPty *, const uint8_t *, size_t);
+const char *staap_screen_text(StaapPty *);  // + runs/spans variant for styling
+int32_t staap_status(StaapCore *, size_t row);  // Attention/Idle/Working as int
 // Roster/config/persist/link lists cross as JSON (ChatSession serde) or
 // small getter batches; errors return as thread-local message strings.
 ```

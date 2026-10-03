@@ -1,7 +1,7 @@
 <!-- Aligned Product vision from 5 product subagents (2026-09-26). Constraint: app remains free and open-source; no paywalls or paid tiers. Generic deltas applied (approach B: vision-only; per-CLI adapters deferred, brands additive). -->
 # Product Vision
 
-agent-manager is a **free and open-source native harness** (native per-OS shells over the shared Rust core, no webview; see #60) for managing and chatting with live `muse` agent CLI sessions. Each run is a real interactive `muse` process behind an embedded PTY; the window shows the run list beside the live terminal of the selected run. Background runs keep streaming and never die on switch.
+staap is a **free and open-source native harness** (native per-OS shells over the shared Rust core, no webview; see #60) for managing and chatting with live `muse` agent CLI sessions. Each run is a real interactive `muse` process behind an embedded PTY; the window shows the run list beside the live terminal of the selected run. Background runs keep streaming and never die on switch.
 
 The vision: the fastest, most trustworthy way to triage and work with many concurrent `muse` runs — every run visible, every approval prompt noticed within 60 seconds, every useful link kept — with **zero account, zero paywall, zero telemetry, forever**. Comfort features (fonts, filters, export), lifecycle features (close, restart, reattach), and extension points (parsers, providers) are all free, local-only capabilities, never monetized gates.
 
@@ -41,7 +41,7 @@ The vision: the fastest, most trustworthy way to triage and work with many concu
 
 ## Community / Sustainability (non-monetized)
 
-- Single maintainer today (`gregoreesmaa`, repo `gregoreesmaa/agent-manager`, one local commit); grow via low-friction volunteering, not revenue.
+- Single maintainer today (`gregoreesmaa`, repo `gregoreesmaa/staap`, one local commit); grow via low-friction volunteering, not revenue.
 - Ladder: good-first-issues in the parser garden and provider seam → triage/docs roles → release-shepherd rotation, documented in `docs/` and `ROADMAP.md`.
 - Health artifacts only: `CHANGELOG.md` (dated entries), `ROADMAP.md` (this vision's Top 10), CI green checks on every PR, CoC with a listed contact.
 - Shared-core contract stays a community commitment: framework-free tested core with headless coverage as the cross-platform contract for the native shells (#60), so dependency churn never silently breaks new sessions.
