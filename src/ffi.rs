@@ -15,7 +15,10 @@ use crate::embedded::{EmbeddedPty, SpawnKind};
 use crate::launch;
 use crate::parsers::registry::RegistryParser;
 use crate::persist;
-use crate::providers::{MuseCliProvider, OpencodeCliProvider, Provider};
+use crate::providers::{
+    AntigravityCliProvider, ClaudeCliProvider, CodexCliProvider, MuseCliProvider,
+    OpencodeCliProvider, Provider,
+};
 
 /// Integer error codes returned by every fallible `am_*` function.
 #[repr(i32)]
@@ -137,11 +140,33 @@ pub unsafe extern "C" fn am_core_new() -> *mut AmCore {
         Box::new(RegistryParser::default()),
     )
     .discover_sessions();
-    // Same merge as the gpui shell startup: opencode sessions seed
-    // alongside muse sessions (unreachable CLI degrades to empty).
+    // Same merge as the gpui shell startup: opencode, claude, codex, and
+    // antigravity sessions seed alongside muse sessions (unreachable
+    // stores/CLIs degrade to empty).
     discovered.extend(
         OpencodeCliProvider::with_default_program(Box::new(RegistryParser::default()))
             .discover_sessions(),
+    );
+    discovered.extend(
+        ClaudeCliProvider::new(
+            ClaudeCliProvider::default_store_root(),
+            Box::new(RegistryParser::default()),
+        )
+        .discover_sessions(),
+    );
+    discovered.extend(
+        CodexCliProvider::new(
+            CodexCliProvider::default_store_root(),
+            Box::new(RegistryParser::default()),
+        )
+        .discover_sessions(),
+    );
+    discovered.extend(
+        AntigravityCliProvider::new(
+            AntigravityCliProvider::default_store_root(),
+            Box::new(RegistryParser::default()),
+        )
+        .discover_sessions(),
     );
     let persisted = persist::load_sessions();
     let app = App::new(persist::merge_sessions(discovered, persisted));

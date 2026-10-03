@@ -29,8 +29,8 @@ pub fn new_session_command() -> (String, Vec<String>) {
 /// keep meaning muse, so every existing call site compiles untouched.
 /// Other harnesses spawn through [`SpawnKind::NewOn`] /
 /// [`SpawnKind::ResumeOn`]. The picker catalog (`crate::launch`) may list
-/// more CLIs than this enum resolves (claude/codex spawn by program name
-/// until they grow full provider support here); `from_id` maps those to
+/// more CLIs than this enum resolves (codex spawns by program name until
+/// it grows full provider support here); `from_id` maps those to
 /// the closest spawnable harness so rows still re-attach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Harness {
@@ -39,12 +39,15 @@ pub enum Harness {
     Muse,
     /// `opencode` — the opencode CLI.
     Opencode,
-    /// `claude` — spawned by program name; resume reuses the muse shape
-    /// until a Claude provider lands.
+    /// `claude` — the Claude Code CLI (discovery + transcript land with
+    /// its provider; resume reuses the muse `--resume <id>` shape).
     Claude,
-    /// `codex` — spawned by program name; resume reuses the muse shape
-    /// until a Codex provider lands.
+    /// `codex` — the Codex CLI (discovery + transcript land with
+    /// its provider; resume is the `resume <id>` subcommand).
     Codex,
+    /// `agy` — the Antigravity CLI (discovery + transcript land with
+    /// its provider; resume is `agy --conversation <id>`).
+    Antigravity,
 }
 
 impl Harness {
@@ -54,8 +57,9 @@ impl Harness {
         match self {
             Harness::Muse => crate::app::HARNESS_MUSE,
             Harness::Opencode => crate::app::HARNESS_OPENCODE,
-            Harness::Claude => "claude",
-            Harness::Codex => "codex",
+            Harness::Claude => crate::app::HARNESS_CLAUDE,
+            Harness::Codex => crate::app::HARNESS_CODEX,
+            Harness::Antigravity => crate::app::HARNESS_ANTIGRAVITY,
         }
     }
 
@@ -65,10 +69,12 @@ impl Harness {
     pub fn from_id(id: &str) -> Self {
         if id == crate::app::HARNESS_OPENCODE {
             Harness::Opencode
-        } else if id == "claude" {
+        } else if id == crate::app::HARNESS_CLAUDE {
             Harness::Claude
-        } else if id == "codex" {
+        } else if id == crate::app::HARNESS_CODEX {
             Harness::Codex
+        } else if id == crate::app::HARNESS_ANTIGRAVITY {
+            Harness::Antigravity
         } else {
             Harness::Muse
         }
@@ -81,6 +87,7 @@ impl Harness {
             Harness::Opencode => "opencode",
             Harness::Claude => "claude",
             Harness::Codex => "codex",
+            Harness::Antigravity => "agy",
         }
     }
 
@@ -96,6 +103,7 @@ impl Harness {
             Harness::Claude => Some("--dangerously-skip-permissions"),
             Harness::Codex => Some("--dangerously-bypass-approvals-and-sandbox"),
             Harness::Opencode => Some("--auto"),
+            Harness::Antigravity => None,
         }
     }
 
@@ -105,12 +113,16 @@ impl Harness {
     }
 
     /// argv (after the program) resuming a historic conversation.
-    /// Shape is per-CLI: muse takes `--resume <id>`, opencode takes
-    /// `--session <id>`; claude/codex reuse the muse shape until their
-    /// providers define their own.
+    /// Shape is per-CLI: muse and claude take `--resume <id>`, opencode
+    /// takes `--session <id>`, codex takes `resume <id>` (subcommand, per
+    /// the developer-commands reference), agy takes `--conversation <id>`.
     pub fn resume_args(self, session_id: &str) -> Vec<String> {
         match self {
             Harness::Opencode => vec!["--session".to_string(), session_id.to_string()],
+            Harness::Codex => vec!["resume".to_string(), session_id.to_string()],
+            Harness::Antigravity => {
+                vec!["--conversation".to_string(), session_id.to_string()]
+            }
             _ => vec!["--resume".to_string(), session_id.to_string()],
         }
     }
@@ -895,6 +907,63 @@ mod tests {
     }
 
     #[test]
+    fn codex_harness_routes_spawn_commands() {
+        // Codex spawn surface: plain `codex` starts fresh, `codex
+        // resume <id>` (subcommand) re-attaches a discovered session.
+        assert_eq!(
+            SpawnKind::NewOn {
+                harness: Harness::Codex,
+                yolo: false,
+            }
+            .command(),
+            ("codex".to_string(), vec![])
+        );
+        assert_eq!(
+            SpawnKind::ResumeOn {
+                harness: Harness::Codex,
+                session_id: "sess-codex-1".to_string(),
+            }
+            .command(),
+            (
+                "codex".to_string(),
+                vec!["resume".to_string(), "sess-codex-1".to_string()]
+            )
+        );
+        assert_eq!(Harness::Codex.id(), crate::app::HARNESS_CODEX);
+        assert_eq!(Harness::from_id("codex"), Harness::Codex);
+        assert_eq!(Harness::Codex.program(), "codex");
+    }
+
+    #[test]
+    fn antigravity_harness_routes_spawn_commands() {
+        // Antigravity spawn surface: plain `agy` starts fresh,
+        // `agy --conversation <id>` re-attaches a discovered session.
+        assert_eq!(
+            SpawnKind::NewOn {
+                harness: Harness::Antigravity,
+                yolo: false,
+            }
+            .command(),
+            ("agy".to_string(), vec![])
+        );
+        assert_eq!(
+            SpawnKind::ResumeOn {
+                harness: Harness::Antigravity,
+                session_id: "convo-1".to_string(),
+            }
+            .command(),
+            (
+                "agy".to_string(),
+                vec!["--conversation".to_string(), "convo-1".to_string()]
+            )
+        );
+        assert_eq!(Harness::Antigravity.id(), crate::app::HARNESS_ANTIGRAVITY);
+        assert_eq!(Harness::from_id("antigravity"), Harness::Antigravity);
+        assert_eq!(Harness::Antigravity.program(), "agy");
+        assert_eq!(Harness::Antigravity.yolo_flag(), None);
+    }
+
+    #[test]
     fn resume_command_passes_provider_session_id() {
         // Issue #22: historic re-attach relaunches `muse --resume <id>`.
         let kind = SpawnKind::Resume {
@@ -907,6 +976,34 @@ mod tests {
                 vec!["--resume".to_string(), "sess-abc".to_string()]
             )
         );
+    }
+
+    #[test]
+    fn claude_harness_routes_spawn_commands() {
+        // Claude spawn surface: plain `claude` starts fresh, `claude
+        // --resume <id>` re-attaches a discovered conversation.
+        assert_eq!(
+            SpawnKind::NewOn {
+                harness: Harness::Claude,
+                yolo: false,
+            }
+            .command(),
+            ("claude".to_string(), vec![])
+        );
+        assert_eq!(
+            SpawnKind::ResumeOn {
+                harness: Harness::Claude,
+                session_id: "sess-claude-1".to_string(),
+            }
+            .command(),
+            (
+                "claude".to_string(),
+                vec!["--resume".to_string(), "sess-claude-1".to_string()]
+            )
+        );
+        assert_eq!(Harness::Claude.id(), crate::app::HARNESS_CLAUDE);
+        assert_eq!(Harness::from_id("claude"), Harness::Claude);
+        assert_eq!(Harness::Claude.program(), "claude");
     }
 
     /// Child-printed cwd contains the expected dir, tolerating the

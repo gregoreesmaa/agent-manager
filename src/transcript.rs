@@ -169,6 +169,173 @@ fn cap_messages(mut messages: Vec<TranscriptMessage>) -> ParsedTranscript {
     }
 }
 
+/// Antigravity transcript row: one JSON object per line from
+/// with `source` (`USER_EXPLICIT` / `MODEL` / `SYSTEM`), `type`
+/// (`USER_INPUT`, planner/model responses, `CHECKPOINT`, `ERROR_MESSAGE`)
+/// and string `content` (user prompts arrive wrapped in `<USER_REQUEST>`
+/// with an `<ADDITIONAL_METADATA>` trailer, both stripped here).
+/// `tool_calls` arrays surface as `🔧 <names>` summaries; `CHECKPOINT`
+/// summaries and other system rows are skipped (compaction metadata, not
+/// conversation). Non-JSON lines are kept as [`Role::Unknown`] (same
+/// contract as [`parse_transcript`]).
+pub fn parse_antigravity_tail(tail: &str) -> ParsedTranscript {
+    let mut messages = Vec::new();
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => extract_antigravity_value(&value, &mut messages),
+            Err(_) => push_capped(&mut messages, Role::Unknown, line.to_string()),
+        }
+    }
+    cap_messages(messages)
+}
+
+/// Claude Code transcript tail: one JSON object per line with `type`
+/// (`user`/`assistant`) and `message.content` text blocks. Non-JSON lines
+/// are kept as [`Role::Unknown`] (same contract as [`parse_transcript`).
+/// Tool-use/result entries surface as `🔧 <name>` summaries; anything else
+/// (file-history, queue ops, summaries) is skipped.
+pub fn parse_claude_tail(tail: &str) -> ParsedTranscript {
+    let mut messages = Vec::new();
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => extract_claude_value(&value, &mut messages),
+            Err(_) => push_capped(&mut messages, Role::Unknown, line.to_string()),
+        }
+    }
+    cap_messages(messages)
+}
+
+/// Codex rollout tail: one JSON event object per line with
+/// `payload.type` (`user` input text / `assistant` message text).
+/// Non-JSON lines are kept as [`Role::Unknown`] (same contract as
+/// [`parse_transcript`]). Command-execution / file-change / reasoning
+/// events surface as `🔧 <kind>` summaries; anything else is skipped.
+pub fn parse_codex_tail(tail: &str) -> ParsedTranscript {
+    let mut messages = Vec::new();
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => extract_codex_value(&value, &mut messages),
+            Err(_) => push_capped(&mut messages, Role::Unknown, line.to_string()),
+        }
+    }
+    cap_messages(messages)
+}
+
+/// Best-effort resume handle for a Codex tail: the first `session_id`
+/// (or legacy `id` shaped like a session) found on an event or inside
+/// its payload. Falls back to the log filename at the provider layer.
+pub fn extract_codex_session_id(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        for key in ["session_id", "sessionId", "thread_id"] {
+            if let Some(id) = value
+                .get(key)
+                .or_else(|| value.get("payload").and_then(|p| p.get(key)))
+                .and_then(|v| v.as_str())
+            {
+                if !id.trim().is_empty() {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort project name for a Codex tail: basename of the first
+/// `payload.cwd` (or top-level `cwd`) found (both `/` and `\` split, so
+/// Windows paths work too).
+pub fn extract_codex_project(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let cwd = value
+            .get("payload")
+            .and_then(|p| p.get("cwd"))
+            .or_else(|| value.get("cwd"))
+            .and_then(|v| v.as_str());
+        let Some(cwd) = cwd else { continue };
+        if cwd.trim().is_empty() {
+            continue;
+        }
+        let name = cwd
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(cwd);
+        if !name.trim().is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn extract_codex_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    let payload = value.get("payload").unwrap_or(value);
+    let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        "user" => {
+            let text = payload
+                .get("text")
+                .or_else(|| payload.get("input"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !text.is_empty() {
+                push_capped(out, Role::User, text);
+            }
+        }
+        "assistant" => {
+            let text = payload
+                .get("text")
+                .or_else(|| payload.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !text.is_empty() {
+                push_capped(out, Role::Assistant, text);
+            }
+        }
+        "command_execution" | "file_change" | "reasoning" | "tool_call" | "web_search" => {
+            let label = payload
+                .get("command")
+                .or_else(|| payload.get("summary"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(kind);
+            let label = label.trim();
+            if !label.is_empty() {
+                push_capped(out, Role::Assistant, format!("🔧 {label}"));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn opencode_role(role: &str) -> Option<Role> {
     match role {
         "user" => Some(Role::User),
@@ -265,6 +432,206 @@ fn extract_opencode_value(value: &serde_json::Value, out: &mut Vec<TranscriptMes
             _ => {}
         }
     }
+}
+
+/// Best-effort resume handle for a Claude Code tail: the first `sessionId`
+/// field found (every record carries it). Falls back to the log filename
+/// at the provider layer.
+pub fn extract_claude_session_id(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(id) = value.get("sessionId").and_then(|v| v.as_str()) {
+            if !id.trim().is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort project name for a Claude Code tail: basename of the first
+/// `cwd` field found (both `/` and `\` separators split, so Windows paths
+/// work too).
+pub fn extract_claude_project(tail: &str) -> Option<String> {
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(cwd) = value.get("cwd").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if cwd.trim().is_empty() {
+            continue;
+        }
+        let name = cwd
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(cwd);
+        if !name.trim().is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn claude_text_blocks(content: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let blocks: Vec<&serde_json::Value> = match content {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        obj => vec![obj],
+    };
+    for block in blocks {
+        if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+            if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                if !name.trim().is_empty() {
+                    out.push(format!("🔧 {name}"));
+                }
+            }
+            continue;
+        }
+        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+            if block
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_none_or(|t| t == "text")
+            {
+                out.push(text.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn extract_claude_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    // `user` / `assistant` carry `message: {role, content}`; content is
+    // text blocks (kept, joined) or a bare string (newer compact rows).
+    if kind == "user" || kind == "assistant" {
+        let role = if kind == "user" {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        let message = value.get("message");
+        let content = message.and_then(|m| m.get("content")).or_else(|| {
+            // Newer compact rows may inline content beside `type`.
+            if value.get("content").is_some() {
+                value.get("content")
+            } else {
+                None
+            }
+        });
+        let text = match content {
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            Some(content) => claude_text_blocks(content).join("\n").trim().to_string(),
+            None => String::new(),
+        };
+        if !text.is_empty() {
+            push_capped(out, role, text);
+        }
+        return;
+    }
+    // Tool results and queue artifacts land after the assistant turn;
+    // attribute emitted stdout to the assistant so it stays visible.
+    if kind == "tool_result" {
+        let text = value
+            .get("toolUseResult")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("content").and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !text.is_empty() {
+            push_capped(out, Role::Assistant, text);
+        }
+    }
+}
+
+/// Strip the `<USER_REQUEST>` envelope and `<ADDITIONAL_METADATA>`
+/// trailer from an Antigravity user prompt, so titles and transcripts
+/// read as what the user typed.
+fn clean_antigravity_content(raw: &str) -> String {
+    let mut text = raw.trim().to_string();
+    if let Some(start) = text.find("<USER_REQUEST>") {
+        let inner = &text[start + "<USER_REQUEST>".len()..];
+        text = match inner.find("</USER_REQUEST>") {
+            Some(end) => inner[..end].to_string(),
+            None => inner.to_string(),
+        };
+    }
+    if let Some(meta) = text.find("<ADDITIONAL_METADATA>") {
+        text.truncate(meta);
+    }
+    // A matching close tag without an opener (envelope already split).
+    if let Some(end) = text.find("</USER_REQUEST>") {
+        text.truncate(end);
+    }
+    text.trim().to_string()
+}
+
+fn extract_antigravity_value(value: &serde_json::Value, out: &mut Vec<TranscriptMessage>) {
+    let source = value.get("source").and_then(|v| v.as_str()).unwrap_or("");
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if source == "USER_EXPLICIT" || kind == "USER_INPUT" {
+        let text = value
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(clean_antigravity_content)
+            .unwrap_or_default();
+        if !text.is_empty() {
+            push_capped(out, Role::User, text);
+        }
+        return;
+    }
+    if source == "MODEL" {
+        let text = value
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !text.is_empty() {
+            push_capped(out, Role::Assistant, text);
+        }
+        let names: Vec<String> = value
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|c| c.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !names.is_empty() {
+            push_capped(out, Role::Assistant, format!("🔧 {}", names.join(", ")));
+        }
+        return;
+    }
+    if kind == "ERROR_MESSAGE" {
+        let text = value
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !text.is_empty() {
+            push_capped(out, Role::System, text);
+        }
+    }
+    // CHECKPOINT summaries and other system rows are compaction metadata,
+    // not conversation: skipped so titles/transcripts stay user-shaped.
 }
 
 /// Best-effort project name for an opencode export tail: basename of the
@@ -609,6 +976,164 @@ mod tests {
     #[test]
     fn opencode_plain_text_lines_become_unknown_messages() {
         let parsed = parse_opencode_tail("Fix login\n");
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Unknown);
+    }
+
+    #[test]
+    fn parses_claude_user_and_assistant_blocks_in_order() {
+        let tail = [
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "s-1",
+                "cwd": "/tmp/work/shop",
+                "message": {"role": "user",
+                    "content": [{"type": "text", "text": "Fix login"}]}
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "s-1",
+                "cwd": "/tmp/work/shop",
+                "message": {"role": "assistant",
+                    "content": [{"type": "text", "text": "Done"}]}
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_claude_tail(&tail);
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(parsed.messages[0].text, "Fix login");
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[1].text, "Done");
+        assert_eq!(extract_claude_session_id(&tail).as_deref(), Some("s-1"));
+        assert_eq!(extract_claude_project(&tail).as_deref(), Some("shop"));
+        assert_eq!(extract_claude_project("not json\n"), None);
+        assert_eq!(extract_claude_session_id("not json\n"), None);
+    }
+
+    #[test]
+    fn parses_codex_user_and_assistant_events_in_order() {
+        let tail = [
+            serde_json::json!({
+                "id": "evt-1",
+                "session_id": "sess-codex-9",
+                "payload": {"type": "user", "text": "Fix login",
+                    "cwd": "/tmp/work/shop"}
+            }),
+            serde_json::json!({
+                "id": "evt-2",
+                "session_id": "sess-codex-9",
+                "payload": {"type": "assistant", "text": "Done"}
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_codex_tail(&tail);
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(parsed.messages[0].text, "Fix login");
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[1].text, "Done");
+        assert_eq!(
+            extract_codex_session_id(&tail).as_deref(),
+            Some("sess-codex-9")
+        );
+        assert_eq!(extract_codex_project(&tail).as_deref(), Some("shop"));
+        assert_eq!(extract_codex_project("not json\n"), None);
+        assert_eq!(extract_codex_session_id("not json\n"), None);
+    }
+
+    #[test]
+    fn codex_command_events_surface_as_tool_summaries() {
+        let tail = serde_json::json!({
+            "id": "evt-3",
+            "payload": {"type": "command_execution",
+                "command": "bash -lc ls", "cwd": "C:\\work\\myproj"}
+        })
+        .to_string();
+        let parsed = parse_codex_tail(&tail);
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Assistant);
+        assert_eq!(parsed.messages[0].text, "🔧 bash -lc ls");
+        // Windows path projects split on backslashes too.
+        assert_eq!(extract_codex_project(&tail).as_deref(), Some("myproj"));
+    }
+
+    #[test]
+    fn codex_plain_text_lines_become_unknown_messages() {
+        let parsed = parse_codex_tail("Fix login\n");
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, Role::Unknown);
+    }
+
+    #[test]
+    fn parses_antigravity_user_envelope_and_model_replies() {
+        let tail = [
+            serde_json::json!({
+                "step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+                "status": "DONE", "created_at": "2026-07-31T10:08:07Z",
+                "content": "<USER_REQUEST>\nVideo root should be ingest. Make the edit!\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnoise\n</ADDITIONAL_METADATA>"
+            }),
+            serde_json::json!({
+                "step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                "status": "DONE", "created_at": "2026-07-31T10:08:07Z",
+                "content": "On it."
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_antigravity_tail(&tail);
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(
+            parsed.messages[0].text,
+            "Video root should be ingest. Make the edit!"
+        );
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[1].text, "On it.");
+        // Titles derive from the cleaned user prompt.
+        assert_eq!(
+            derive_title(&parsed.messages, "fallback"),
+            "Video root should be ingest. Make the edit!"
+        );
+    }
+
+    #[test]
+    fn antigravity_checkpoints_skip_and_tool_calls_summarize() {
+        let tail = [
+            serde_json::json!({
+                "step_index": 0, "source": "SYSTEM", "type": "CHECKPOINT",
+                "status": "DONE", "content": "{{ CHECKPOINT 0 }} summary"
+            }),
+            serde_json::json!({
+                "step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                "status": "DONE", "content": "Running tests.",
+                "tool_calls": [{"name": "run_command"}]
+            }),
+        ]
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let parsed = parse_antigravity_tail(&tail);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].text, "Running tests.");
+        assert_eq!(parsed.messages[1].text, "🔧 run_command");
+    }
+
+    #[test]
+    fn antigravity_plain_text_lines_become_unknown_messages() {
+        let parsed = parse_antigravity_tail("Fix login\n");
         assert_eq!(parsed.messages.len(), 1);
         assert_eq!(parsed.messages[0].role, Role::Unknown);
     }
