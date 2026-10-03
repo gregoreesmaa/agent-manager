@@ -28,32 +28,31 @@ core_lib = cc.find_library('agent_manager', dirs: core_lib_dir, required: true)
 core_inc = include_directories('../../include')
 src_inc = include_directories('src')
 
-# 2D-launch picker logic tests: catalog/recents parsing, folder/yolo
-# mapping, preview copy. No GTK, no core link (pure C under
-# AM_PICKER_TEST), so this runs on any runner.
-picker_test_exe = executable('am-picker-test',
-  'src/picker.c',
-  c_args: '-DAM_PICKER_TEST',
-  include_directories: src_inc,
-  install: false)
-test('picker', picker_test_exe)
-
 # The Rust staticlib's own link closure (sockets, threads, math).
 sys_libs = [core_lib,
             cc.find_library('dl', required: false),
             cc.find_library('pthread', required: false),
             cc.find_library('m', required: false)]
 
-# Shared-presentation contract tests over the real staticlib: the feed
-# reconciler, roster match, and age label live in the core now
-# (`src/shell_shared.rs`), so this pins the C ABI edge instead of a
-# vendored copy. No GTK needed, runs anywhere.
+# Shared-logic contract tests: the reconciler, key table, preview, and
+# picker helpers now live in the core (`am_feed_delta`, `am_key_encode`,
+# `am_spawn_preview`, ...), pinned by `cargo test --lib`. The per-shell C
+# ports are deleted — shells call the core instead of reimplementing it.
+# These two targets pin the bridge's own thin wrappers (malloc/free
+# discipline, NULL conventions) against the real staticlib; no GTK needed.
 feed_test_exe = executable('am-feed-test',
-  'src/feed_test.c',
+  'src/feed_test.c', 'src/core_bridge.c',
   include_directories: [src_inc, core_inc],
   dependencies: sys_libs,
   install: false)
 test('feed', feed_test_exe)
+
+picker_test_exe = executable('am-picker-test',
+  'src/picker_test.c', 'src/core_bridge.c',
+  include_directories: [src_inc, core_inc],
+  dependencies: sys_libs,
+  install: false)
+test('picker', picker_test_exe)
 
 # Headless C ABI runtime check: no display needed, CI-greppable output.
 smoke_exe = executable('am-gtk-smoke',
@@ -66,9 +65,10 @@ test('smoke-live', find_program('tests/smoke_live.sh'),
   args: [smoke_exe.full_path()],
   timeout: 120)
 
-# The GTK shell itself.
+# The GTK shell itself (dumb renderer: widgets + events only; all
+# behavior lives in the core behind core_bridge.c).
 executable('agent-manager-gtk',
-  'src/main.c', 'src/core_bridge.c', 'src/picker.c',
+  'src/main.c', 'src/core_bridge.c',
   include_directories: [src_inc, core_inc],
   dependencies: [gtk4, adw, vte] + sys_libs,
   install: true)

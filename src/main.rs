@@ -24,7 +24,7 @@
 // (each per-OS shell proves itself in its own CI job).
 #[cfg(target_os = "macos")]
 pub use agent_manager::{
-    app, config, embedded, launch, parsers, persist, providers, scrollback, transcript,
+    app, config, embedded, keys, launch, parsers, persist, providers, scrollback, transcript,
 };
 #[cfg(target_os = "macos")]
 mod gui;

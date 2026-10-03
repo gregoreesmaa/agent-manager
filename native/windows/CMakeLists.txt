@@ -3,7 +3,7 @@
 # Configure (from the repo root, after installing the MSVC environment,
 # e.g. ilammy/msvc-dev-cmd on CI):
 #   cargo build --lib                    # produces target/debug/agent_manager.lib
-#   cmake -S native/windows -B native/windows/build "-DCORE_LIB_DIR=$PWD/target/debug"
+#   cmake -S native/windows -B native/windows/build "-Dcore_lib_dir=$PWD/target/debug"
 #   cmake --build native/windows/build --config Release
 #   ctest --test-dir native/windows/build -C Release --output-on-failure
 #
@@ -35,25 +35,31 @@ include_directories(
 # The Rust staticlib's Windows link closure (sockets, env, crypto, ntdll).
 set(SYS_LIBS ${CORE_LIB} ws2_32 userenv bcrypt ntdll)
 
-# Shared-presentation contract tests over the real staticlib: the feed
-# reconciler, roster match, and age label live in the core now
-# (`src/shell_shared.rs`), so this pins the C ABI edge instead of a
-# vendored copy. No WinUI needed, runs anywhere MSVC does.
+# Shared-logic contract tests: the reconciler, key table, preview, and
+# picker helpers now live in the core (`am_feed_delta`, `am_key_encode`,
+# `am_spawn_preview`, ...), pinned by `cargo test --lib`. The per-shell C
+# ports are deleted — shells call the core instead of reimplementing it.
+# These targets pin the bridge's own thin wrappers (malloc/free
+# discipline, NULL conventions) against the real staticlib; no WinUI
+# needed, runs anywhere.
 add_executable(am-win-feed-test src/feed_test.c src/core_bridge.c)
 target_link_libraries(am-win-feed-test PRIVATE ${SYS_LIBS})
 add_test(NAME feed COMMAND am-win-feed-test)
 
-# 2D-launch picker logic tests (catalog/recents/folder/yolo/preview):
-# header-only C++, no WinUI, runs anywhere.
-add_executable(am-win-picker-test src/picker_test.cpp)
+# 2D-launch picker tests (native catalog/recents rows + shared core
+# helpers via the bridge, no WinUI, runs anywhere).
+add_executable(am-win-picker-test src/picker_test.cpp src/core_bridge.c)
+target_link_libraries(am-win-picker-test PRIVATE ${SYS_LIBS})
 target_compile_features(am-win-picker-test PRIVATE cxx_std_17)
 add_test(NAME picker COMMAND am-win-picker-test)
 set_tests_properties(picker PROPERTIES PASS_REGULAR_EXPRESSION "PICKER-OK")
 
-# Converse-key contract tests (header-only, no WinUI): pins the Return /
-# Ctrl+C encodings the terminal preview-tunnel relies on, plus the
-# Ctrl+Shift+C/V reserve that stays with the native control.
-add_executable(am-win-keys-test src/keys_test.cpp)
+# Converse-key contract tests (bridge wrappers over the shared core key
+# table, no WinUI): pins the Return / Ctrl+C encodings the terminal
+# preview-tunnel relies on, plus the Ctrl+Shift+C/V reserve that stays
+# with the native control.
+add_executable(am-win-keys-test src/keys_test.cpp src/core_bridge.c)
+target_link_libraries(am-win-keys-test PRIVATE ${SYS_LIBS})
 set_target_properties(am-win-keys-test PROPERTIES CXX_STANDARD 17)
 add_test(NAME keys COMMAND am-win-keys-test)
 set_tests_properties(keys PROPERTIES PASS_REGULAR_EXPRESSION "KEYS-OK")

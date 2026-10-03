@@ -265,6 +265,34 @@ paths want the same two prerequisites (§5), so nothing is thrown away.
   core equivalent needed (native shells read `EffectiveTheme::is_dark`
   and `TerminalConfig::font_stack` directly).
 
+### Dumb-shell contract (all three native shells)
+
+Every native shell is a dumb renderer over the core run registry: the
+core owns the roster, selection, filter, live PTYs, statuses, links,
+key table, feed reconciler, SGR renderer, preview copy, display strings
+(age/glyph/headers), and persistence. Shells own widgets, event wiring,
+clipboard access, focus, and byte transport — nothing else. Shared
+behavior with native look:
+
+- Roster: core registry rows, grouped Needs input → Working → Idle →
+  History on every shell; one shared cap (10, oldest-exited reaped
+  first); spawns attach real rows (`am_run_spawn`), restart/resume keep
+  the id (`am_run_restart`), close drops entry + PTY (`am_run_close`).
+- Statuses actually move: `am_pump_all` refreshes attention/links and
+  re-sorts inside (the old launch-snapshot rows never changed).
+- Persistence is automatic (throttled pump autosave + close hooks):
+  no Save buttons, no Ctrl/Cmd+S. Theme follows the system appearance:
+  no theme pickers (the Linux System/Dark/Light dropdown and its
+  plain-file pref are deleted, like the never-existing macOS/Windows
+  overrides).
+- One key table (`am_key_encode`), one reconciler (`am_feed_delta`), one
+  SGR renderer (`am_ansi_render`), one preview (`am_spawn_preview`), one
+  filter/selection (`am_row_matches`/`am_set_filter`/`am_selected`/
+  `am_select`/`am_select_step`), one sidebar clamp (`am_clamp_sidebar`).
+  The per-shell C/Swift ports (`feed.c`, `picker.c`, `terminal_keys.h`,
+  the Swift feed/ANSI duplicates as production paths) are deleted; the
+  pure-Swift helpers stay for unit tests only, production calls the core.
+
 ### Linux notes (`native/linux/`, #63)
 
 The Linux shell is the portability proof: it links only the core
@@ -277,17 +305,19 @@ The Linux shell is the portability proof: it links only the core
   macOS-only. On Linux the gates are `cargo build --lib`,
   `cargo test --lib`, and the meson suite — `cargo test --all-targets`
   stays the macOS gate.
-- One emulator only: no PTY is spawned inside VTE. The shell encodes keys
-  itself (`bridge_write`) and feeds core snapshots as a stream through
-  the core reconciler (`am_feed_delta` in `src/shell_shared.rs`,
-  unit-pinned by `am-feed-test` mirroring `TerminalFeedTests`). A second
-  line discipline would double-echo.
+- One emulator only: no PTY is spawned inside VTE. The shell translates
+  key events to logical names and encodes via the shared core table
+  (`bridge_key_encode` over `shell_shared::encode_key`), then feeds core
+  snapshots as a stream through the core reconciler (`am_feed_delta` in
+  `src/shell_shared.rs`, unit-pinned by `am-feed-test` mirroring
+  `TerminalFeedTests`). A second line discipline would double-echo.
 - Reconciler parity is structural, not ported: every C shell calls the
   same `am_feed_delta` (append-suffix hot path, scroll overlap,
   clear-and-replay, CRLF normalization), so all shells show identical
   screens from identical snapshots. Swift's `TerminalFeed` stays as the
-  Swift-idiomatic original feeding the SwiftTerm view directly; the old
-  per-shell `feed.c` ports are gone.
+  Swift-idiomatic original feeding the SwiftTerm view directly (production
+  may call the core `am_feed_delta` instead); the old per-shell `feed.c`
+  ports are gone.
 
 ### Windows notes (`native/windows/`, #64)
 
@@ -296,24 +326,27 @@ WinUI 3 UI over the same C ABI. What future maintainers should know:
 
 - ConPTY lives in the core, not the shell: on Windows the core's
   `EmbeddedPty` is ConPTY-backed (`portable-pty` uses the native
-  Console Pseudo-terminal API), so `bridge_spawn` *is* the ConPTY
+  Console Pseudo-terminal API), so `bridge_run_spawn` *is* the ConPTY
   spawn. The WinUI surface never creates a console — the same
   single-emulator rule as Linux's "no PTY inside VTE", which keeps
   exactly one line discipline and no double-echo.
-- The portable C core (`core_bridge`, `smoke`) is shared
-  design, not shared files, with `native/linux/`: each shell vendors
-  its own copy so per-OS shells stay independently buildable (the
-  Windows copy adds only `extern "C"` guards for its C++ consumer).
-  Shared presentation logic (feed reconciler, roster filter match,
-  relative-age label, per-row link/age getters) lives in the core
-  itself (`src/shell_shared.rs`, bound as `am_feed_delta` /
+- The portable C core (`core_bridge`, `smoke`) is shared design, not
+  shared files, with `native/linux/`: each shell vendors its own copy
+  so per-OS shells stay independently buildable (the Windows copy adds
+  only `extern "C"` guards for its C++ consumer). Shared presentation
+  logic (feed reconciler, roster filter match, relative-age label,
+  per-row link/age getters, plus the run registry, key table, SGR
+  renderer, and preview/selection helpers) lives in the core itself
+  (`src/shell_shared.rs` + `src/runs.rs`, bound as `am_feed_delta` /
   `am_roster_matches` / `am_relative_age` / `am_link_count` /
-  `am_last_active`); `am-win-feed-test` and `am-feed-test` pin that C
-  ABI edge instead of a vendored copy.
-- Key encoding (`src/terminal_keys.h`) ports the Linux key controller
-  case for case but resolves printables through the thread layout
-  (`ToUnicode`), with AltGr-as-character documented at the one place
-  it diverges from the Linux Alt handling.
+  `am_last_active` and the `am_run_*` / `am_key_*` / `am_ansi_*` /
+  `am_select_*` family); `am-win-feed-test` and `am-feed-test` pin that
+  C ABI edge instead of a vendored copy.
+- Key encoding goes through the shared core table
+  (`bridge_key_encode` over `shell_shared::encode_key`, replacing the
+  old `src/terminal_keys.h` port) but resolves printables through the
+  thread layout (`ToUnicode`), with AltGr-as-character documented at the
+  one place it diverges from the Linux Alt handling.
 - The hermetic live proof compiles `tests/fake_muse.c` to `muse.exe`
   because CreateProcess cannot execute the shell-script fake the unix
   harnesses use; the core's own `public_spawn_success_path` stays
@@ -350,21 +383,27 @@ WinUI 3 UI over the same C ABI. What future maintainers should know:
 
 ### Landed C ABI (`src/ffi.rs`, crate-type `staticlib` + `rlib`)
 
-Opaque handles (`AmCore` owns `App`+`Config`, `AmPty` owns one
-`EmbeddedPty`); plain `#[repr(C)]` `AmRgb` / `AmStyle` (`has_fg`/`has_bg`
-presence flags — `Option` stays on the Rust side).
+Opaque handles (`AmCore` owns the run registry — roster `App` + live
+PTYs; `AmPty` owns one `EmbeddedPty` for the legacy spawn path); plain
+`#[repr(C)]` `AmRgb` / `AmStyle` (`has_fg`/`has_bg` presence flags —
+`Option` stays on the Rust side). Framework-free core modules behind
+the FFI: `shell` (roster rows, key table, feed reconciler, SGR
+renderer, preview, display strings, sidebar bounds), `runs` (live-run
+registry), `keys` (shared key table, also used by the gpui shell),
+plus the pre-existing `app`/`config`/`launch`/`embedded`/`parsers`/
+`persist`/`providers`/`scrollback`/`transcript`.
 
 | fn | contract |
 |---|---|
-| `am_core_new` / `am_core_free` | discovery + persistence merge inside; null-safe free |
-| `am_core_save` | persist config; `Config` code on failure |
-| `am_spawn(core, out, cwd, cols, rows)` | fresh `muse` session; null cwd inherits; int code |
-| `am_spawn_launch(core, out, cli, cwd, yolo, cols, rows)` | 2D-launch spawn (folder × CLI + one-shot yolo); null/empty cli repeats last/default resolution; int code |
-| `am_pump` | dirty gate; null → false |
-| `am_write(pty, bytes, len)` | raw input bytes; int code |
-| `am_resize` | null no-op |
-| `am_screen_text` + `am_screen_text_free` | owned UTF-8, caller frees |
-| `am_spans_json` | owned styled spans as JSON (rows of `{text,fg,bg,bold,italic,underline}`), freed with `am_screen_text_free` |
+| `am_core_new` / `am_core_free` | discovery + persistence merge + user config load inside; null-safe free |
+| `am_core_save` | persist config + run list (automatic: pump throttle + close hooks, no Save button); `Config` code on failure |
+| `am_spawn(core, out, cwd, cols, rows)` | fresh `muse` session; null cwd inherits; int code (legacy path; shells use `am_run_spawn`) |
+| `am_spawn_launch(core, out, cli, cwd, yolo, cols, rows)` | 2D-launch spawn (folder × CLI + one-shot yolo); null/empty cli repeats last/default resolution; int code (legacy path; shells use `am_run_spawn`) |
+| `am_pump` | dirty gate; null → false (legacy path; shells use `am_pump_all`/`am_run_pump`) |
+| `am_write(pty, bytes, len)` | raw input bytes; int code (legacy path; shells use `am_run_write`) |
+| `am_resize` | null no-op (legacy path; shells use `am_run_resize`) |
+| `am_screen_text` + `am_screen_text_free` | owned UTF-8, caller frees (legacy path; shells use `am_run_screen_text`) |
+| `am_spans_json` | owned styled spans as JSON (rows of `{text,fg,bg,bold,italic,underline}`), freed with `am_screen_text_free` (legacy path; shells use `am_run_spans_json`) |
 | `am_status(core, row)` | 0 Attention / 1 Idle / 2 Working; -1 null, -2 out of bounds |
 | `am_session_count` | roster row count; 0 on null (#62) |
 | `am_session_json(core, row)` | owned `ChatSession` JSON; null on null/OOB; freed with `am_screen_text_free` (#62) |
@@ -372,25 +411,34 @@ presence flags — `Option` stays on the Rust side).
 | `am_effective_cli(core, cli)` | owned harness id of the effective CLI (explicit or core resolution); freed with `am_screen_text_free` |
 | `am_recent_json(core)` | owned JSON string array of folder recents (MRU-first); null core yields `[]`; freed with `am_screen_text_free` |
 | `am_note_launch(core, cli, cwd)` | record a confirmed FFI-side launch (last-used CLI + folder MRU); int code |
-| `am_feed_delta(old, new)` | shared feed reconciler (`shell_shared`); owned string or null when current; freed with `am_screen_text_free` |
-| `am_roster_matches(title, project, id, query)` | shared sidebar filter match; 1 pass / 0 reject |
-| `am_relative_age(now, then)` | shared glanceable age label; owned string, freed with `am_screen_text_free` |
-| `am_link_count(core, row)` | PR + related link total; -1 on null/OOB |
-| `am_last_active(core, row)` | row `last_active` unix seconds; -1 on null/OOB |
+| `am_max_runs` | shared live-run ceiling (10) |
+| `am_live_count` / `am_is_live` | attached-run count / per-id live test; null-safe |
+| `am_pump_all` | pump every live run (statuses/links refresh + re-sort); true = repaint |
+| `am_run_spawn` | 2D-launch spawn attached to a new roster row under the cap; row id out; cap refusal names per-run close |
+| `am_run_restart` | restart/resume on the same id (keeps title/links) |
+| `am_run_close` | drop PTY + remove entry (unknown = no-op success) |
+| `am_needs_quit_confirm` | Working/Attention row or live PTY |
+| `am_run_pump` / `am_run_write` / `am_run_resize` | per-id pump / write / resize |
+| `am_run_screen_text` / `am_run_spans_json` | per-id owned snapshots; freed with `am_screen_text_free` |
+| `am_run_exited` | per-id exit flag |
+| `am_key_encode` | shared key table: bytes out + count, 0 = Keep, -1 = null key |
+| `am_feed_delta` | shared reconciler; owned string or null when current |
+| `am_ansi_render` | shared SGR renderer; null when undecodable |
+| `am_spawn_preview` / `am_yolo_value` | shared preview copy / tri-state mapping |
+| `am_age_string` / `am_status_glyph` / `am_section_title` | shared display strings; freed with `am_screen_text_free` |
+| `am_clamp_sidebar` | shared 220..480px sidebar clamp |
+| `am_row_matches` / `am_set_filter` | core-owned filter test / replace (snaps selection) |
+| `am_selected` / `am_select` / `am_select_step` | core-owned selection |
 | `am_last_error` | thread-local message; never null |
 | `am_pty_free` | reaps the child; null no-op |
 
 ### C header (`include/agent_manager.h`, hardened #61)
 
-The header is checked in and mirrors `src/ffi.rs` exactly (25 exports:
-the 15 original plus the 5 2D-launch fns plus `am_feed_delta`,
-`am_roster_matches`, `am_relative_age`, `am_link_count`,
-`am_last_active`; verified: every `am_*` in the header is a `T` symbol
-in `target/debug/libagent_manager.a` and vice versa). Keep it
-hand-maintained in the existing style — a raw cbindgen regen dumps
-every `pub const` into the contract — and extend it by hand after any
-FFI change (cbindgen config stays at `cbindgen.toml` at the repo root
-for reference):
+The header is checked in and mirrors `src/ffi.rs` exactly (20 exports;
+verified: every `am_*` in the header is a `T` symbol in
+`target/debug/libagent_manager.a` and vice versa). Regenerate after any
+FFI change with [`cbindgen`](https://github.com/mozilla/cbindgen)
+(`cbindgen.toml` at the repo root):
 
 ```sh
 cargo install cbindgen

@@ -2,19 +2,16 @@ import Foundation
 
 /// Snapshot-to-stream reconciler for the terminal view.
 ///
-/// The core owns its emulator and hands out plain-text screen snapshots
-/// (`am_screen_text`); the SwiftTerm view owns a second emulator that
-/// wants an output *stream*. This type computes the smallest feed that
-/// makes the view show the new output without duplicating what it
-/// already shows:
+/// Thin wrapper over the shared core reconciler (`am_feed_delta`, via
+/// `Core.feedDelta`): one rule for every shell. The pure-Swift
+/// implementation below stays for unit tests without linking the core
+/// staticlib (same split as before); production calls the core so all
+/// shells reconcile identically.
 ///
-/// - identical snapshots feed nothing;
-/// - an append-only snapshot feeds just the suffix (the hot path:
-///   streaming agent output and echoed typing);
-/// - a scrolled snapshot feeds the new trailing lines (the overlap
-///   between the old tail and the new head is already on screen);
-/// - anything else (redraw, reflow after resize, cursor-addressed
-///   programs) clears and replays the whole snapshot.
+/// The core owns its emulator and hands out plain-text screen snapshots;
+/// the SwiftTerm view owns a second emulator that wants an output
+/// *stream*. The feed is the smallest text that makes the view show the
+/// new output without duplicating what it already shows.
 ///
 /// Newlines are normalized to CRLF: the view interprets a bare LF as
 /// line-feed-only, which would stair-step the output.

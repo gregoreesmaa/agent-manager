@@ -1,22 +1,22 @@
 import ShellSupport
 import SwiftUI
 
-/// Roster sidebar + session terminal.
+/// Roster sidebar + session terminal (dumb renderer over the core run
+/// registry).
 ///
-/// - Roster: core rows grouped by urgency (needs-input first), with an
-///   inline sidebar filter field matching title/project/id.
+/// - Roster: core registry rows grouped Needs input → Working → Idle →
+///   History, with an inline sidebar filter field (core-owned text).
 /// - Spawn: the sidebar New Session button (or the detail Spawn
-///   button) starts the selected row's child via `am_spawn`; with no
-///   selection New Session takes the first unstarted visible row, and
-///   with no unstarted row at all (empty roster included) it mints a
-///   shell-local terminal instead (Windows parity). Typing in
-///   the terminal converses through `am_write`.
+///   button) attaches a real roster row in the core via `am_run_spawn`;
+///   Restart/Close act on the selected row via `am_run_restart` /
+///   `am_run_close`. Typing in the terminal converses through
+///   `am_run_write`.
 /// - History: every row shows its project, harness, and last-active age;
 ///   the rows themselves come from discovery + the persisted store, so
-///   they survive relaunches.
+///   they survive relaunches. Ended rows offer restart inline.
 /// - Theme: follows the system appearance (no manual override).
-/// - Persistence: Cmd-S writes the core config; it also runs on quit
-///   (no sidebar button — Windows parity).
+/// - Persistence: automatic (throttled pump autosave + quit/close
+///   hooks); no manual Save button.
 struct ContentView: View {
     @ObservedObject var state: AppState
     @Environment(\.colorScheme) private var colorScheme
@@ -31,6 +31,10 @@ struct ContentView: View {
                     Button("Repeat last session", action: state.repeatLastSession)
                     Button("Choose folder, CLI, options…") { state.pickerOpen = true }
                         .keyboardShortcut("n", modifiers: [.command, .shift])
+                    Button("Restart selected run", action: state.restartSelected)
+                        .keyboardShortcut("r", modifiers: .command)
+                    Button("Close selected run", action: state.closeSelected)
+                        .keyboardShortcut("w", modifiers: .command)
                 } label: {
                     Label("New Session", systemImage: "plus")
                 }
@@ -40,7 +44,15 @@ struct ContentView: View {
                 .help("Repeat the last session, or pick folder × CLI + yolo")
                 .padding(8)
                 Divider()
-                List(selection: $state.selection) {
+                List(selection: Binding(
+                    get: { state.selection },
+                    set: { id in
+                        if let id, let row = state.rows.first(where: { $0.id == id }) {
+                            state.select(row: row)
+                        }
+                    }
+                )) {
+                    // No sidebar heading above the filter (Windows parity).
                     TextField("Search sessions", text: $state.filter)
                         .textFieldStyle(.roundedBorder)
                     if state.filteredRows.isEmpty {
@@ -53,6 +65,19 @@ struct ContentView: View {
                                     rowLabel(row)
                                         .tag(row.id)
                                         .badge(state.hasLivePty(row.id) ? "live" : nil)
+                                        .contextMenu {
+                                            if state.hasLivePty(row.id) {
+                                                Button("Close run") {
+                                                    state.selection = row.id
+                                                    state.closeSelected()
+                                                }
+                                            } else {
+                                                Button("Restart / resume") {
+                                                    state.selection = row.id
+                                                    state.restartSelected()
+                                                }
+                                            }
+                                        }
                                 }
                             } header: {
                                 HStack {
@@ -64,8 +89,30 @@ struct ContentView: View {
                             }
                         }
                     }
+                    if state.hasHistory {
+                        Section {
+                            ForEach(state.historyRows) { row in
+                                rowLabel(row)
+                                    .tag(row.id)
+                                    .contextMenu {
+                                        Button("Restart / resume") {
+                                            state.selection = row.id
+                                            state.restartSelected()
+                                        }
+                                    }
+                            }
+                        } header: {
+                            HStack {
+                                Text("History (\(state.historyRows.count))")
+                                Spacer()
+                            }
+                        }
+                    }
                 }
                 .listStyle(.sidebar)
+                // No sidebar footer: Restart/Close ride the New Session
+                // menu, row context menus, keyboard shortcuts, and the
+                // detail pane (Windows parity — no headings, no footer).
             }
         } detail: {
             // SwiftUI counts the toolbar height as detail safe area,
@@ -91,12 +138,21 @@ struct ContentView: View {
 
     // MARK: - Sidebar
 
+    // No sidebar heading and no footer: Restart/Close ride the New
+    // Session menu, row context menus, keyboard shortcuts, and the
+    // detail pane (Windows parity). Persistence is automatic (no Save
+    // button); the shell follows the system appearance (no manual
+    // theme override).
+
     private struct StatusSection {
         var status: Int
         var title: String
         var rows: [SessionRow]
     }
 
+    /// Shared group order (matches the other shells): Needs input →
+    /// Working → Idle. History (no live PTY) renders separately below.
+    /// Counts ride the header HStack (title + count), not the title.
     private var statusSections: [StatusSection] {
         [
             StatusSection(
@@ -116,10 +172,15 @@ struct ContentView: View {
 
     private func rowLabel(_ row: SessionRow) -> some View {
         HStack {
+            // Non-color marker (shared core glyphs) + color dot: rows are
+            // never color-only, matching the other shells.
+            Text(state.glyph(of: row))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             statusDot(state.status(of: row))
             VStack(alignment: .leading) {
                 Text(row.title).lineLimit(1)
-                Text("\(row.project) · \(row.harness) · \(age(row.lastActive))")
+                Text("\(row.project) · \(row.harness) · \(state.age(of: row))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -131,6 +192,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .accessibilityLabel("\(row.title), \(state.statusName(of: row))")
     }
 
     private func statusDot(_ status: RunStatus) -> some View {
@@ -140,14 +202,7 @@ struct ContentView: View {
         case .idle: .gray
         }
         return Circle().fill(color).frame(width: 8, height: 8)
-    }
-
-    private func age(_ unixSeconds: Int64) -> String {
-        let delta = max(0, Int(Date.now.timeIntervalSince1970) - Int(unixSeconds))
-        if delta < 60 { return "just now" }
-        if delta < 3600 { return "\(delta / 60)m ago" }
-        if delta < 86400 { return "\(delta / 3600)h ago" }
-        return "\(delta / 86400)d ago"
+            .accessibilityHidden(true)
     }
 
     // MARK: - Detail
@@ -163,35 +218,27 @@ struct ContentView: View {
                     darkMode: colorScheme == .dark
                 )
             } else {
+                // Ended run or historic entry: restart/resume on the same
+                // id (keeps title and links), or close it. Same recovery
+                // rule as the other shells.
                 VStack(spacing: 12) {
                     Text(row.title).font(.title2)
                     Text("\(row.project) · \(row.harness)")
                         .foregroundStyle(.secondary)
-                    Button("Spawn session", action: state.spawnSelected)
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
+                    HStack(spacing: 12) {
+                        Button("Restart / resume", action: state.restartSelected)
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                        Button("Close run", action: state.closeSelected)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        } else if let id = state.selection, state.hasLivePty(id) {
-            // Fresh 2D-launch PTY with no roster row yet (repeat-last or
-            // picker spawn): show its terminal directly instead of the
-            // "Select a session" placeholder.
-            CoreTerminalView(
-                state: state, rowId: id,
-                darkMode: colorScheme == .dark
-            )
         } else if state.rows.isEmpty {
-            // Clickable New CTA next to the key hint (orientation
-            // bundle): the empty roster is a starting point, opening a
-            // live terminal through the core even with no rows.
             VStack(spacing: 12) {
                 Text("No sessions yet").font(.title2)
                 Text("Spawned sessions appear here; history is restored on launch.")
                     .foregroundStyle(.secondary)
-                Button("New Session", action: state.newSession)
-                    .buttonStyle(.borderedProminent)
-                    .help("Open a live terminal (am_spawn, or Cmd-N)")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -301,16 +348,16 @@ private struct NewSessionSheet: View {
             : "\(cli.id) — not installed"
     }
 
+    /// One-line spawn preview through the shared core helper (single
+    /// copy of the preview rule on every shell).
     private var previewText: String {
-        let where_ = folder.trimmingCharacters(in: .whitespaces).isEmpty
-            ? "" : " in \(folder)"
-        let yoloTag: String
+        let yoloArg: Int32
         switch yolo {
-        case .useDefault: yoloTag = ""
-        case .forceOn: yoloTag = " + yolo"
-        case .forceOff: yoloTag = " (yolo off)"
+        case .useDefault: yoloArg = 0
+        case .forceOn: yoloArg = 1
+        case .forceOff: yoloArg = -1
         }
-        return "runs: \(cliId)\(where_)\(yoloTag)"
+        return Core.spawnPreview(cli: cliId, folder: folder, yolo: yoloArg)
     }
 
     private func spawn() {

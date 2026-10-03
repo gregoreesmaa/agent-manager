@@ -36,10 +36,13 @@ struct AgentManagerMacApp: App {
                     appState.pickerOpen = true
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-            }
-            CommandGroup(after: .saveItem) {
-                Button("Save Core Config", action: appState.save)
-                    .keyboardShortcut("s", modifiers: .command)
+                // Restart/close parity with the other shells (Ctrl+R /
+                // Ctrl+W there; Cmd-R / Cmd-W here). Persistence is
+                // automatic — no Save command.
+                Button("Restart Selected Run", action: appState.restartSelected)
+                    .keyboardShortcut("r", modifiers: .command)
+                Button("Close Selected Run", action: appState.closeSelected)
+                    .keyboardShortcut("w", modifiers: .command)
             }
         }
     }

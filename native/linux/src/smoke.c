@@ -8,7 +8,7 @@
  * initialized here, so this runs under plain CI with no display.
  *
  * Usage:
- *   am-gtk-smoke            # read-only surface: roster, status, OOB
+ *   am-gtk-smoke            # roster, registry, shared helpers, OOB
  *   am-gtk-smoke --smoke-live  # plus spawn/pump/write/resize against the
  *                              # real `muse` command (or a fake one on PATH)
  */
@@ -54,10 +54,13 @@ static double now_seconds(void) {
     return (double)clock() / (double)CLOCKS_PER_SEC;
 }
 
+/* Live converse through the run registry: spawn attaches a real roster
+ * row, converse/resize/close go by row id. */
 static int live_converse(AmCore *core) {
+    char id[256] = { 0 };
     char *spawn_err = NULL;
-    AmPty *pty = bridge_spawn(core, 80, 24, &spawn_err);
-    if (!pty) {
+    if (bridge_run_spawn(core, NULL, NULL, 0, 80, 24, id, sizeof id,
+                         &spawn_err) != 0) {
         fprintf(stderr, "SMOKE-FAIL live spawn: %s\n",
                 spawn_err ? spawn_err : "?");
         free(spawn_err);
@@ -68,8 +71,8 @@ static int live_converse(AmCore *core) {
     size_t first_bytes = 0;
     double start = now_seconds();
     while (now_seconds() - start < 15.0) {
-        if (bridge_pump(pty)) {
-            char *text = bridge_screen_text(pty);
+        if (bridge_run_pump(core, id)) {
+            char *text = bridge_run_screen_text(core, id);
             if (text) {
                 int visible = 0;
                 for (const char *p = text; *p; p++) {
@@ -90,29 +93,30 @@ static int live_converse(AmCore *core) {
         sleep_ms(50);
     }
     if (first_bytes == 0) {
-        bridge_pty_free(pty);
+        bridge_run_close(core, id);
         return fail("live: no output within 15s");
     }
 
     /* Input reaches the PTY: the write must succeed at the fd level. */
     static const unsigned char probe[] = "smoke-probe-63";
     char *write_err = NULL;
-    if (bridge_write(pty, probe, sizeof probe - 1, &write_err) != 0) {
+    if (bridge_run_write(core, id, probe, sizeof probe - 1, &write_err) !=
+        0) {
         fprintf(stderr, "SMOKE-FAIL live write: %s\n",
                 write_err ? write_err : "?");
         free(write_err);
-        bridge_pty_free(pty);
+        bridge_run_close(core, id);
         return 1;
     }
 
     /* Resize keeps the seam alive; the screen stays readable. */
-    bridge_resize(pty, 100, 30);
+    bridge_run_resize(core, id, 100, 30);
     sleep_ms(300);
-    (void)bridge_pump(pty);
-    char *after = bridge_screen_text(pty);
+    (void)bridge_run_pump(core, id);
+    char *after = bridge_run_screen_text(core, id);
     int readable = after && after[0] != '\0';
     bridge_string_free(after);
-    bridge_pty_free(pty);
+    bridge_run_close(core, id);
     if (!readable) {
         return fail("live: unreadable screen after resize");
     }
@@ -166,8 +170,6 @@ int main(int argc, char **argv) {
         return fail("bridge_last_error empty after failure");
     }
 
-    printf("SMOKE-OK sessions=%zu\n", n);
-
     /* 2D-launch surface: the catalog lists every supported CLI in core
      * order (missing ones stay listed), recents decode as a JSON array,
      * and the effective CLI resolves non-empty on a null hint. */
@@ -194,6 +196,80 @@ int main(int argc, char **argv) {
         return fail("effective CLI empty");
     }
     bridge_string_free(eff);
+
+    /* Shared-helper surface: one copy in the core, same on every shell
+     * (key table, reconciler, preview, yolo, age, glyphs, headers,
+     * clamp, cap). */
+    {
+        unsigned char kbuf[16];
+        if (bridge_key_encode("enter", NULL, 0, 0, kbuf, sizeof kbuf) != 1 ||
+            kbuf[0] != '\r') {
+            bridge_core_free(core);
+            return fail("key encode enter != CR");
+        }
+        if (bridge_key_encode("shift", NULL, 0, 0, kbuf, sizeof kbuf) != 0) {
+            bridge_core_free(core);
+            return fail("key keep != 0");
+        }
+        char *feed = bridge_feed_delta("a", "a\nb\n");
+        int feed_ok = feed && strcmp(feed, "\r\nb\r\n") == 0;
+        free(feed);
+        if (!feed_ok) {
+            bridge_core_free(core);
+            return fail("feed delta append");
+        }
+        if (bridge_feed_delta("same", "same") != NULL) {
+            bridge_core_free(core);
+            return fail("feed delta identical != NULL");
+        }
+        char *prev = bridge_spawn_preview("muse", "/tmp/api", 1);
+        int prev_ok =
+            prev && strcmp(prev, "runs: muse in /tmp/api + yolo") == 0;
+        free(prev);
+        if (!prev_ok) {
+            bridge_core_free(core);
+            return fail("spawn preview");
+        }
+        if (bridge_yolo_value(1) != 1 || bridge_yolo_value(2) != -1) {
+            bridge_core_free(core);
+            return fail("yolo mapping");
+        }
+        char *age = bridge_age_string(600, 0);
+        int age_ok = age && strcmp(age, "10m ago") == 0;
+        bridge_string_free(age);
+        if (!age_ok) {
+            bridge_core_free(core);
+            return fail("age buckets");
+        }
+        char *glyph = bridge_status_glyph(0);
+        int glyph_ok = glyph && strcmp(glyph, "\342\227\217") == 0;
+        bridge_string_free(glyph);
+        if (!glyph_ok) {
+            bridge_core_free(core);
+            return fail("status glyph");
+        }
+        char *hdr = bridge_section_title(2);
+        int hdr_ok = hdr && strcmp(hdr, "Working") == 0;
+        bridge_string_free(hdr);
+        if (!hdr_ok) {
+            bridge_core_free(core);
+            return fail("section title");
+        }
+        if (bridge_max_runs() != 10) {
+            bridge_core_free(core);
+            return fail("max runs != 10");
+        }
+        if (bridge_live_count(core) != 0) {
+            bridge_core_free(core);
+            return fail("fresh core has live runs");
+        }
+        if (bridge_is_live(core, "missing")) {
+            bridge_core_free(core);
+            return fail("unknown id is live");
+        }
+    }
+
+    printf("SMOKE-OK sessions=%zu\n", n);
 
     int rc = 0;
     if (live) {

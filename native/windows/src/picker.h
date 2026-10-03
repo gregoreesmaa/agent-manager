@@ -1,8 +1,11 @@
-/* Two-dimensional new-session picker for the WinUI shell (issue #64).
+/* Two-dimensional new-session picker rows for the WinUI shell.
  *
- * Pure parsing/logic over the core 2D-launch JSON (no WinUI types), so
- * the CMake `am-win-picker-test` pins it on every runner. The dialog
- * itself lives in MainWindow.xaml.cpp over these helpers.
+ * Only the catalog/recents JSON shapes parse locally (native ComboBox
+ * rows need them); every rule — preview copy, yolo mapping, folder
+ * trimming — lives once in the core (`am_spawn_preview`,
+ * `am_yolo_value`, ...), pinned by `cargo test --lib` and the bridge
+ * section of `picker_test.cpp`. Pure header-only C++ (no WinUI types),
+ * so the CMake `am-win-picker-test` pins it on every runner.
  *
  * Catalog rows come from `bridge_clis_json`
  * ([{id,program,path,available}] in core order); recents from
@@ -100,8 +103,6 @@ inline std::vector<CliRow> parse_clis(const std::string &json) {
                 }
                 return obj.substr(q, e - q);
             }
-            /* Quoted string: reuse the amjson decoder when present by
-             * re-quoting is unnecessary — decode inline (escapes). */
             std::string val;
             ++q;
             bool ok = true;
@@ -197,46 +198,6 @@ inline std::vector<std::string> parse_recents(const std::string &json) {
         out.push_back(std::move(val));
     }
     return out;
-}
-
-/* Blank/whitespace folder means inherit (empty return). Otherwise the
- * trimmed folder. */
-inline std::string effective_folder(const std::string &folder) {
-    std::size_t b = folder.find_first_not_of(" \t\n\r");
-    if (b == std::string::npos) {
-        return {};
-    }
-    std::size_t e = folder.find_last_not_of(" \t\n\r");
-    return folder.substr(b, e - b + 1);
-}
-
-/* Tri-state yolo int for `bridge_spawn_launch` from the segmented
- * index (1 = force on, 2 = force off, else config default). */
-inline int yolo_value(int selected) {
-    if (selected == 1) {
-        return 1;
-    }
-    if (selected == 2) {
-        return -1;
-    }
-    return 0;
-}
-
-/* One-line spawn preview (`runs: muse in <dir> + yolo`). */
-inline std::string preview(const std::string &cli, const std::string &folder,
-                           int yolo) {
-    std::string c = cli.empty() ? "muse" : cli;
-    std::string eff = effective_folder(folder);
-    std::string tag;
-    if (yolo > 0) {
-        tag = " + yolo";
-    } else if (yolo < 0) {
-        tag = " (yolo off)";
-    }
-    if (eff.empty()) {
-        return "runs: " + c + tag;
-    }
-    return "runs: " + c + " in " + eff + tag;
 }
 
 } /* namespace picker */
