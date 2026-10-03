@@ -23,7 +23,7 @@
 
 #include "staap.h"
 
-/* Roster status codes, matching `STAAP_STATUS`. */
+/* Roster status codes, matching `staap_status`. */
 enum {
     STAAP_STATUS_ATTENTION = 0,
     STAAP_STATUS_IDLE = 1,

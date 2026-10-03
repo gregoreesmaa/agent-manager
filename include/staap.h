@@ -7,9 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 
 /**
  * Max parsed links retained per list per run (PRs and related alike).
@@ -397,8 +395,8 @@ int staap_run_restart(struct StaapCore *core, const char *id, uint16_t cols, uin
 
 /**
  * Close (kill) a run: drop its live PTY and remove its entry. Unknown
- * ids are a no-op success. Persists afterwards (the closed run must not
- * resurrect from the last save).
+ * ids are a no-op success. Shells persist via `staap_core_save`
+ * hooks (close autosaves) so the closed run does not resurrect.
  *
  * # Safety
  * `core` must be null or live; `id` must be null or a valid C string.

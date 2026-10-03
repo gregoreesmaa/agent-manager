@@ -40,7 +40,7 @@ build.
 
 ```sh
 cargo build
-./target/debug/agent-manager
+./target/debug/staap
 ```
 
 `cargo test --all-targets` runs the suite; `cargo fmt --check` and
@@ -49,7 +49,7 @@ run in CI on every push and pull request).
 
 ## Free and open source
 
-agent-manager is free software under the MIT license ([LICENSE-MIT](LICENSE-MIT),
+staap is free software under the MIT license ([LICENSE-MIT](LICENSE-MIT),
 also recorded as `license = "MIT"` in `Cargo.toml`). No account, no paywall,
 no telemetry, no paid tiers: every run, parser, and provider ships free.
 Local state (preferences, persisted runs) stays in plain JSON files on your
@@ -122,7 +122,7 @@ reading source. `Tab` toggles which pane owns the keyboard.
 
 ## Configuration
 
-`~/.config/agent-manager/config.json` (JSON, all keys optional; a missing
+`~/.config/staap/config.json` (JSON, all keys optional; a missing
 or malformed file means defaults). The empty terminal pane always shows
 the effective spawn command, so you can see your flags before launch.
 
@@ -143,7 +143,7 @@ supported agent gets its own flags.
 {
   "agents": { "muse": { "yolo": true } },
   "default_cli": "muse",
-  "default_cwd": "/Users/you/projects/agent-manager"
+  "default_cwd": "/Users/you/projects/staap"
 }
 ```
 

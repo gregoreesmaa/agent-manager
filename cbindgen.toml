@@ -4,7 +4,7 @@
 language = "C"
 include_guard = "STAAP_H"
 autogen_warning = "/* Warning: regenerate with cbindgen, do not hand-edit beyond the checked-in snapshot. */"
-sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
+sys_includes = ["stddef.h"]
 
 [defines]
 "target_os = macos" = "OS_MACOS"
