@@ -1716,12 +1716,38 @@ static void refresh_roster(Shell *sh) {
         free(project);
         free(harness);
     }
-    /* Restore the core selection into the list. */
-    size_t sel = bridge_selected(sh->core);
-    GtkListBoxRow *at = gtk_list_box_get_row_at_index(sh->list, (int)sel);
-    if (at) {
-        gtk_list_box_select_row(sh->list, at);
+    /* Restore the core selection into the list by row id (never by
+     * position: the sort func + collapsed History mean visual position
+     * and core index diverge, so a positional select would highlight a
+     * different row than R/restart acts on). */
+    char *sel_json = NULL;
+    char *sel_id = NULL;
+    {
+        size_t sel = bridge_selected(sh->core);
+        sel_json = bridge_session_json(sh->core, sel);
+        sel_id = json_string(sel_json ? sel_json : "{}", "id");
     }
+    if (sel_id) {
+        GtkListBoxRow *at = NULL;
+        for (GtkWidget *child =
+                 gtk_widget_get_first_child(GTK_WIDGET(sh->list));
+             child && !at;
+             child = gtk_widget_get_next_sibling(child)) {
+            if (!GTK_IS_LIST_BOX_ROW(child)) {
+                continue;
+            }
+            const char *rid = g_object_get_data(G_OBJECT(child),
+                                                "staap-row-id");
+            if (rid && strcmp(rid, sel_id) == 0) {
+                at = GTK_LIST_BOX_ROW(child);
+            }
+        }
+        if (at) {
+            gtk_list_box_select_row(sh->list, at);
+        }
+    }
+    free(sel_id);
+    bridge_string_free(sel_json);
     /* Sync the History affordance to the core (count label + expanded
      * state; the toggle handler is blocked during the programmatic
      * set so syncing never writes back). */
