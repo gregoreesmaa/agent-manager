@@ -58,6 +58,12 @@ namespace winrt::StaapWinUI::implementation
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const
                 &args);
+        /* History expander toggle (XAML-wired handler must be public):
+         * core-owned expansion + persist; programmatic sync in
+         * RefreshRoster runs under m_syncing so it never writes back. */
+        void HistoryExpander_Toggled(
+            Windows::Foundation::IInspectable const &sender,
+            Microsoft::UI::Xaml::RoutedEventArgs const &args);
         void SidebarThumb_DragDelta(
             Windows::Foundation::IInspectable const &sender,
             Microsoft::UI::Xaml::Controls::Primitives::DragDeltaEventArgs const
