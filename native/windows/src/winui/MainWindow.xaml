@@ -150,6 +150,8 @@
                             <Expander x:Name="HistoryExpander"
                                       Header="History"
                                       IsExpanded="False"
+                                      Expanding="HistoryExpander_Toggled"
+                                      Collapsed="HistoryExpander_Toggled"
                                       HorizontalAlignment="Stretch"
                                       HorizontalContentAlignment="Stretch">
                                 <ListView x:Name="HistoryList"
